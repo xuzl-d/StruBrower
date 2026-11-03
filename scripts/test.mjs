@@ -61,6 +61,7 @@ try {
   await waitForHealth();
   // 先跑系统管理测试：它依赖“首个注册用户/指定邮箱即系统管理员”的引导规则
   await run(process.execPath, ['scripts/admin-test.mjs']);
+  await run(process.execPath, ['scripts/admin-console-test.mjs']);
   await run(process.execPath, ['scripts/deploy-test.mjs']);
   await run(process.execPath, ['scripts/api-test.mjs']);
   await run(process.execPath, ['scripts/collab-test.mjs']);

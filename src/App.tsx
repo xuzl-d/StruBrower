@@ -13,6 +13,7 @@ import VersionsDialog from './components/VersionsDialog';
 import MembersDialog from './components/MembersDialog';
 import AiPanel from './components/AiPanel';
 import SettingsDialog from './components/SettingsDialog';
+import AdminPanel from './components/AdminPanel';
 import MoveDialog from './components/MoveDialog';
 import type { MoveDelta } from './components/MoveDialog';
 import { ArrayDialog, MirrorDialog, RotateDialog } from './components/ModifyDialogs';
@@ -167,6 +168,8 @@ export default function App() {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [aiOpen, setAiOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsTab, setSettingsTab] = useState<'view' | 'users' | 'ai'>('view');
+  const [adminOpen, setAdminOpen] = useState(false);
   const [rendererInfo, setRendererInfo] = useState<{ renderer: string; software: boolean } | null>(null);
   const softwareWarnedRef = useRef(false);
   const [apiReachable, setApiReachable] = useState<boolean | null>(null);
@@ -1529,8 +1532,18 @@ export default function App() {
             <button
               className={`icon-action ${settingsOpen ? 'active' : ''}`}
               title="设置（软件偏好 / 用户 / AI）"
-              onClick={() => setSettingsOpen(true)}
+              onClick={() => {
+                setSettingsTab('view');
+                setSettingsOpen(true);
+              }}
             >⚙</button>
+            {user?.isAdmin ? (
+              <button
+                className={`icon-action ${adminOpen ? 'active' : ''}`}
+                title="管理后台（概览 / 项目 / 审计）"
+                onClick={() => setAdminOpen(true)}
+              >🛡</button>
+            ) : null}
             <button
               className={`icon-action ${aiOpen ? 'active' : ''}`}
               title="AI 建模助手（服务端模式）"
@@ -1635,7 +1648,12 @@ export default function App() {
         onOpenVersions={() => setVersionsOpen(true)}
         onOpenMembers={() => setMembersOpen(true)}
         onDeleteProject={() => void deleteCurrentProject()}
-        onOpenSettings={() => setSettingsOpen(true)}
+        onOpenSettings={() => {
+          setSettingsTab('view');
+          setSettingsOpen(true);
+        }}
+        isAdmin={Boolean(user?.isAdmin)}
+        onOpenAdmin={() => setAdminOpen(true)}
       />
 
       <section className="workspace">
@@ -1877,6 +1895,7 @@ export default function App() {
       {settingsOpen ? (
         <SettingsDialog
           currentUser={user}
+          initialTab={settingsTab}
           settings={viewSettings}
           onSettingsChange={setViewSettings}
           diagnostics={{
@@ -1888,6 +1907,18 @@ export default function App() {
           onClose={() => setSettingsOpen(false)}
           onToast={(text) => setMessage(text)}
           onSelfUpdated={(nextUser) => setUser(nextUser)}
+        />
+      ) : null}
+
+      {adminOpen && user?.isAdmin ? (
+        <AdminPanel
+          onClose={() => setAdminOpen(false)}
+          onToast={(text) => setMessage(text)}
+          onOpenSettings={(tab) => {
+            setAdminOpen(false);
+            setSettingsTab(tab);
+            setSettingsOpen(true);
+          }}
         />
       ) : null}
 

@@ -206,6 +206,50 @@ export interface AdminUser {
   memberships: number;
 }
 
+export interface AdminOverview {
+  version: string;
+  node: string;
+  uptimeSec: number;
+  dataDir: string;
+  registrationOpen: boolean;
+  authRateLimit: number;
+  users: number;
+  admins: number;
+  projects: number;
+  documents: number;
+  documentBytes: number;
+  dbBytes: number;
+  auditEvents: number;
+  ai: { provider: string; model: string; ready: boolean };
+  converter: { available: boolean; checked: boolean };
+  collab: { rooms: number; clients: number };
+}
+
+export interface AdminProject {
+  id: string;
+  name: string;
+  createdAt: string;
+  updatedAt: string;
+  ownerEmail: string;
+  ownerName: string;
+  elementCount: number;
+  rev: number;
+  documentBytes: number;
+  memberCount: number;
+}
+
+export interface AdminAuditEvent {
+  id: number;
+  action: string;
+  projectId: string | null;
+  projectName: string | null;
+  userId: string | null;
+  userEmail: string | null;
+  userName: string | null;
+  detail: string | null;
+  createdAt: string;
+}
+
 export interface AiSettingsView {
   provider: 'mock' | 'openai';
   baseUrl: string;
@@ -269,6 +313,26 @@ export function createAdminApi(baseUrl = '') {
     },
     async deleteUser(id: string) {
       return request<{ ok: boolean }>(baseUrl, `/api/admin/users/${id}`, { method: 'DELETE' });
+    },
+    async overview() {
+      return request<AdminOverview>(baseUrl, '/api/admin/overview');
+    },
+    async projects(query = '', offset = 0, limit = 50) {
+      const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+      if (query) params.set('q', query);
+      return request<{ total: number; projects: AdminProject[] }>(baseUrl, `/api/admin/projects?${params}`);
+    },
+    async audit(params: { action?: string; projectId?: string; userId?: string; offset?: number; limit?: number } = {}) {
+      const search = new URLSearchParams();
+      if (params.action) search.set('action', params.action);
+      if (params.projectId) search.set('projectId', params.projectId);
+      if (params.userId) search.set('userId', params.userId);
+      search.set('offset', String(params.offset ?? 0));
+      search.set('limit', String(params.limit ?? 50));
+      return request<{ total: number; events: AdminAuditEvent[] }>(baseUrl, `/api/admin/audit?${search}`);
+    },
+    async deleteProject(id: string) {
+      return request<{ ok: boolean }>(baseUrl, `/api/admin/projects/${id}`, { method: 'DELETE' });
     },
     async aiSettings() {
       return request<AiSettingsView>(baseUrl, '/api/admin/settings/ai');

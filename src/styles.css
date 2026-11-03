@@ -1403,3 +1403,137 @@ button { color: inherit; }
   0% { transform: translateX(-120%); }
   100% { transform: translateX(320%); }
 }
+
+
+/* ---------- 管理后台（超管） ---------- */
+
+.admin-backdrop { z-index: 12; }
+.admin-card { width: min(1080px, 96vw); max-height: 88vh; }
+.admin-tabs {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 16px;
+  border-bottom: 1px solid #27364a;
+}
+.admin-tab-buttons { display: flex; gap: 4px; }
+.admin-tab-buttons button,
+.admin-tab-actions button {
+  height: 34px;
+  padding: 0 12px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: #8fa1b8;
+  cursor: pointer;
+  font-size: 10px;
+}
+.admin-tab-buttons button.active { color: #eaf2fd; border-bottom-color: #5b9bff; }
+.admin-tab-actions button {
+  height: 24px;
+  margin-left: 6px;
+  border: 1px solid #33445a;
+  border-radius: 4px;
+  background: #1a2534;
+  color: #c3d2e3;
+  font-size: 9px;
+}
+.admin-body { max-height: 62vh; padding: 14px 16px; overflow: auto; }
+.admin-cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.admin-card-item {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 10px 12px;
+  border: 1px solid #27364a;
+  border-radius: 7px;
+  background: #18232f;
+}
+.admin-card-item span { color: #7f90a7; font-size: 8.5px; }
+.admin-card-item b { color: #eaf3ff; font-size: 18px; font-weight: 600; }
+.admin-card-item em { color: #6f8096; font-size: 8px; font-style: normal; }
+.admin-info {
+  display: grid;
+  grid-template-columns: 110px 1fr;
+  gap: 6px 12px;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid #27364a;
+  border-radius: 7px;
+  background: #141f2b;
+  font-size: 9px;
+}
+.admin-info span { color: #7f90a7; }
+.admin-info b { color: #c6d4e6; font-weight: 500; word-break: break-all; }
+.admin-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.admin-actions button,
+.admin-search button {
+  height: 28px;
+  padding: 0 12px;
+  border: 1px solid #3a4c63;
+  border-radius: 5px;
+  background: #1a2534;
+  color: #c3d2e3;
+  cursor: pointer;
+  font-size: 9px;
+}
+.admin-search { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.admin-search input {
+  height: 28px;
+  flex: 1;
+  min-width: 160px;
+  padding: 0 9px;
+  border: 1px solid #33445a;
+  border-radius: 5px;
+  outline: none;
+  background: #1a2534;
+  color: #dce5ef;
+  font-size: 9.5px;
+}
+.admin-count { color: #7f90a7; font-size: 9px; white-space: nowrap; }
+.admin-table-wrap { overflow: auto; border: 1px solid #27364a; border-radius: 7px; }
+.admin-table { width: 100%; border-collapse: collapse; font-size: 9px; }
+.admin-table th {
+  position: sticky;
+  top: 0;
+  padding: 7px 9px;
+  border-bottom: 1px solid #2c3d52;
+  background: #16212e;
+  color: #8fa1b8;
+  font-weight: 500;
+  text-align: left;
+  white-space: nowrap;
+}
+.admin-table td { padding: 7px 9px; border-bottom: 1px solid #202f42; color: #c6d4e6; vertical-align: top; }
+.admin-table tr:last-child td { border-bottom: 0; }
+.admin-table td span { display: block; }
+.admin-muted { color: #6f8096; font-size: 8px; }
+.admin-danger { color: #f0a5a5 !important; border-color: #553a44 !important; }
+.admin-table button {
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid #3a4c63;
+  border-radius: 4px;
+  background: #1a2534;
+  cursor: pointer;
+  font-size: 8.5px;
+}
+.admin-empty { padding: 18px; color: #6f8096; font-size: 9px; text-align: center; }
+.admin-audit { display: flex; flex-direction: column; gap: 4px; }
+.admin-audit-row {
+  display: grid;
+  grid-template-columns: 140px 130px 120px 110px 1fr;
+  gap: 8px;
+  padding: 6px 9px;
+  border: 1px solid #223246;
+  border-radius: 5px;
+  background: #141f2b;
+  color: #a9bdd7;
+  font-size: 8.5px;
+}
+.admin-audit-time { color: #6f8096; }
+.admin-audit-action { color: #8fb6e6; }
+.admin-audit-user { color: #c6d4e6; }
+.admin-audit-project { color: #7f90a7; overflow: hidden; text-overflow: ellipsis; }
+.admin-audit-detail { overflow: hidden; color: #6f8096; text-overflow: ellipsis; white-space: nowrap; }

@@ -141,6 +141,82 @@ export function createStore(file) {
       }));
     },
 
+    /** 管理员视图：全部项目（带 owner/成员数/文档大小），支持搜索分页。 */
+    countAllProjects(query = '') {
+      const like = `%${query}%`;
+      return db.prepare('select count(*) as total from projects p where (? = \'\' or p.name like ? or p.id like ?)')
+        .get(query, like, like).total;
+    },
+
+    listAllProjects({ query = '', limit = 50, offset = 0 } = {}) {
+      const like = `%${query}%`;
+      const rows = db.prepare(`
+        select p.id, p.name, p.created_at, p.updated_at,
+               u.email as owner_email, u.name as owner_name,
+               coalesce(d.element_count, 0) as element_count,
+               coalesce(d.rev, 0) as rev,
+               coalesce(length(d.payload), 0) as document_bytes,
+               (select count(*) from project_members m where m.project_id = p.id) as member_count
+        from projects p
+        left join users u on u.id = p.created_by
+        left join documents d on d.project_id = p.id
+        where (? = '' or p.name like ? or p.id like ?)
+        order by p.updated_at desc
+        limit ? offset ?
+      `).all(query, like, like, limit, offset);
+      return rows.map((row) => ({
+        id: row.id,
+        name: row.name,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+        ownerEmail: row.owner_email ?? '',
+        ownerName: row.owner_name ?? '',
+        elementCount: row.element_count,
+        rev: row.rev,
+        documentBytes: row.document_bytes,
+        memberCount: row.member_count,
+      }));
+    },
+
+    countAudit({ action = '', projectId = '', userId = '' } = {}) {
+      return db.prepare(`
+        select count(*) as total from audit_log a
+        where (? = '' or a.action like ?)
+          and (? = '' or a.project_id = ?)
+          and (? = '' or a.user_id = ?)
+      `).get(action, `%${action}%`, projectId, projectId, userId, userId).total;
+    },
+
+    listAudit({ action = '', projectId = '', userId = '', limit = 50, offset = 0 } = {}) {
+      const rows = db.prepare(`
+        select a.id, a.project_id, a.user_id, a.action, a.detail, a.created_at,
+               u.email as user_email, u.name as user_name, p.name as project_name
+        from audit_log a
+        left join users u on u.id = a.user_id
+        left join projects p on p.id = a.project_id
+        where (? = '' or a.action like ?)
+          and (? = '' or a.project_id = ?)
+          and (? = '' or a.user_id = ?)
+        order by a.id desc
+        limit ? offset ?
+      `).all(action, `%${action}%`, projectId, projectId, userId, userId, limit, offset);
+      return rows.map((row) => ({
+        id: row.id,
+        action: row.action,
+        projectId: row.project_id,
+        projectName: row.project_name ?? null,
+        userId: row.user_id,
+        userEmail: row.user_email ?? null,
+        userName: row.user_name ?? null,
+        detail: row.detail ?? null,
+        createdAt: row.created_at,
+      }));
+    },
+
+    documentStats() {
+      return db.prepare('select count(*) as documents, coalesce(sum(length(payload)), 0) as bytes from documents').get();
+    },
+
     getMembership(projectId, userId) {
       const row = db.prepare('select role from project_members where project_id = ? and user_id = ?')
         .get(projectId, userId);

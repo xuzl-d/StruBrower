@@ -26,6 +26,13 @@ import { validateDocument } from './validate.js';
 import { attachCollabServer } from './ws.js';
 
 const ROOT = path.resolve(fileURLToPath(new URL('.', import.meta.url)), '..');
+const PKG_VERSION = (() => {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).version;
+  } catch {
+    return 'unknown';
+  }
+})();
 const PORT = Number(process.env.PORT ?? 8787);
 // 默认监听所有网卡，方便局域网/公网访问；只想本机访问可设 HOST=127.0.0.1
 const HOST = process.env.HOST ?? '0.0.0.0';
@@ -600,7 +607,69 @@ async function handleApi(ctx) {
     }
   }
 
-  /* ---------- 系统管理（用户 / AI 设置） ---------- */
+  /* ---------- 系统管理（超管后台：概览 / 项目 / 审计 / 用户 / AI） ---------- */
+
+  if (pathname === '/api/admin/overview' && method === 'GET') {
+    requireSystemAdmin(ctx);
+    const stats = store.documentStats();
+    let dbBytes = 0;
+    try {
+      dbBytes = fs.statSync(DB_FILE).size;
+    } catch {
+      dbBytes = 0;
+    }
+    return sendJson(res, 200, {
+      version: PKG_VERSION,
+      node: process.version,
+      uptimeSec: Math.round(process.uptime()),
+      dataDir: DATA_DIR,
+      registrationOpen: ALLOW_REGISTER,
+      authRateLimit: AUTH_RATE_LIMIT,
+      users: store.countUsers(),
+      admins: store.countSystemAdmins(),
+      projects: store.countAllProjects(),
+      documents: stats.documents,
+      documentBytes: stats.bytes,
+      dbBytes,
+      auditEvents: store.countAudit(),
+      ai: { provider: aiConfig.provider, model: aiConfig.model, ready: aiConfig.ready },
+      converter: { available: converter.available, checked: converter.checked },
+      collab: collab.stats(),
+    });
+  }
+
+  if (pathname === '/api/admin/projects' && method === 'GET') {
+    requireSystemAdmin(ctx);
+    const query = (url.searchParams.get('q') ?? '').trim();
+    const limit = Math.min(200, Math.max(1, Number(url.searchParams.get('limit') ?? 50) || 50));
+    const offset = Math.max(0, Number(url.searchParams.get('offset') ?? 0) || 0);
+    return sendJson(res, 200, {
+      total: store.countAllProjects(query),
+      projects: store.listAllProjects({ query, limit, offset }),
+    });
+  }
+
+  if ((match = pathname.match(/^\/api\/admin\/projects\/([^/]+)$/)) && method === 'DELETE') {
+    const admin = requireSystemAdmin(ctx);
+    const project = store.getProject(match[1]);
+    if (!project) throw new HttpError(404, '项目不存在');
+    store.audit(null, admin.id, 'admin.project.delete', { projectId: project.id, name: project.name });
+    store.deleteProject(project.id, admin.id);
+    return sendJson(res, 200, { ok: true });
+  }
+
+  if (pathname === '/api/admin/audit' && method === 'GET') {
+    requireSystemAdmin(ctx);
+    const action = (url.searchParams.get('action') ?? '').trim();
+    const projectId = (url.searchParams.get('projectId') ?? '').trim();
+    const userId = (url.searchParams.get('userId') ?? '').trim();
+    const limit = Math.min(200, Math.max(1, Number(url.searchParams.get('limit') ?? 50) || 50));
+    const offset = Math.max(0, Number(url.searchParams.get('offset') ?? 0) || 0);
+    return sendJson(res, 200, {
+      total: store.countAudit({ action, projectId, userId }),
+      events: store.listAudit({ action, projectId, userId, limit, offset }),
+    });
+  }
 
   if (pathname === '/api/admin/users' && method === 'GET') {
     requireSystemAdmin(ctx);

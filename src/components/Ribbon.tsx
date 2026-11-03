@@ -31,6 +31,8 @@ interface RibbonProps {
   onOpenMembers: () => void;
   onDeleteProject: () => void;
   onOpenSettings: () => void;
+  isAdmin: boolean;
+  onOpenAdmin: () => void;
 }
 
 const TABS: Array<{ id: RibbonTab; label: string }> = [
@@ -78,6 +80,8 @@ export default function Ribbon({
   onOpenMembers,
   onDeleteProject,
   onOpenSettings,
+  isAdmin,
+  onOpenAdmin,
 }: RibbonProps) {
   const drawButton = (value: Tool, glyph: string, label: string, className = '') => (
     <button
@@ -267,6 +271,12 @@ export default function Ribbon({
                   title="软件设置（显示与交互）/ 用户管理 / AI 设置"
                   onClick={onOpenSettings}
                 ><b>⚙</b><span>设置</span></button>
+                <button
+                  className="tool-button"
+                  disabled={!isAdmin}
+                  title={isAdmin ? '系统概览 / 全部项目 / 审计日志' : '需要系统管理员'}
+                  onClick={onOpenAdmin}
+                ><b>🛡</b><span>管理后台</span></button>
               </div>
               <span className="group-caption">系统 <small>用户 / AI</small></span>
             </div>

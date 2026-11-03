@@ -12,6 +12,9 @@ import type { ProjectRepository } from './repository';
 
 export { ApiError, ConflictError, getAuthToken, pingServer, setAuthToken } from './http';
 export type {
+  AdminAuditEvent,
+  AdminOverview,
+  AdminProject,
   AdminUser,
   AiApplyResult,
   AiPlan,

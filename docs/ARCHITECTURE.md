@@ -62,6 +62,7 @@ scripts/test.mjs  一键验证：接口 + 客户端数据层 + 协作 + 差分
 | STEP 面颜色 | 服务端 OCP/XCAF 转换器取回逐面颜色（浏览器导入器会丢），前端优先使用、失败回退 |
 | AI 建模 | 文本 → 结构化 BIM 指令（Mock/OpenAI 兼容），服务端校验 + rev + 审计 + 撤销 + 协作广播 |
 | 系统管理 | 首个用户/STRU_ADMIN_EMAILS 为系统管理员；用户 CRUD、重置密码、角色；AI 设置（key AES-GCM 加密、掩码返回、界面即改即生效） |
+| 超管后台 | 概览（用户/项目/存储/协作/运行状态）、全部项目（搜索/删除）、系统级审计（过滤/分页），仅系统管理员 |
 | 软件设置 | localStorage 持久化：高亮/背景/轴网/气泡颜色、网格与统计开关、坐标轴、吸附步长；本地模式可用 |
 
 坐标约定：**世界 Z-up，单位米**，标高即世界 Z。导入几何会居中、贴地，作为独立 `mesh` 构件参与渲染与布尔。
@@ -234,6 +235,8 @@ AI 面板 → POST /ai/plan（读权限）→ provider（Mock / OpenAI 兼容）
 - 系统管理：`users.is_admin`（首个用户自动为管理员，或 `STRU_ADMIN_EMAILS`）；`app_settings` 保存 AI 配置，
   `ai.apiKey` 用 AES-256-GCM 加密（`server/crypto.js`），接口只返回掩码；`PUT /api/admin/settings/ai` 后立即重建 provider。
   保护规则：至少一名管理员、不能删除自己、拥有项目的用户不可删除、删除用户级联成员关系。
+- 超管后台接口：`/api/admin/overview`、`/api/admin/projects`（GET/DELETE）、`/api/admin/audit`；
+  `audit_log` 记录管理员的关键操作，删除项目会先写审计再级联删除。
 升级旧库时（`users.is_admin` 全为 0）启动会自动把最早注册的用户提升为管理员，避免出现“无人可管理”的死锁。
 
 ## 9. 风险与技术决策记录
