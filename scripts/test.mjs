@@ -63,6 +63,7 @@ try {
   await run(process.execPath, ['scripts/admin-test.mjs']);
   await run(process.execPath, ['scripts/admin-console-test.mjs']);
   await run(process.execPath, ['scripts/deploy-test.mjs']);
+  await run(process.execPath, ['scripts/limits-test.mjs']);
   await run(process.execPath, ['scripts/api-test.mjs']);
   await run(process.execPath, ['scripts/collab-test.mjs']);
   await run(process.execPath, ['scripts/ai-test.mjs']);

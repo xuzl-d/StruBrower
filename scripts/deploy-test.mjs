@@ -74,6 +74,7 @@ const ready = await (async () => {
 
 try {
   check('服务端启动并监听指定地址', ready?.ok === true, ready);
+  check('健康检查带实例标识', typeof ready?.instance === 'string' && ready.instance.length > 0, ready?.instance);
   check('健康检查包含功能标记', Array.isArray(ready?.features) && ready.features.includes('ai'), ready?.features);
 
   console.log('关闭开放注册');
@@ -109,6 +110,15 @@ try {
     body: { email: 'deploy-admin@example.com', password: 'wrong-password' },
   });
   check('超过尝试次数返回 429', limited.status === 429, limited.status);
+  child.kill('SIGTERM');
+  const exitCode = await new Promise((resolve) => {
+    const timer = setTimeout(() => resolve('timeout'), 6000);
+    child.once('exit', (code) => {
+      clearTimeout(timer);
+      resolve(code);
+    });
+  });
+  check('SIGTERM 优雅退出', exitCode === 0, exitCode);
 } finally {
   child.kill('SIGTERM');
   await new Promise((resolve) => {

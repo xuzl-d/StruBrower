@@ -12,7 +12,8 @@
     "start": "npm run build && npm run server",
     "test": "node scripts/test.mjs",
     "setup:step": "node scripts/setup-step.mjs",
-    "share": "bash scripts/share.sh cloudflared"
+    "share": "bash scripts/share.sh cloudflared",
+    "load-test": "node scripts/load-test.mjs"
   },
   "dependencies": {
     "occt-import-js": "^0.0.23",

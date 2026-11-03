@@ -282,6 +282,9 @@ npm run build && npm run server   # 单端口生产模式：http://127.0.0.1:878
 | `STRU_ALLOW_REGISTER` | `1` | `0` 关闭开放注册（空库时仍允许创建第一个管理员） |
 | `STRU_AUTH_RATE_LIMIT` | `60` | 登录/注册限流（次 / 5 分钟 / IP），`0` 关闭 |
 | `STRU_TRUST_PROXY` | 关闭 | 在 Nginx/Caddy 后设 `1`，按 `X-Forwarded-For` 识别真实 IP |
+| `STRU_INSTANCE_ID` | `hostname:pid` | 实例标识，出现在 health/管理后台，便于多实例排障 |
+| `STRU_STEP_RATE_LIMIT` | `6` | 每用户每分钟 STEP 转换次数（`0` 关闭，进程内计数） |
+| `STRU_AI_RATE_LIMIT` | `30` | 每用户每分钟 AI 调用次数（`0` 关闭，进程内计数） |
 | `VITE_STRU_MODE` | 自动探测 | `local` / `server` 强制模式 |
 
 安全边界（当前阶段）：

@@ -21,6 +21,7 @@ import { applyOps, OpsError, summarizeOps } from './ai/ops.js';
 import { buildProjectContext } from './ai/context.js';
 import { createProvider, resolveAiConfig } from './ai/provider.js';
 import { createSecretBox } from './crypto.js';
+import { createRateLimiter } from './limits.js';
 import { createStore } from './store.js';
 import { validateDocument } from './validate.js';
 import { attachCollabServer } from './ws.js';
@@ -39,6 +40,11 @@ const HOST = process.env.HOST ?? '0.0.0.0';
 const TRUST_PROXY = process.env.STRU_TRUST_PROXY === '1';
 const AUTH_RATE_LIMIT = Number(process.env.STRU_AUTH_RATE_LIMIT ?? 60);
 const AUTH_RATE_WINDOW_MS = 5 * 60 * 1000;
+const INSTANCE_ID = process.env.STRU_INSTANCE_ID ?? `${os.hostname()}:${process.pid}`;
+const STARTED_AT = new Date().toISOString();
+// 重接口限流：进程内计数；多实例需要换成共享计数（见 docs/MULTI_INSTANCE.md）
+const stepLimiter = createRateLimiter({ limit: Number(process.env.STRU_STEP_RATE_LIMIT ?? 6) });
+const aiLimiter = createRateLimiter({ limit: Number(process.env.STRU_AI_RATE_LIMIT ?? 30) });
 const DATA_DIR = process.env.STRU_DATA_DIR ?? path.join(ROOT, 'server', 'data');
 const DB_FILE = process.env.STRU_DB ?? path.join(DATA_DIR, 'strubrowser.db');
 const SECRET = loadSecret(path.join(DATA_DIR, 'secret'));
@@ -346,6 +352,14 @@ function publicUser(user) {
   return user ? { id: user.id, email: user.email, name: user.name, isAdmin: Boolean(user.isAdmin) } : null;
 }
 
+function enforceLimit(limiter, user, label) {
+  const result = limiter.take(user.id);
+  if (result.allowed) return;
+  const error = new HttpError(429, `${label}调用过于频繁，请 ${result.retryAfterSec} 秒后重试`);
+  error.extra = { retryAfterSec: result.retryAfterSec };
+  throw error;
+}
+
 function requireSystemAdmin(ctx) {
   const user = requireUser(ctx);
   if (!user.isAdmin) throw new HttpError(403, '需要系统管理员权限');
@@ -388,12 +402,29 @@ async function handleApi(ctx) {
       ok: true,
       service: 'strubrowser-server',
       version: 2,
+      instance: INSTANCE_ID,
+      startedAt: STARTED_AT,
+      uptimeSec: Math.round(process.uptime()),
       users: store.countUsers(),
       features: ['ai', 'collab', 'step-convert'],
       collab: collab.stats(),
       converter: { available: converter.available, python: converter.python },
       time: new Date().toISOString(),
     });
+  }
+
+  // 供负载均衡/容器编排做就绪检查（数据库可读即视为就绪）
+  if (pathname === '/api/ready' && method === 'GET') {
+    try {
+      const users = store.countUsers();
+      return sendJson(res, 200, { ready: true, instance: INSTANCE_ID, users });
+    } catch (error) {
+      return sendJson(res, 503, {
+        ready: false,
+        instance: INSTANCE_ID,
+        error: error instanceof Error ? error.message : 'database unavailable',
+      });
+    }
   }
 
   /* ---------- 认证 ---------- */
@@ -632,6 +663,9 @@ async function handleApi(ctx) {
       documentBytes: stats.bytes,
       dbBytes,
       auditEvents: store.countAudit(),
+      instance: INSTANCE_ID,
+      pid: process.pid,
+      startedAt: STARTED_AT,
       ai: { provider: aiConfig.provider, model: aiConfig.model, ready: aiConfig.ready },
       converter: { available: converter.available, checked: converter.checked },
       collab: collab.stats(),
@@ -819,6 +853,7 @@ async function handleApi(ctx) {
     const projectId = match[1];
     const user = requireUser(ctx);
     requireProjectRole(projectId, user.id, 'read');
+    enforceLimit(aiLimiter, user, 'AI');
     if (!aiConfig.ready) {
       throw new HttpError(503, 'AI 未配置：设置 STRU_AI_API_KEY（或 STRU_AI_PROVIDER=mock 使用本地模拟）');
     }
@@ -857,6 +892,7 @@ async function handleApi(ctx) {
     const projectId = match[1];
     const user = requireUser(ctx);
     requireProjectRole(projectId, user.id, 'write');
+    enforceLimit(aiLimiter, user, 'AI');
     const body = await readJson(req, MAX_DOCUMENT_BYTES);
     const stored = store.getDocument(projectId);
     if (!stored) throw new HttpError(404, '项目文档不存在');
@@ -899,6 +935,7 @@ async function handleApi(ctx) {
 
   if (pathname === '/api/convert/step' && method === 'POST') {
     const user = requireUser(ctx);
+    enforceLimit(stepLimiter, user, 'STEP 转换');
     if (!converter.available) {
       throw new HttpError(
         503,
@@ -1066,14 +1103,27 @@ server.listen(PORT, HOST, () => {
   });
 });
 
-function shutdown() {
-  console.log('\n正在关闭服务器…');
+let shuttingDown = false;
+function shutdown(signal = 'SIGTERM') {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`\n[${INSTANCE_ID}] 收到 ${signal}，停止接收新连接并关闭协作连接…`);
   collab.closeAll();
   server.close(() => {
-    store.db.close();
+    try {
+      store.db.close();
+    } catch {
+      // 忽略关闭错误
+    }
+    console.log(`[${INSTANCE_ID}] 已退出`);
     process.exit(0);
   });
+  // 有长连接/转换任务时最多等 8 秒
+  setTimeout(() => {
+    console.error(`[${INSTANCE_ID}] 关闭超时，强制退出`);
+    process.exit(1);
+  }, 8000).unref();
 }
 
-process.on('SIGINT', shutdown);
-process.on('SIGTERM', shutdown);
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('SIGTERM', () => shutdown('SIGTERM'));

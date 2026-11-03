@@ -5,6 +5,9 @@ import { applyDocumentDiff, validateDiff, validateDocument } from './validate.js
 const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 const MAX_FRAME_BYTES = 96 * 1024 * 1024;
 const HEARTBEAT_MS = 30000;
+const MAX_WRITE_BUFFER = 4 * 1024 * 1024;
+const MESSAGE_WINDOW_MS = 10000;
+const MESSAGE_LIMIT = 500;
 
 function encodeFrame(payload, opcode = 0x1) {
   const data = Buffer.isBuffer(payload) ? payload : Buffer.from(String(payload), 'utf8');
@@ -140,6 +143,12 @@ class Connection {
   }
 
   send(message) {
+    if (this.closed) return;
+    // 慢客户端保护：发送缓冲过大时断开，避免一个连接拖垮整个实例
+    if (this.socket.writableLength > MAX_WRITE_BUFFER) {
+      this.close(1013, 'slow consumer');
+      return;
+    }
     this.write(encodeFrame(JSON.stringify(message)));
   }
 
@@ -349,10 +358,22 @@ export function attachCollabServer(httpServer, { store, secret, logger = console
       projectId,
       alive: true,
       connection: null,
+      messageRate: { start: 0, count: 0 },
     };
 
     const connection = new Connection(socket, {
-      onMessage: (text) => handleMessage(client, text),
+      onMessage: (text) => {
+        const now = Date.now();
+        if (!client.messageRate || now - client.messageRate.start > MESSAGE_WINDOW_MS) {
+          client.messageRate = { start: now, count: 0 };
+        }
+        client.messageRate.count += 1;
+        if (client.messageRate.count > MESSAGE_LIMIT) {
+          connection.close(1008, 'message rate limit');
+          return;
+        }
+        handleMessage(client, text);
+      },
       onPong: () => { client.alive = true; },
       onClose: () => removeClient(client),
       onError: (error) => logger.error('[ws] 处理消息失败', error),
