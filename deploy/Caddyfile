@@ -1,0 +1,12 @@
+# Caddy 会自动申请/续期 HTTPS 证书，并自动支持 WebSocket
+# 用法：caddy run --config deploy/Caddyfile
+bim.example.com {
+	encode zstd gzip
+	reverse_proxy 127.0.0.1:8787 {
+		# STEP 转换可能耗时较长，放宽超时
+		transport http {
+			read_timeout 300s
+			write_timeout 300s
+		}
+	}
+}

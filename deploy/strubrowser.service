@@ -1,0 +1,17 @@
+[Unit]
+Description=StruBrowser BIM server
+After=network.target
+
+[Service]
+Type=simple
+User=strubrowser
+WorkingDirectory=/opt/strubrowser
+EnvironmentFile=/etc/strubrowser.env
+ExecStart=/usr/bin/node --experimental-sqlite server/index.js
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

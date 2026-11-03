@@ -1,0 +1,10 @@
+node_modules
+dist
+server/data
+server/convert/.venv
+.logs
+.tmp
+diagnostics
+docs
+*.log
+.git

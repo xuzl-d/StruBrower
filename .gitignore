@@ -1,0 +1,11 @@
+node_modules/
+dist/
+server/data/
+*.log
+.DS_Store
+.tmp/
+server/convert/.venv/
+server/convert/fixtures/*.bin
+.logs/
+
+.tools/

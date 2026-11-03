@@ -1,0 +1,19 @@
+services:
+  strubrowser:
+    build: .
+    image: strubrowser:latest
+    ports:
+      - "8787:8787"
+    environment:
+      # 必填：用于签发登录 token 和加密 AI Key，务必设置为随机长字符串并妥善保存
+      STRU_SECRET: ${STRU_SECRET:?请先设置 STRU_SECRET，例如 export STRU_SECRET=$(openssl rand -hex 32)}
+      STRU_ALLOW_REGISTER: ${STRU_ALLOW_REGISTER:-1}
+      STRU_AUTH_RATE_LIMIT: ${STRU_AUTH_RATE_LIMIT:-60}
+      STRU_AI_PROVIDER: ${STRU_AI_PROVIDER:-mock}
+      TZ: ${TZ:-Asia/Shanghai}
+    volumes:
+      - strubrowser-data:/data
+    restart: unless-stopped
+
+volumes:
+  strubrowser-data:
