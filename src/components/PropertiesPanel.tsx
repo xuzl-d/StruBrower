@@ -13,6 +13,7 @@ import { NumberField, ReadonlyRow, SelectField, TextField } from './Fields';
 
 interface PropertiesPanelProps {
   onCollapse?: () => void;
+  width?: number;
   project: ProjectDocument;
   selection: BimElement[];
   selectedLevel: Level | null;
@@ -26,6 +27,7 @@ interface PropertiesPanelProps {
 
 export default function PropertiesPanel({
   onCollapse,
+  width,
   project,
   selection,
   selectedLevel,
@@ -41,7 +43,10 @@ export default function PropertiesPanel({
   const typeUsage = type ? project.elements.filter((item) => item.typeId === type.id).length : 0;
 
   return (
-    <aside className="panel right-panel">
+    <aside
+      className="panel right-panel"
+      style={width ? { width, flexBasis: width } : undefined}
+    >
       <div className="panel-heading">
         <span>属性</span>
         <div className="panel-heading-actions">

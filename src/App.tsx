@@ -13,6 +13,7 @@ import VersionsDialog from './components/VersionsDialog';
 import MembersDialog from './components/MembersDialog';
 import AiPanel from './components/AiPanel';
 import SettingsDialog from './components/SettingsDialog';
+import PanelResizer from './components/PanelResizer';
 import MoveDialog from './components/MoveDialog';
 import type { MoveDelta } from './components/MoveDialog';
 import { ArrayDialog, MirrorDialog, RotateDialog } from './components/ModifyDialogs';
@@ -116,6 +117,16 @@ function readFileWithProgress(
   });
 }
 
+function readStoredWidth(key: string, fallback: number): number {
+  try {
+    const value = Number(localStorage.getItem(key));
+    if (!Number.isFinite(value)) return fallback;
+    return Math.min(560, Math.max(200, Math.round(value)));
+  } catch {
+    return fallback;
+  }
+}
+
 function downloadFile(filename: string, content: string, mimeType: string) {
   const url = URL.createObjectURL(new Blob([content], { type: mimeType }));
   const anchor = document.createElement('a');
@@ -174,6 +185,8 @@ export default function App() {
   const [latencyMs, setLatencyMs] = useState<number | null>(null);
   const slowWarnedRef = useRef(false);
   const [viewSettings, setViewSettings] = useState<ViewSettings>(() => loadViewSettings());
+  const [browserWidth, setBrowserWidth] = useState(() => readStoredWidth('strubrowser.ui.browserWidth', 250));
+  const [propertiesWidth, setPropertiesWidth] = useState(() => readStoredWidth('strubrowser.ui.propertiesWidth', 275));
   const [moveOpen, setMoveOpen] = useState(false);
   const [pendingCommand, setPendingCommand] = useState<CommandId | null>(null);
   const pendingCommandRef = useRef<CommandId | null>(null);
@@ -236,6 +249,22 @@ export default function App() {
   useEffect(() => {
     saveViewSettings(viewSettings);
   }, [viewSettings]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('strubrowser.ui.browserWidth', String(browserWidth));
+    } catch {
+      // 忽略存储失败
+    }
+  }, [browserWidth]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('strubrowser.ui.propertiesWidth', String(propertiesWidth));
+    } catch {
+      // 忽略存储失败
+    }
+  }, [propertiesWidth]);
 
   useEffect(() => {
     const tab = new URLSearchParams(window.location.search).get('settings');
@@ -1653,6 +1682,7 @@ export default function App() {
       <section className="workspace">
         {browserOpen ? (
         <ProjectBrowser
+          width={browserWidth}
           onCollapse={() => setBrowserOpen(false)}
           project={project}
           activeLevelId={activeLevelId}
@@ -1675,6 +1705,10 @@ export default function App() {
             <em>项目浏览器</em>
           </button>
         )}
+
+        {browserOpen ? (
+          <PanelResizer side="left" width={browserWidth} defaultWidth={250} min={200} max={460} onResize={setBrowserWidth} />
+        ) : null}
 
         <section className="viewport-column">
           <div className="viewport-toolbar">
@@ -1771,7 +1805,12 @@ export default function App() {
         </section>
 
         {propertiesOpen ? (
+          <PanelResizer side="right" width={propertiesWidth} defaultWidth={275} min={220} max={560} onResize={setPropertiesWidth} />
+        ) : null}
+
+        {propertiesOpen ? (
         <PropertiesPanel
+          width={propertiesWidth}
           onCollapse={() => setPropertiesOpen(false)}
           project={project}
           selection={selectedElements}

@@ -4,6 +4,7 @@ import type { ViewKind } from '../ModelViewport';
 
 interface ProjectBrowserProps {
   onCollapse?: () => void;
+  width?: number;
   project: ProjectDocument;
   activeLevelId: string;
   viewKind: ViewKind;
@@ -31,6 +32,7 @@ const SYMBOLS: Record<ElementCategory, string> = {
 
 export default function ProjectBrowser({
   onCollapse,
+  width,
   project,
   activeLevelId,
   viewKind,
@@ -50,7 +52,10 @@ export default function ProjectBrowser({
     project.types.find((type) => type.id === element.typeId)?.name ?? (element.category === 'mesh' ? element.source : '未指定类型');
 
   return (
-    <aside className="panel left-panel">
+    <aside
+      className="panel left-panel"
+      style={width ? { width, flexBasis: width } : undefined}
+    >
       <div className="panel-heading">
         <span>项目浏览器</span>
         <div className="panel-heading-actions">
