@@ -13,7 +13,6 @@ import VersionsDialog from './components/VersionsDialog';
 import MembersDialog from './components/MembersDialog';
 import AiPanel from './components/AiPanel';
 import SettingsDialog from './components/SettingsDialog';
-import AdminPanel from './components/AdminPanel';
 import MoveDialog from './components/MoveDialog';
 import type { MoveDelta } from './components/MoveDialog';
 import { ArrayDialog, MirrorDialog, RotateDialog } from './components/ModifyDialogs';
@@ -169,7 +168,6 @@ export default function App() {
   const [aiOpen, setAiOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<'view' | 'users' | 'ai'>('view');
-  const [adminOpen, setAdminOpen] = useState(false);
   const [rendererInfo, setRendererInfo] = useState<{ renderer: string; software: boolean } | null>(null);
   const softwareWarnedRef = useRef(false);
   const [apiReachable, setApiReachable] = useState<boolean | null>(null);
@@ -238,6 +236,14 @@ export default function App() {
   useEffect(() => {
     saveViewSettings(viewSettings);
   }, [viewSettings]);
+
+  useEffect(() => {
+    const tab = new URLSearchParams(window.location.search).get('settings');
+    if (tab === 'users' || tab === 'ai') {
+      setSettingsTab(tab);
+      setSettingsOpen(true);
+    }
+  }, []);
 
   useEffect(() => {
     document.documentElement.style.setProperty('--ui-font-scale', String(viewSettings.uiFontScale));
@@ -1525,16 +1531,6 @@ export default function App() {
             <button className="icon-action" title="撤销 (Ctrl/Cmd+Z)" onClick={undo} disabled={!canEdit || !history.past.length}>↶</button>
             <button className="icon-action" title="重做 (Shift+Ctrl/Cmd+Z)" onClick={redo} disabled={!canEdit || !history.future.length}>↷</button>
             <button
-              className={`icon-action ${browserOpen ? 'active' : ''}`}
-              title={browserOpen ? '隐藏项目浏览器' : '显示项目浏览器'}
-              onClick={() => setBrowserOpen((open) => !open)}
-            >▤</button>
-            <button
-              className={`icon-action ${propertiesOpen ? 'active' : ''}`}
-              title={propertiesOpen ? '隐藏属性面板' : '显示属性面板'}
-              onClick={() => setPropertiesOpen((open) => !open)}
-            >▥</button>
-            <button
               className={`icon-action ${settingsOpen ? 'active' : ''}`}
               title="设置（软件偏好 / 用户 / AI）"
               onClick={() => {
@@ -1542,13 +1538,6 @@ export default function App() {
                 setSettingsOpen(true);
               }}
             >⚙</button>
-            {user?.isAdmin ? (
-              <button
-                className={`icon-action ${adminOpen ? 'active' : ''}`}
-                title="管理后台（概览 / 项目 / 审计）"
-                onClick={() => setAdminOpen(true)}
-              >🛡</button>
-            ) : null}
             <button
               className={`icon-action ${aiOpen ? 'active' : ''}`}
               title="AI 建模助手（服务端模式）"
@@ -1658,7 +1647,7 @@ export default function App() {
           setSettingsOpen(true);
         }}
         isAdmin={Boolean(user?.isAdmin)}
-        onOpenAdmin={() => setAdminOpen(true)}
+        onOpenAdmin={() => window.open('/admin', '_blank', 'noopener')}
       />
 
       <section className="workspace">
@@ -1912,18 +1901,6 @@ export default function App() {
           onClose={() => setSettingsOpen(false)}
           onToast={(text) => setMessage(text)}
           onSelfUpdated={(nextUser) => setUser(nextUser)}
-        />
-      ) : null}
-
-      {adminOpen && user?.isAdmin ? (
-        <AdminPanel
-          onClose={() => setAdminOpen(false)}
-          onToast={(text) => setMessage(text)}
-          onOpenSettings={(tab) => {
-            setAdminOpen(false);
-            setSettingsTab(tab);
-            setSettingsOpen(true);
-          }}
         />
       ) : null}
 

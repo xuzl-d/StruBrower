@@ -274,7 +274,7 @@ export default function Ribbon({
                 <button
                   className="tool-button"
                   disabled={!isAdmin}
-                  title={isAdmin ? '系统概览 / 全部项目 / 审计日志' : '需要系统管理员'}
+                  title={isAdmin ? '在独立页面打开管理后台（仅系统管理员）' : '需要系统管理员'}
                   onClick={onOpenAdmin}
                 ><b>🛡</b><span>管理后台</span></button>
               </div>

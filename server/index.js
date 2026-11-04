@@ -640,6 +640,18 @@ async function handleApi(ctx) {
 
   /* ---------- 系统管理（超管后台：概览 / 项目 / 审计 / 用户 / AI） ---------- */
 
+  if (pathname === '/api/admin/login' && method === 'POST') {
+    checkAuthRate(req);
+    const body = await readJson(req);
+    const record = body.email ? store.findUserByEmail(body.email) : null;
+    if (!record || !verifyPassword(String(body.password ?? ''), record.passwordHash)) {
+      throw new HttpError(401, '邮箱或密码不正确');
+    }
+    if (!record.isAdmin) throw new HttpError(403, '该账号不是系统管理员');
+    store.audit(null, record.id, 'admin.login', { email: record.email });
+    return sendJson(res, 200, { token: createToken(record, SECRET), user: publicUser(record) });
+  }
+
   if (pathname === '/api/admin/overview' && method === 'GET') {
     requireSystemAdmin(ctx);
     const stats = store.documentStats();

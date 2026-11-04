@@ -85,6 +85,14 @@ check('删除项目写入审计', deleteAudit.data.events.some((event) => event.
 const normal = await api('POST', '/api/auth/register', {
   body: { email: `console-user-${stamp}@example.com`, name: 'Console User', password: 'secret123' },
 });
+const adminLoginEndpoint = await api('POST', '/api/admin/login', {
+  body: { email: 'admin-test@example.com', password: 'secret123' },
+});
+check('独立管理后台登录（管理员）', adminLoginEndpoint.status === 200 && adminLoginEndpoint.data.user.isAdmin === true, adminLoginEndpoint.status);
+check('普通账号不能登录管理后台', (await api('POST', '/api/admin/login', {
+  body: { email: `console-user-${stamp}@example.com`, password: 'secret123' },
+})).status === 403);
+
 check('注册普通用户', normal.status === 201, normal.status);
 check('普通用户读概览 403', (await api('GET', '/api/admin/overview', { token: normal.data.token })).status === 403);
 check('普通用户读项目列表 403', (await api('GET', '/api/admin/projects', { token: normal.data.token })).status === 403);
