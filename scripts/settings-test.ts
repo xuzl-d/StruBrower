@@ -20,6 +20,7 @@ check('默认设置包含高亮颜色', DEFAULT_VIEW_SETTINGS.highlightColor ===
 check('默认设置包含吸附步长', DEFAULT_VIEW_SETTINGS.snapStep === 0.1);
 check('默认开启旋转惯性', DEFAULT_VIEW_SETTINGS.rotateDamping === true);
 check('默认渲染分辨率 100%', DEFAULT_VIEW_SETTINGS.renderScale === 1);
+check('默认界面字号 100%', DEFAULT_VIEW_SETTINGS.uiFontScale === 1);
 
 const defaults = loadViewSettings(storage);
 check('空存储返回默认值', JSON.stringify(defaults) === JSON.stringify(DEFAULT_VIEW_SETTINGS), defaults);
@@ -51,6 +52,10 @@ const invalidScale = normalizeViewSettings({ renderScale: 0.6 });
 check('非法渲染分辨率回退默认', invalidScale.renderScale === DEFAULT_VIEW_SETTINGS.renderScale, invalidScale.renderScale);
 const scale = normalizeViewSettings({ renderScale: 0.75, rotateDamping: false });
 check('合法渲染分辨率/惯性开关保留', scale.renderScale === 0.75 && scale.rotateDamping === false, scale);
+
+const fontScale = normalizeViewSettings({ uiFontScale: 1.25 });
+check('合法界面字号保留', fontScale.uiFontScale === 1.25, fontScale.uiFontScale);
+check('非法界面字号回退默认', normalizeViewSettings({ uiFontScale: 1.2 }).uiFontScale === DEFAULT_VIEW_SETTINGS.uiFontScale);
 
 const partial = normalizeViewSettings({ highlightColor: '#00ff00' });
 check('部分字段与默认值合并', partial.highlightColor === '#00ff00' && partial.showCoordinates === DEFAULT_VIEW_SETTINGS.showCoordinates);

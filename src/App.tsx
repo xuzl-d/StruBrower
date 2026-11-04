@@ -240,6 +240,10 @@ export default function App() {
   }, [viewSettings]);
 
   useEffect(() => {
+    document.documentElement.style.setProperty('--ui-font-scale', String(viewSettings.uiFontScale));
+  }, [viewSettings.uiFontScale]);
+
+  useEffect(() => {
     if (rendererInfo?.software && !softwareWarnedRef.current) {
       softwareWarnedRef.current = true;
       setMessage('检测到软件渲染（无 GPU 加速）：已自动降低画质，卡顿与网络无关，建议使用有显卡的电脑或开启浏览器硬件加速');

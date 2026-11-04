@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { adminApi, ApiError } from '../data';
 import type { AdminUser, AiSettingsView, AuthUser } from '../data';
-import { DEFAULT_VIEW_SETTINGS, RENDER_SCALES, SNAP_STEPS } from '../settings';
+import { DEFAULT_VIEW_SETTINGS, FONT_SCALES, RENDER_SCALES, SNAP_STEPS } from '../settings';
 import type { ViewSettings } from '../settings';
 
 type Tab = 'view' | 'users' | 'ai';
@@ -317,6 +317,18 @@ export default function SettingsDialog({
                   ))}
                 </select>
                 <em>相对设备像素比；弱显卡 / 远程桌面建议 75%</em>
+              </label>
+              <label className="settings-inline-row">
+                <span>界面字号</span>
+                <select
+                  value={settings.uiFontScale}
+                  onChange={(event) => set('uiFontScale', Number(event.target.value))}
+                >
+                  {FONT_SCALES.map((scale) => (
+                    <option key={scale} value={scale}>{Math.round(scale * 100)}%</option>
+                  ))}
+                </select>
+                <em>整体放大/缩小界面文字，适合高分屏或小字看不清的电脑</em>
               </label>
               <label className="settings-inline-row">
                 <span>吸附步长</span>

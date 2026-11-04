@@ -33,6 +33,8 @@ export interface ViewSettings {
   rotateDamping: boolean;
   /** 渲染分辨率倍率（相对设备像素比），0.5 / 0.75 / 1 / 1.5 */
   renderScale: number;
+  /** 界面字号倍率，0.9 / 1 / 1.1 / 1.25 / 1.4 */
+  uiFontScale: number;
   /** 绘制吸附步长（米） */
   snapStep: number;
 }
@@ -40,6 +42,8 @@ export interface ViewSettings {
 export const SNAP_STEPS = [0.01, 0.05, 0.1, 0.25, 0.5, 1] as const;
 
 export const RENDER_SCALES = [0.5, 0.75, 1, 1.5] as const;
+
+export const FONT_SCALES = [0.9, 1, 1.1, 1.25, 1.4] as const;
 
 export const SETTINGS_STORAGE_KEY = 'strubrowser.settings.v1';
 
@@ -59,6 +63,7 @@ export const DEFAULT_VIEW_SETTINGS: ViewSettings = {
   gridSnap: true,
   rotateDamping: true,
   renderScale: 1,
+  uiFontScale: 1,
   snapStep: 0.1,
 };
 
@@ -108,6 +113,9 @@ export function normalizeViewSettings(input: unknown): ViewSettings {
     renderScale: RENDER_SCALES.includes(Number(source.renderScale) as (typeof RENDER_SCALES)[number])
       ? Number(source.renderScale)
       : DEFAULT_VIEW_SETTINGS.renderScale,
+    uiFontScale: FONT_SCALES.includes(Number(source.uiFontScale) as (typeof FONT_SCALES)[number])
+      ? Number(source.uiFontScale)
+      : DEFAULT_VIEW_SETTINGS.uiFontScale,
     snapStep: snap(source.snapStep, DEFAULT_VIEW_SETTINGS.snapStep),
   };
 }
