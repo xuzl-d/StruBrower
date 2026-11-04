@@ -43,7 +43,7 @@ export const SNAP_STEPS = [0.01, 0.05, 0.1, 0.25, 0.5, 1] as const;
 
 export const RENDER_SCALES = [0.5, 0.75, 1, 1.5] as const;
 
-export const FONT_SCALES = [0.9, 1, 1.1, 1.25, 1.4] as const;
+export const FONT_SCALES = [0.9, 1, 1.1, 1.25, 1.4, 1.6, 1.8] as const;
 
 export const SETTINGS_STORAGE_KEY = 'strubrowser.settings.v1';
 

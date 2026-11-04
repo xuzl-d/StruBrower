@@ -241,6 +241,7 @@ export default function App() {
 
   useEffect(() => {
     document.documentElement.style.setProperty('--ui-font-scale', String(viewSettings.uiFontScale));
+    document.body.classList.toggle('ui-large', viewSettings.uiFontScale >= 1.6);
   }, [viewSettings.uiFontScale]);
 
   useEffect(() => {

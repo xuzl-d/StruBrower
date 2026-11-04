@@ -28,6 +28,7 @@ button, input, select { font: inherit; }
 button { color: inherit; }
 
 .app-shell {
+  position: relative;
   display: flex;
   width: 100vw;
   height: 100vh;
@@ -506,7 +507,7 @@ button { color: inherit; }
 .number-input input { flex: 1; }
 .number-input em { color: #7c8ba0; font-size: calc(8px * var(--ui-font-scale, 1)); font-style: normal; }
 .property-field.readonly strong { color: #b9c7d8; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: calc(9px * var(--ui-font-scale, 1)); font-weight: 400; }
-.heading-note { color: #6f8096 !important; font-size: calc(8px * var(--ui-font-scale, 1)) !important; font-weight: 400; letter-spacing: 0; text-transform: none; }
+.heading-note { color: #6f8096 !important; font-size: 8px !important; font-weight: 400; letter-spacing: 0; text-transform: none; }
 .property-note { margin: 7px 0 5px; color: #75859b; font-size: calc(8.5px * var(--ui-font-scale, 1)); line-height: 1.65; }
 .properties-empty.multi-selection { height: auto; padding: 38px 18px; }
 
@@ -1541,3 +1542,22 @@ button { color: inherit; }
 .admin-audit-user { color: #c6d4e6; }
 .admin-audit-project { color: #7f90a7; overflow: hidden; text-overflow: ellipsis; }
 .admin-audit-detail { overflow: hidden; color: #6f8096; text-overflow: ellipsis; white-space: nowrap; }
+
+
+/* ---------- 大字号模式（>=160%） ---------- */
+body.ui-large .topbar { min-height: auto; }
+body.ui-large .document-actions { flex-wrap: nowrap; }
+body.ui-large .top-action,
+body.ui-large .brand-name,
+body.ui-large .brand-caption,
+body.ui-large .view-title,
+body.ui-large .view-title strong,
+body.ui-large .status-bar,
+body.ui-large .status-left,
+body.ui-large .status-right,
+body.ui-large .ribbon-tab,
+body.ui-large .group-caption { white-space: nowrap; }
+body.ui-large .tool-hint { display: none; }
+body.ui-large .status-bar { height: auto; min-height: 31px; }
+body.ui-large .status-left .status-divider:nth-of-type(n+4),
+body.ui-large .status-right .status-divider:nth-of-type(n+4) { display: none; }

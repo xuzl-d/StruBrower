@@ -328,7 +328,7 @@ export default function SettingsDialog({
                     <option key={scale} value={scale}>{Math.round(scale * 100)}%</option>
                   ))}
                 </select>
-                <em>整体放大/缩小界面文字，适合高分屏或小字看不清的电脑</em>
+                <em>整体放大界面文字（最大 180%）；更大可用浏览器缩放（Ctrl/Cmd + 加号）</em>
               </label>
               <label className="settings-inline-row">
                 <span>吸附步长</span>
