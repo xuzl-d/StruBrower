@@ -56,7 +56,8 @@ check('合法渲染分辨率/惯性开关保留', scale.renderScale === 0.75 && 
 const fontScale = normalizeViewSettings({ uiFontScale: 1.25 });
 check('合法界面字号保留', fontScale.uiFontScale === 1.25, fontScale.uiFontScale);
 check('非法界面字号回退默认', normalizeViewSettings({ uiFontScale: 1.2 }).uiFontScale === DEFAULT_VIEW_SETTINGS.uiFontScale);
-check('180% 字号合法', normalizeViewSettings({ uiFontScale: 1.8 }).uiFontScale === 1.8);
+check('125% 字号合法', normalizeViewSettings({ uiFontScale: 1.25 }).uiFontScale === 1.25);
+check('超出范围回退默认', normalizeViewSettings({ uiFontScale: 1.8 }).uiFontScale === DEFAULT_VIEW_SETTINGS.uiFontScale);
 
 const partial = normalizeViewSettings({ highlightColor: '#00ff00' });
 check('部分字段与默认值合并', partial.highlightColor === '#00ff00' && partial.showCoordinates === DEFAULT_VIEW_SETTINGS.showCoordinates);
