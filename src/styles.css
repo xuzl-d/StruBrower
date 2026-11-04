@@ -253,7 +253,28 @@ button { color: inherit; }
 .zoom-all-button:hover { border-color: #52749d; background: #223249; color: #e2ecf8; }
 .viewport-host { position: relative; min-height: 0; flex: 1; cursor: crosshair; }
 .viewport-host canvas { display: block; width: 100%; height: 100%; }
-.axis-indicator { position: absolute; z-index: 1; bottom: 17px; left: 18px; width: 52px; height: 52px; pointer-events: none; }
+.axis-indicator {
+  position: absolute;
+  z-index: 1;
+  bottom: 14px;
+  left: 16px;
+  width: 64px;
+  height: 64px;
+  overflow: visible;
+  pointer-events: none;
+}
+.axis-indicator text {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  font-weight: 800;
+  dominant-baseline: middle;
+  text-anchor: middle;
+  paint-order: stroke;
+  stroke: #0b111c;
+  stroke-width: 3px;
+  stroke-linejoin: round;
+  transition: opacity .12s;
+}
 .axis-origin { position: absolute; top: 24px; left: 24px; width: 5px; height: 5px; border-radius: 50%; background: #d5e0ef; box-shadow: 0 0 8px #0007; }
 .axis-arm { position: absolute; top: 25px; left: 26px; width: 24px; height: 3px; border-radius: 2px; transform-origin: left center; opacity: .95; }
 .axis-arm::after { position: absolute; top: -4px; right: -1px; width: 0; height: 0; border-top: 5.5px solid transparent; border-bottom: 5.5px solid transparent; border-left: 8px solid currentColor; content: ''; }

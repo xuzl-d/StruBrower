@@ -176,7 +176,7 @@ export default function ModelViewport(props: ModelViewportProps) {
   const cameraRef = useRef<PerspectiveCamera | OrthographicCamera | null>(null);
   const perspectiveRef = useRef<PerspectiveCamera | null>(null);
   const orthoRef = useRef<OrthographicCamera | null>(null);
-  const axisLabelsRef = useRef<HTMLDivElement>(null);
+  const axisLabelsRef = useRef<SVGSVGElement>(null);
   const targetRef = useRef(new Vector3(0, 0, 1.5));
   const previousZoomAllRef = useRef(zoomAllRequest);
   const activeLevelZRef = useRef(0);
@@ -910,15 +910,26 @@ export default function ModelViewport(props: ModelViewportProps) {
         <span className="snap-dot" />
         <span className="snap-label" />
       </div>
-      {settings.showAxisIndicator ? <div className="axis-indicator" ref={axisLabelsRef} aria-label="空间坐标系">
-        <span className="axis-origin" />
-        <span className="axis-arm axis-x" data-axis-arm="x" />
-        <span className="axis-arm axis-y" data-axis-arm="y" />
-        <span className="axis-arm axis-z" data-axis-arm="z" />
-        <span className="axis-label axis-x" data-axis="x">X</span>
-        <span className="axis-label axis-y" data-axis="y">Y</span>
-        <span className="axis-label axis-z" data-axis="z">Z</span>
-      </div> : null}
+      {settings.showAxisIndicator ? (
+        <svg className="axis-indicator" ref={axisLabelsRef} viewBox="-32 -32 64 64" aria-label="空间坐标系">
+          <circle cx="0" cy="0" r="2.2" fill="#d5e0ef" />
+          <g>
+            <line data-axis-line="x" x1="0" y1="0" x2="23" y2="0" stroke="#ff7777" strokeWidth="2.4" strokeLinecap="round" />
+            <polygon data-axis-arrow="x" points="23,0 16,-3.6 16,3.6" fill="#ff7777" />
+            <text data-axis-label="x" x="30.5" y="0" fill="#ff7777">X</text>
+          </g>
+          <g>
+            <line data-axis-line="y" x1="0" y1="0" x2="0" y2="-23" stroke="#65d895" strokeWidth="2.4" strokeLinecap="round" />
+            <polygon data-axis-arrow="y" points="0,-23 -3.6,-16 3.6,-16" fill="#65d895" />
+            <text data-axis-label="y" x="0" y="-30.5" fill="#65d895">Y</text>
+          </g>
+          <g>
+            <line data-axis-line="z" x1="0" y1="0" x2="0" y2="-23" stroke="#76aaff" strokeWidth="2.4" strokeLinecap="round" />
+            <polygon data-axis-arrow="z" points="0,-23 -3.6,-16 3.6,-16" fill="#76aaff" />
+            <text data-axis-label="z" x="0" y="-30.5" fill="#76aaff">Z</text>
+          </g>
+        </svg>
+      ) : null}
     </div>
   );
 
@@ -989,25 +1000,51 @@ function applySelection(models: Group, selection: string[], color: string): void
 }
 
 function updateAxisIndicator(
-  container: HTMLElement | null,
+  container: SVGSVGElement | null,
   camera: PerspectiveCamera | OrthographicCamera | null,
 ): void {
   if (!container || !camera) return;
+  const rotation = camera.quaternion.clone().invert();
+  const radius = 23;
   const axes = [
     { key: 'x', direction: new Vector3(1, 0, 0) },
     { key: 'y', direction: new Vector3(0, 1, 0) },
     { key: 'z', direction: new Vector3(0, 0, 1) },
   ];
   for (const axis of axes) {
-    const label = container.querySelector<HTMLElement>(`[data-axis="${axis.key}"]`);
-    const arm = container.querySelector<HTMLElement>(`[data-axis-arm="${axis.key}"]`);
-    if (!label || !arm) continue;
-    const direction = axis.direction.clone().applyQuaternion(camera.quaternion.clone().invert());
-    const screenLength = Math.hypot(direction.x, -direction.y);
-    const unitX = screenLength > 0.001 ? direction.x / screenLength : 0;
-    const unitY = screenLength > 0.001 ? -direction.y / screenLength : 0;
-    arm.style.transform = `rotate(${Math.atan2(unitY, unitX) * (180 / Math.PI)}deg)`;
-    label.style.transform = `translate(${unitX * 28}px, ${unitY * 28}px)`;
-    label.style.opacity = direction.z > 0 ? '1' : '0.42';
+    const line = container.querySelector<SVGLineElement>(`[data-axis-line="${axis.key}"]`);
+    const arrow = container.querySelector<SVGPolygonElement>(`[data-axis-arrow="${axis.key}"]`);
+    const label = container.querySelector<SVGTextElement>(`[data-axis-label="${axis.key}"]`);
+    if (!line || !arrow || !label) continue;
+
+    const direction = axis.direction.clone().applyQuaternion(rotation);
+    // 正交投影到屏幕：x 向右、y 向上（SVG 的 y 轴向下，所以取负）
+    const x = direction.x * radius;
+    const y = -direction.y * radius;
+    const length = Math.hypot(x, y);
+    const unitX = length > 0.001 ? x / length : 0;
+    const unitY = length > 0.001 ? y / length : -1;
+
+    line.setAttribute('x2', String(x));
+    line.setAttribute('y2', String(y));
+
+    const apexX = x;
+    const apexY = y;
+    const baseX = x - unitX * 7;
+    const baseY = y - unitY * 7;
+    const nx = -unitY;
+    const ny = unitX;
+    arrow.setAttribute(
+      'points',
+      `${apexX},${apexY} ${baseX + nx * 3.6},${baseY + ny * 3.6} ${baseX - nx * 3.6},${baseY - ny * 3.6}`,
+    );
+
+    label.setAttribute('x', String(x + unitX * 7.5));
+    label.setAttribute('y', String(y + unitY * 7.5));
+    // 指向屏幕深处的轴稍暗；几乎正对相机时隐藏文字，避免堆在原点
+    const depth = Math.min(1, length / radius);
+    line.style.opacity = String(0.35 + 0.65 * depth);
+    arrow.style.opacity = String(0.35 + 0.65 * depth);
+    label.style.opacity = length < 6 ? '0' : '1';
   }
 }
