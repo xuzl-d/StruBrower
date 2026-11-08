@@ -72,15 +72,22 @@ const MODEL_CACHE_TTL = 5 * 60_000;
 
 function normalizeModel(entry) {
   if (!entry || typeof entry.id !== 'string') return null;
-  const modalities = [
+  const declared = [
     ...(Array.isArray(entry.input_modalities) ? entry.input_modalities : []),
     ...(Array.isArray(entry.modalities) ? entry.modalities : []),
     ...(Array.isArray(entry.capabilities?.input) ? entry.capabilities.input : []),
-  ].map((item) => String(item).toLowerCase());
-  // 只看接口自报的能力，不靠模型名猜：宁可判成"不知道"，也不要凭 id 里有没有 vl 下结论
-  const image = modalities.includes('image')
-    || modalities.includes('vision')
-    || entry.capabilities?.vision === true;
+  ];
+  const modalities = declared.map((item) => String(item).toLowerCase());
+  // 网关是否**说过**能力：有的网关（cc.yjk.cn 等）只回 id/object/owned_by，一个字都不提模态。
+  // 这时必须判成 null「不知道」，不能判成 false「不支持」——否则多模态主模型会被误判成纯文本，
+  // 用户传图就得到「主模型不支持图片输入」，而去配独立视觉模型也白配。
+  const speaks = modalities.length > 0 || typeof entry.capabilities?.vision === 'boolean';
+  // 只看接口自报的能力，不靠模型名猜（不凭 id 里有没有 vl 下结论）
+  const image = !speaks
+    ? null
+    : modalities.includes('image')
+      || modalities.includes('vision')
+      || entry.capabilities?.vision === true;
   return { id: entry.id, image };
 }
 
@@ -111,7 +118,9 @@ export async function listModels(config, { force = false } = {}) {
 
 /**
  * 主模型能否读图：true / false / null（不知道）。
- * 清单里没有这个模型名（自建别名、代理改名）时也算「不知道」，按能读图试一次。
+ * 两种「不知道」：清单里没有这个模型名（自建别名、代理改名、私有部署）；
+ * 或者清单里压根没有模态字段（cc.yjk.cn 这类只回 id/owned_by 的网关）。
+ * 不知道时按能读图内联试一次，模型真读不了再由 rejectBlindReply 兜底。
  */
 export async function mainSupportsImages(config) {
   const models = await listModels(config);

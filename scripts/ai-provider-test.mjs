@@ -168,6 +168,17 @@ const server = http.createServer((req, res) => {
       res.end(toolReply({ reply: '照图建了一个陶瓷杯', ops: [{ op: 'addSolid', name: '陶瓷杯', features: [] }] }));
       return;
     }
+    if (req.url === '/blind/models') {
+      // 只回 id/owned_by、完全不说模态（cc.yjk.cn 这类网关）。判成「不知道」→ 按能读图试。
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ data: [{ id: 'mystery-model', object: 'model', owned_by: 'openai', type: 'model' }] }));
+      return;
+    }
+    if (req.url === '/blind/chat/completions') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(toolReply({ reply: '看图建好了', ops: [{ op: 'addSolid', name: '看图产物', features: [] }] }));
+      return;
+    }
     if (req.url === '/inline/chat/completions') {
       // 主模型自己就能读图：图片应当内联进建模请求，不额外走描述通道
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -421,6 +432,17 @@ check('主模型能读图时走内联直传', inlinePlan.vision?.inline === true
 check('内联请求体包含 image_url', JSON.stringify(JSON.parse(requested[requested.length - 1].body).messages).includes('image_url'));
 const inlineCalls = requested.slice(inlineBase).filter((item) => item.url.endsWith('/chat/completions')).length;
 check('内联只发 1 次模型请求', inlineCalls === 1, inlineCalls);
+
+// 网关不报模态（只回 id/owned_by）：必须当「不知道」，按能读图内联试，不能误判成纯文本
+const blindBase = requested.length;
+const blindProvider = createProvider({
+  provider: 'openai', baseUrl: `${baseUrl}/blind`, model: 'mystery-model', apiKey: 'sk-test', timeoutMs: 5000, ready: true,
+  vision: { enabled: false, model: '', baseUrl: '', apiKey: '' },
+});
+const blindPlan = await blindProvider.plan({ message: '照这张图建模', context: {}, images: imageList });
+check('网关不报模态时不误判成纯文本', blindPlan.vision?.inline === true, blindPlan.vision);
+check('网关不报模态时图片内联直传', JSON.stringify(JSON.parse(requested[requested.length - 1].body).messages).includes('image_url'));
+check('网关不报模态时只发 1 次请求', requested.slice(blindBase).filter((item) => item.url.endsWith('/chat/completions')).length === 1);
 
 console.log('生成阶段的预校验与自动修正');const repairDoc = {
   schemaVersion: 2,
