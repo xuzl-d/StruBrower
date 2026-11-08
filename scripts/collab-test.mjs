@@ -144,6 +144,9 @@ const patchA = await clientA.next('patch');
 const patchB = await clientB.next('patch');
 check('A 广播自己的补丁 rev=2', patchA.rev === 2 && patchA.diff.elements.put[0].id === 'collab-wall-1', patchA);
 check('B 收到同一补丁', patchB.rev === 2 && patchB.diff.elements.put[0].id === 'collab-wall-1', patchB);
+check('hello 带连接 id，发送端可识别自己的回显', helloA.clientId === patchA.from
+  && helloA.clientId !== helloB.clientId
+  && patchB.from === patchA.from, { helloA: helloA.clientId, helloB: helloB.clientId, from: patchA.from });
 
 const afterPatch = await api('GET', `/api/projects/${project.id}/document`, { token: a.token });
 check('服务端已持久化补丁 rev=2', afterPatch.data.rev === 2 && afterPatch.data.document.elements.length === 1, afterPatch.data);

@@ -2,6 +2,7 @@
  * 文档校验与差分应用（服务端权威实现）。
  * 客户端 src/collab/diff.ts 保持同一套差分语义：按构件 id 合并、数组整包替换。
  */
+import { coerceParams, paramTemplate } from '../shared/parametric.js';
 
 export function validateDocument(document) {
   if (!document || typeof document !== 'object') return '文档格式无效';
@@ -15,6 +16,22 @@ export function validateDocument(document) {
     if (!element || typeof element.id !== 'string' || typeof element.category !== 'string') {
       return '构件缺少 id 或 category';
     }
+    // 造型实体：特征树是渲染时求值的，限制规模避免一份文档把浏览器卡死
+    if (element.primitive && element.primitive.kind === 'solid') {
+      const features = element.primitive.features;
+      if (!Array.isArray(features) || !features.length) return `构件「${element.name ?? element.id}」的造型缺少特征`;
+      if (features.length > 48) return `构件「${element.name ?? element.id}」的造型特征超过 48 个`;
+    }
+    // 参数化构件：模型文档必须存在，参数必须能夹到合法区间（防止手改文档写出离谱尺寸）。
+    // 旧文档里可能残留已经不在库里的模板 id（例如拆分前的 pavilion），此时以特征树快照为准，
+    // 不把整份文档判无效——否则用户打开老项目就直接失败。
+    if (element.parametric) {
+      const template = paramTemplate(element.parametric.template);
+      if (template) {
+        const { issues } = coerceParams(template.id, element.parametric.params);
+        if (issues.length) return `构件「${element.name ?? element.id}」参数无效：${issues[0]}`;
+      }
+    }
   }
   return null;
 }
@@ -22,14 +39,24 @@ export function validateDocument(document) {
 /** 协作补丁的结构校验，防止异常客户端写入超大数据或错误形状。 */
 export function validateDiff(diff) {
   if (!diff || typeof diff !== 'object') return '补丁格式无效';
-  const allowed = new Set(['name', 'levels', 'grids', 'types', 'materials', 'elements']);
+  const allowed = new Set(['name', 'levels', 'grids', 'types', 'materials', 'layers', 'categoryOverrides', 'parameters', 'elements']);
   for (const key of Object.keys(diff)) {
     if (!allowed.has(key)) return `补丁包含未知字段 ${key}`;
   }
   if (diff.name !== undefined && (typeof diff.name !== 'string' || diff.name.length > 200)) return '项目名无效';
-  for (const key of ['levels', 'grids', 'types', 'materials']) {
+  for (const key of ['levels', 'grids', 'types', 'materials', 'layers', 'parameters']) {
     if (diff[key] !== undefined && (!Array.isArray(diff[key]) || diff[key].length > 5000)) {
       return `${key} 必须是数组且不超过 5000 项`;
+    }
+  }
+  if (diff.categoryOverrides !== undefined) {
+    const overrides = diff.categoryOverrides;
+    if (!overrides || typeof overrides !== 'object' || Array.isArray(overrides)
+      || Object.keys(overrides).length > 32) return 'categoryOverrides 无效';
+    for (const value of Object.values(overrides)) {
+      if (!value || typeof value !== 'object' || typeof value.visible !== 'boolean') {
+        return 'categoryOverrides 中的可见性必须是布尔值';
+      }
     }
   }
   if (diff.elements !== undefined) {
@@ -59,6 +86,11 @@ export function applyDocumentDiff(document, diff) {
   if (Array.isArray(diff.grids)) next.grids = diff.grids;
   if (Array.isArray(diff.types)) next.types = diff.types;
   if (Array.isArray(diff.materials)) next.materials = diff.materials;
+  if (Array.isArray(diff.layers)) next.layers = diff.layers;
+  if (Array.isArray(diff.parameters)) next.parameters = diff.parameters;
+  if (diff.categoryOverrides && typeof diff.categoryOverrides === 'object') {
+    next.categoryOverrides = diff.categoryOverrides;
+  }
 
   if (diff.elements && typeof diff.elements === 'object') {
     const remove = new Set(Array.isArray(diff.elements.remove) ? diff.elements.remove : []);

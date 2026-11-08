@@ -113,14 +113,47 @@ stop_web() {
   esac
 }
 
-# 复用旧服务端时检查功能版本
-check_server_features() {
-  local health
-  health=$(curl -sf --max-time 2 "http://127.0.0.1:${API_PORT}/api/health" 2>/dev/null || true)
-  case "$health" in
-    *'"features":'*'ai'*) : ;;
-    *) warn "检测到旧版服务端（缺少 AI 接口）。运行 ./start.sh restart 可重启到最新代码" ;;
-  esac
+# 端口上已有 API 时，判断它跑的是不是旧代码：
+# 进程启动时间（/api/health 的 startedAt）早于 server/ 里最近的源码修改时间 → 需要重启，
+# 否则改了 server/*.js 却复用旧进程，会一直报旧版行为（例如 AI 工具调用的 400）。
+# 退出码：0 = 旧代码需要重启，1 = 是最新代码，2 = 无法判断
+server_stale() {
+  node -e '
+    const fs = require("fs");
+    const path = require("path");
+    const root = process.argv[1];
+    const port = process.argv[2];
+    (async () => {
+      let startedAt = 0;
+      try {
+        const res = await fetch(`http://127.0.0.1:${port}/api/health`, { signal: AbortSignal.timeout(2000) });
+        const data = await res.json();
+        startedAt = Date.parse(String(data.startedAt ?? ""));
+      } catch {
+        process.exit(2);
+      }
+      if (!Number.isFinite(startedAt) || startedAt <= 0) process.exit(2);
+      const skip = new Set(["data", "convert", "node_modules"]);
+      let newest = 0;
+      const walk = (dir) => {
+        for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+          if (skip.has(entry.name)) continue;
+          const full = path.join(dir, entry.name);
+          if (entry.isDirectory()) walk(full);
+          else if (/\.(m?js|json)$/.test(entry.name)) {
+            newest = Math.max(newest, fs.statSync(full).mtimeMs);
+          }
+        }
+      };
+      try {
+        walk(path.join(root, "server"));
+      } catch {
+        process.exit(2);
+      }
+      // 留 1s 余量，避免同一秒内写入被误判
+      process.exit(newest > startedAt + 1000 ? 0 : 1);
+    })();
+  ' "$ROOT" "$API_PORT"
 }
 
 open_browser() {
@@ -199,9 +232,14 @@ if [ "$RESTART" = "1" ]; then
   stop_web 5174
 fi
 if api_alive; then
-  info "API 已在 ${API_PORT} 运行，直接复用"
-  check_server_features
-else
+  if server_stale; then
+    info "端口 ${API_PORT} 上的 API 跑的是旧代码，自动重启…"
+    stop_server
+  else
+    info "API 已在 ${API_PORT} 运行且代码未变，直接复用"
+  fi
+fi
+if ! api_alive; then
   if port_busy "$API_PORT"; then
     fail "端口 ${API_PORT} 被占用；可运行 PORT=9000 ./start.sh 换端口"
   fi

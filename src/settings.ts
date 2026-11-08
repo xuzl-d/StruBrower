@@ -37,6 +37,8 @@ export interface ViewSettings {
   uiFontScale: number;
   /** 绘制吸附步长（米） */
   snapStep: number;
+  /** 鼠标方案：revit = 左键点选 / 左键拖拽旋转 / 轻点两下框选、中键平移；classic = 左键拖拽旋转 + 两次单击框选 */
+  mouseScheme: 'revit' | 'classic';
 }
 
 export const SNAP_STEPS = [0.01, 0.05, 0.1, 0.25, 0.5, 1] as const;
@@ -65,6 +67,7 @@ export const DEFAULT_VIEW_SETTINGS: ViewSettings = {
   renderScale: 1,
   uiFontScale: 1,
   snapStep: 0.1,
+  mouseScheme: 'revit',
 };
 
 const HEX_COLOR = /^#[0-9a-f]{6}$/i;
@@ -117,6 +120,7 @@ export function normalizeViewSettings(input: unknown): ViewSettings {
       ? Number(source.uiFontScale)
       : DEFAULT_VIEW_SETTINGS.uiFontScale,
     snapStep: snap(source.snapStep, DEFAULT_VIEW_SETTINGS.snapStep),
+    mouseScheme: source.mouseScheme === 'classic' ? 'classic' : 'revit',
   };
 }
 

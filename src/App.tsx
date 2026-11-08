@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { BufferGeometry, Float32BufferAttribute, Mesh, Vector3 } from 'three';
+import type { DragEvent as ReactDragEvent } from 'react';
+import { BufferGeometry, Float32BufferAttribute, Vector3 } from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
-import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
 import ModelViewport from './ModelViewport';
-import type { Tool, ViewKind } from './ModelViewport';
+import type { Tool, ViewKind, ViewLookRequest, ViewportApi } from './ModelViewport';
 import Ribbon from './components/Ribbon';
 import type { RibbonTab } from './components/Ribbon';
 import ProjectBrowser from './components/ProjectBrowser';
@@ -11,26 +11,53 @@ import PropertiesPanel from './components/PropertiesPanel';
 import AuthGate from './components/AuthGate';
 import VersionsDialog from './components/VersionsDialog';
 import MembersDialog from './components/MembersDialog';
+import SolidDialog from './components/SolidDialog';
+import LibraryDialog from './components/LibraryDialog';
 import AiPanel from './components/AiPanel';
-import SettingsDialog from './components/SettingsDialog';
+import AccountCenter from './components/account/AccountCenter';
+import type { AccountSection } from './components/account/AccountCenter';
 import PanelResizer from './components/PanelResizer';
-import MoveDialog from './components/MoveDialog';
-import type { MoveDelta } from './components/MoveDialog';
-import { ArrayDialog, MirrorDialog, RotateDialog } from './components/ModifyDialogs';
-import type { ArrayDelta, MirrorDelta, RotateDelta } from './components/ModifyDialogs';
+import ModifyOptionsBar from './components/ModifyOptionsBar';
+import DrawCoordinateBar from './components/DrawCoordinateBar';
+import ScheduleDialog from './components/ScheduleDialog';
+import ImportDialog from './components/ImportDialog';
+import { buildImportGeometry, countImportTriangles, disposeParts, formatForFile, parseModelBuffer, IMPORT_FORMATS } from './import';
+import type { ImportedModel, ImportTransform } from './import';
+import LayersDialog from './components/LayersDialog';
+import MaterialsDialog from './components/MaterialsDialog';
+import ParametersDialog from './components/ParametersDialog';
 import { countTriangles, levelById } from './bim/document';
 import type { ProjectSummary } from './bim/document';
 import { booleanElement, exportObj, meshElementFromGeometry } from './bim/geometry';
-import { arrayElements, duplicateElements, mirrorElement, rotateElement, selectionCenter, translateElement } from './bim/edit';
+import { duplicateElements, translateElement } from './bim/edit';
+import { exportIfc } from './bim/ifc';
+import { DEFAULT_LAYER_ID, ensureDocumentLayers, isElementLocked } from './bim/layers';
+import {
+  ensureDocumentParameters, recomputeParameters, setElementFormula, setTypeFormula,
+} from './bim/parameters';
+import {
+  IMMEDIATE_COMMANDS, MODIFY_LABELS, MODIFY_SHORTCUTS,
+  advanceModify, createModifySession, finishModify, immediateModify, isReady,
+  modifyPrompt, stepBack, withSelection,
+} from './bim/modify';
+import type { ModifyClick, ModifyCommandId, ModifyOptions, ModifyOutcome, ModifySession } from './bim/modify';
+import { createPrimitiveElement, defaultPrimitive, PRIMITIVE_LABELS } from './bim/primitives';
+import type { PrimitiveKind } from './bim/primitives';
 import { createId } from './bim/id';
 import { loadViewSettings, saveViewSettings } from './settings';
 import type { ViewSettings } from './settings';
 import { createDemoProject, createProject, nextElementName } from './bim/template';
+import { solidFeaturesOf } from './bim/parametric';
+import { SOLID_TEMPLATES } from './bim/solidTemplates';
 import type {
   BimElement,
   FamilyType,
+  MeshInstance,
+  ParametricModel,
+  PrimitiveSpec,
   ProjectDocument,
   SlabInstance,
+  SolidFeature,
   Vec2,
   WallInstance,
   ColumnInstance,
@@ -51,6 +78,10 @@ import type { CollabStatus, CollabUser } from './collab/client';
 import { applyDocumentDiff, diffDocuments } from './collab/diff';
 import { loadStepImporter } from './occtImport';
 import { fetchServerStepMesh } from './step/convert';
+import {
+  emptyHistory, pushHistory as pushHistoryStack, redoHistory, undoHistory,
+} from './history';
+import type { History } from './history';
 
 const TOOL_LABELS: Record<Tool, string> = {
   select: '选择',
@@ -58,34 +89,17 @@ const TOOL_LABELS: Record<Tool, string> = {
   column: '柱',
   slab: '楼板',
   grid: '轴网',
+  primitive: '体量',
+};
+
+const TOOL_SHORTCUTS: Record<string, Tool> = {
+  WA: 'wall',
+  CL: 'column',
+  SB: 'slab',
+  GR: 'grid',
 };
 
 const HISTORY_LIMIT = 50;
-
-type CommandId =
-  | 'move'
-  | 'duplicate'
-  | 'rotate'
-  | 'mirror'
-  | 'array'
-  | 'delete'
-  | 'copy'
-  | 'union'
-  | 'subtract'
-  | 'intersect';
-
-const COMMAND_LABELS: Record<CommandId, string> = {
-  move: '移动',
-  duplicate: '复制',
-  rotate: '旋转',
-  mirror: '镜像',
-  array: '阵列',
-  delete: '删除',
-  copy: '复制到剪贴板',
-  union: '并集',
-  subtract: '差集',
-  intersect: '交集',
-};
 
 function readUiFlag(key: string): boolean {
   try {
@@ -136,7 +150,27 @@ function downloadFile(filename: string, content: string, mimeType: string) {
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-export default function App() {
+/** 地址栏别名 → 账户中心分区（兼容旧版 ?settings=users / ?settings=view） */
+const ACCOUNT_SECTION_ALIASES: Record<string, AccountSection> = {
+  profile: 'profile',
+  security: 'security',
+  password: 'security',
+  projects: 'projects',
+  preferences: 'preferences',
+  view: 'preferences',
+  users: 'users',
+  ai: 'ai',
+  system: 'system',
+  admin: 'system',
+};
+
+function readAccountSectionFromUrl(): AccountSection | null {
+  const params = new URLSearchParams(window.location.search);
+  const key = params.get('account') ?? params.get('settings');
+  return key ? ACCOUNT_SECTION_ALIASES[key] ?? null : null;
+}
+
+export default function App({ initialAccountSection }: { initialAccountSection?: AccountSection } = {}) {
   /* ---------- 会话与存储 ---------- */
   const [repository, setRepository] = useState<ProjectRepository | null>(null);
   const [mode, setMode] = useState<'local' | 'server' | null>(null);
@@ -156,6 +190,8 @@ export default function App() {
   const projectRef = useRef(project);
   projectRef.current = project;
   const lastSavedRef = useRef<ProjectDocument | null>(null);
+  /** 本端刚刚通过 HTTP 写入的 rev（如 AI 应用）：doc 广播回声按它识别，避免清空撤销栈。 */
+  const lastLocalRevRef = useRef<number | null>(null);
 
   const [hydrated, setHydrated] = useState(false);
   const [selection, setSelection] = useState<string[]>([]);
@@ -169,16 +205,40 @@ export default function App() {
   const [ribbonTab, setRibbonTab] = useState<RibbonTab>('architecture');
   const [message, setMessage] = useState('');
   const [hoverPoint, setHoverPoint] = useState<Vector3 | null>(null);
-  const [history, setHistory] = useState<{ past: ProjectDocument[]; future: ProjectDocument[] }>({ past: [], future: [] });
+  const [history, setHistory] = useState<History<ProjectDocument>>(() => emptyHistory());
+  // 与 history 同步的 ref：键盘连按 Ctrl+Z 时不会读到上一帧的旧栈
+  const historyRef = useRef<History<ProjectDocument>>(emptyHistory());
   const [saveState, setSaveState] = useState<'saved' | 'dirty' | 'saving'>('saved');
   const [zoomAllRequest, setZoomAllRequest] = useState(0);
+  /** 特征树编辑器：只对造型实体（primitive.kind === 'solid'）开放 */
+  const [solidEdit, setSolidEdit] = useState<{
+    id: string;
+    name: string;
+    features: SolidFeature[];
+    position: Vec2;
+    rotation: number;
+    /** 参数化模型（模板 + 参数）；有它才算「可调尺寸」的构件 */
+    parametric?: ParametricModel | null;
+  } | null>(null);
+  /** 模型库：预置造型的图形化入口（Ribbon 建筑页 → 模型库） */
+  const [libraryOpen, setLibraryOpen] = useState(false);
   const [fitElementId, setFitElementId] = useState<string | null>(null);
   const [isImporting, setIsImporting] = useState(false);
   const [importProgress, setImportProgress] = useState<ImportProgress | null>(null);
+  /** 解析完成、等待用户确认轴向 / 单位的模型 */
+  const [importPending, setImportPending] = useState<{ fileName: string; model: ImportedModel } | null>(null);
+  /** 拖文件到窗口时的提示层 */
+  const [dragActive, setDragActive] = useState(false);
+  const dragDepthRef = useRef(0);
+  /** 一次拖入多个模型时排队：确认/取消当前模型后自动解析下一个 */
+  const importQueueRef = useRef<Array<{ file: File; resources?: Map<string, string> }>>([]);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [aiOpen, setAiOpen] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [settingsTab, setSettingsTab] = useState<'view' | 'users' | 'ai'>('view');
+  /** AI 助手停靠到右侧固定栏时占用的宽度；工作区据此让出空间，避免遮住属性面板与视口 */
+  const [aiDockWidth, setAiDockWidth] = useState(0);
+  /** 账户中心（右上角用户名）：账号 / 项目 / 软件设置 + 超管专属管理 */
+  const [accountOpen, setAccountOpen] = useState(Boolean(initialAccountSection));
+  const [accountSection, setAccountSection] = useState<AccountSection>(initialAccountSection ?? 'profile');
   const [rendererInfo, setRendererInfo] = useState<{ renderer: string; software: boolean } | null>(null);
   const softwareWarnedRef = useRef(false);
   const [apiReachable, setApiReachable] = useState<boolean | null>(null);
@@ -187,20 +247,69 @@ export default function App() {
   const [viewSettings, setViewSettings] = useState<ViewSettings>(() => loadViewSettings());
   const [browserWidth, setBrowserWidth] = useState(() => readStoredWidth('strubrowser.ui.browserWidth', 250));
   const [propertiesWidth, setPropertiesWidth] = useState(() => readStoredWidth('strubrowser.ui.propertiesWidth', 275));
-  const [moveOpen, setMoveOpen] = useState(false);
-  const [pendingCommand, setPendingCommand] = useState<CommandId | null>(null);
-  const pendingCommandRef = useRef<CommandId | null>(null);
-  pendingCommandRef.current = pendingCommand;
-  const [rotateOpen, setRotateOpen] = useState(false);
-  const [mirrorOpen, setMirrorOpen] = useState(false);
-  const [arrayOpen, setArrayOpen] = useState(false);
+  /* Revit 式修改命令：上下文会话 + 视口取点，取代旧版弹窗填数字 */
+  const [modify, setModify] = useState<ModifySession | null>(null);
+  const modifyRef = useRef<ModifySession | null>(null);
+  modifyRef.current = modify;
+  const cursorRef = useRef<Vec2 | null>(null);
+  /**
+   * 视口控制能力（由 ModelViewport 注册）：AI 应用修改后截图看自己的成品；
+   * 也可以按 AI 的请求转动视角，让它「转着看」再改。
+   */
+  const viewportRef = useRef<ViewportApi | null>(null);
+  const viewKindRef = useRef<ViewKind>(viewKind);
+  viewKindRef.current = viewKind;
+
+  /**
+   * 交给 AI 助手的视口句柄。平面视图会锁死相机，所以要先切回三维再转；
+   * 切视图会让 ModelViewport 重建，得等一拍才有新的句柄，因此 look 是异步的。
+   */
+  const aiViewport = useMemo(() => ({
+    capture: () => viewportRef.current?.capture() ?? null,
+    camera: () => viewportRef.current?.camera() ?? null,
+    fitAll: () => viewportRef.current?.fitAll() ?? false,
+    look: (request: ViewLookRequest) => new Promise<boolean>((resolve) => {
+      if (!viewportRef.current) {
+        resolve(false);
+        return;
+      }
+      if (viewKindRef.current !== 'plan') {
+        resolve(viewportRef.current.look(request));
+        return;
+      }
+      setViewKind('3d');
+      window.setTimeout(() => resolve(viewportRef.current?.look(request) ?? false), 260);
+    }),
+  }), []);
+  const shortcutRef = useRef({ buffer: '', at: 0 });
+  const shiftConstrainRef = useRef(false);
+  const [primitiveKind, setPrimitiveKind] = useState<PrimitiveKind | null>(null);
+  const [scheduleOpen, setScheduleOpen] = useState(false);
+  const [layersOpen, setLayersOpen] = useState(false);
+  const [materialsOpen, setMaterialsOpen] = useState(false);
+  const [parametersOpen, setParametersOpen] = useState(false);
+  /** 当前图层（CAD 语义）：新绘制 / 新导入的构件自动归入此层 */
+  const [currentLayerId, setCurrentLayerId] = useState(DEFAULT_LAYER_ID);
+  const currentLayerRef = useRef(currentLayerId);
+  currentLayerRef.current = currentLayerId;
   const clipboardRef = useRef<BimElement[] | null>(null);
   const pasteCountRef = useRef(1);
   const apiReachableRef = useRef<boolean | null>(null);
   const [browserOpen, setBrowserOpen] = useState(() => readUiFlag('strubrowser.ui.browser'));
   const [propertiesOpen, setPropertiesOpen] = useState(() => readUiFlag('strubrowser.ui.properties'));
 
+  /** 是否有模态弹窗打开：打开时锁定主界面（屏蔽快捷键、点击空白不关闭） */
+  const modalOpen = layersOpen || materialsOpen || scheduleOpen || parametersOpen
+    || accountOpen || versionsOpen || membersOpen || importPending !== null;
+  const modalOpenRef = useRef(false);
+  modalOpenRef.current = modalOpen;
+
   const currentSummary = summaries.find((item) => item.id === project.id);
+  /** 本地模式没有登录用户：账户中心退化为「我的项目 + 软件设置」，用一个本机身份占位 */
+  const accountUser: AuthUser | null = user
+    ?? (mode === 'local'
+      ? { id: 'local-device', email: '本机浏览器', name: '本地用户', isAdmin: false }
+      : null);
   const role = mode === 'server' ? currentSummary?.role : 'admin';
   const canEdit = mode !== 'server' || role === 'editor' || role === 'admin';
   const isAdmin = mode !== 'server' || role === 'admin';
@@ -266,12 +375,39 @@ export default function App() {
     }
   }, [propertiesWidth]);
 
+  /* 深链：?account=users / ?settings=ai 直接打开账户中心对应页（兼容旧版 ?settings=users） */
   useEffect(() => {
-    const tab = new URLSearchParams(window.location.search).get('settings');
-    if (tab === 'users' || tab === 'ai') {
-      setSettingsTab(tab);
-      setSettingsOpen(true);
+    const target = readAccountSectionFromUrl();
+    if (target) {
+      setAccountSection(target);
+      setAccountOpen(true);
     }
+  }, []);
+
+  /* 账户中心是整页：地址栏跟着走，刷新、分享、后退都能回到同一页 */
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    if (accountOpen) url.searchParams.set('account', accountSection);
+    else url.searchParams.delete('account');
+    url.searchParams.delete('settings');
+    const next = `${url.pathname}${url.search}${url.hash}`;
+    const current = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+    if (next !== current) window.history.replaceState(window.history.state, '', next);
+  }, [accountOpen, accountSection]);
+
+  /* 浏览器前进 / 后退：按地址栏还原 */
+  useEffect(() => {
+    const onPopState = () => {
+      const target = readAccountSectionFromUrl();
+      if (target) {
+        setAccountSection(target);
+        setAccountOpen(true);
+      } else {
+        setAccountOpen(false);
+      }
+    };
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
   }, []);
 
   useEffect(() => {
@@ -301,15 +437,6 @@ export default function App() {
       setMessage(`网络延迟较高（${elapsed} ms）：渲染是本地的不受影响，但保存/协同会慢；建议使用离使用者更近的服务器或 Tailscale/局域网`);
     }
   }, [mode]);
-
-  useEffect(() => {
-    if (!pendingCommand) return;
-    const isBoolean = pendingCommand === 'union' || pendingCommand === 'subtract' || pendingCommand === 'intersect';
-    if (!isBoolean || selection.length !== 2) return;
-    setPendingCommand(null);
-    runBoolean(pendingCommand);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pendingCommand, selection]);
 
   useEffect(() => {
     if (mode !== 'server') {
@@ -343,14 +470,17 @@ export default function App() {
           loaded = createDemoProject();
           await repository.save(loaded);
         }
+        loaded = normalizeExternal(loaded);
         if (cancelled) return;
         setProject(loaded);
         projectRef.current = loaded;
         lastSavedRef.current = loaded;
+    lastLocalRevRef.current = null;
+        lastLocalRevRef.current = null;
         setActiveLevelId(loaded.levels[0]?.id ?? '');
         setSelectedLevelId(null);
         setSelection([]);
-        setHistory({ past: [], future: [] });
+        resetHistory();
         setViewKind('3d');
         setViewLevelId(null);
         setTool('select');
@@ -397,29 +527,42 @@ export default function App() {
         setCollabUsers(users);
         // 本地没有未保存修改时，采用服务端快照，保证加入房间时状态一致
         if (projectRef.current === lastSavedRef.current) {
-          setProject(document);
-          projectRef.current = document;
-          lastSavedRef.current = document;
+          const normalized = normalizeExternal(document);
+          setProject(normalized);
+          projectRef.current = normalized;
+          lastSavedRef.current = normalized;
         }
       },
-      onPatch: ({ rev, diff }) => {
+      onPatch: ({ rev, diff, self }) => {
         repository.adoptRevision?.(project.id, rev);
+        // 自己发出的补丁服务端也会回显：本地已经应用过，只需同步 rev。
+        // 若把回显再应用一遍，会用旧快照覆盖本地后续编辑，并把撤销栈清空（表现为 Ctrl+Z 失效）。
+        if (self) {
+          setSaveState('saved');
+          return;
+        }
         setProject((current) => {
-          const next = applyDocumentDiff(current, diff);
+          const next = normalizeExternal(applyDocumentDiff(current, diff));
           projectRef.current = next;
           lastSavedRef.current = next;
           return next;
         });
-        setHistory({ past: [], future: [] });
+        resetHistory();
         setSaveState('saved');
       },
       onDocument: ({ rev, document }) => {
         repository.adoptRevision?.(project.id, rev);
+        // 本端刚写入的 rev（AI 应用等）已经应用到本地，跳过回声以保留撤销栈
+        if (lastLocalRevRef.current === rev) {
+          setSaveState('saved');
+          return;
+        }
         if (projectRef.current === lastSavedRef.current) {
-          setProject(document);
-          projectRef.current = document;
-          lastSavedRef.current = document;
-          setHistory({ past: [], future: [] });
+          const normalized = normalizeExternal(document);
+          setProject(normalized);
+          projectRef.current = normalized;
+          lastSavedRef.current = normalized;
+          resetHistory();
           setSaveState('saved');
           setMessage(`模型已更新（rev ${rev}）`);
         } else {
@@ -536,6 +679,25 @@ export default function App() {
     }
   }
 
+  /** 外部载入 / 协作补丁：补齐新字段并按关联公式重算，保证各端一致。 */
+  function normalizeExternal(document: ProjectDocument): ProjectDocument {
+    return recomputeParameters(ensureDocumentParameters(ensureDocumentLayers(document))).project;
+  }
+
+  /* ---------- 撤销栈 ---------- */
+  function writeHistory(next: History<ProjectDocument>) {
+    historyRef.current = next;
+    setHistory(next);
+  }
+
+  function resetHistory() {
+    writeHistory(emptyHistory());
+  }
+
+  function pushHistory(previous: ProjectDocument) {
+    writeHistory(pushHistoryStack(historyRef.current, previous, HISTORY_LIMIT));
+  }
+
   function commit(mutator: (document: ProjectDocument) => ProjectDocument, label: string) {
     if (!canEdit) {
       setMessage('当前角色为查看者，无法修改项目。');
@@ -544,29 +706,50 @@ export default function App() {
     const current = projectRef.current;
     const next = mutator(current);
     if (next === current) return;
-    const stamped = { ...next, updatedAt: new Date().toISOString() };
-    setHistory((previous) => ({
-      past: [...previous.past.slice(-(HISTORY_LIMIT - 1)), current],
-      future: [],
-    }));
-    setProject(stamped);
-    projectRef.current = stamped;
+    // 图层规范化：旧文档自动补默认图层，新构件归入「当前图层」（缺省按类别）
+    const normalized = ensureDocumentLayers({ ...next, updatedAt: new Date().toISOString() });
+    const existing = new Set(current.elements.map((element) => element.id));
+    const rawById = new Map(next.elements.map((element) => [element.id, element]));
+    // 复制/阵列产生的新构件会继承源构件图层；只有完全没有图层信息的新构件才用当前图层
+    const currentLayer = currentLayerRef.current || DEFAULT_LAYER_ID;
+    const stamped = {
+      ...normalized,
+      elements: normalized.elements.map((element) => {
+        if (existing.has(element.id)) return element;
+        const raw = rawById.get(element.id);
+        return raw && !raw.layerId ? { ...element, layerId: currentLayer } : element;
+      }),
+    };
+    // 参数关联更新：任何文档变更都按「全局参数 → 类型 → 实例」依赖顺序重算一次，
+    // 几何、派生尺寸、明细表与 IFC 全部读同一份文档，因此自动跟随刷新。
+    const { project: linked, report } = recomputeParameters(ensureDocumentParameters(stamped));
+    pushHistory(current);
+    setProject(linked);
+    projectRef.current = linked;
     const client = collabRef.current;
     if (client?.online) {
-      const diff = diffDocuments(current, stamped);
+      const diff = diffDocuments(current, linked);
       if (diff && client.sendPatch(diff)) {
-        lastSavedRef.current = stamped;
+        lastSavedRef.current = linked;
         setSaveState('saved');
       }
     }
-    setMessage(label);
+    let note = '';
+    if (report.updates.length) {
+      note += ` · 联动更新 ${report.updates.length} 项参数`;
+      if (report.affectedElements) note += `（${report.affectedElements} 个构件）`;
+    }
+    if (report.issues.length) note += ` · ${report.issues.length} 个公式错误（见参数关联管理器）`;
+    setMessage(`${label}${note}`);
   }
 
   function undo() {
-    if (!canEdit || !history.past.length) return;
-    const previous = history.past[history.past.length - 1]!;
-    setHistory({ past: history.past.slice(0, -1), future: [projectRef.current, ...history.future].slice(0, HISTORY_LIMIT) });
+    if (!canEdit) return;
+    const result = undoHistory(historyRef.current, projectRef.current, HISTORY_LIMIT);
+    if (!result) return;
     const before = projectRef.current;
+    const previous = result.value;
+    writeHistory(result.history);
     setProject(previous);
     projectRef.current = previous;
     setSelection((current) => current.filter((id) => previous.elements.some((element) => element.id === id)));
@@ -575,10 +758,12 @@ export default function App() {
   }
 
   function redo() {
-    if (!canEdit || !history.future.length) return;
-    const next = history.future[0]!;
-    setHistory({ past: [...history.past, projectRef.current].slice(-HISTORY_LIMIT), future: history.future.slice(1) });
+    if (!canEdit) return;
+    const result = redoHistory(historyRef.current, projectRef.current, HISTORY_LIMIT);
+    if (!result) return;
     const before = projectRef.current;
+    const next = result.value;
+    writeHistory(result.history);
     setProject(next);
     projectRef.current = next;
     setSelection((current) => current.filter((id) => next.elements.some((element) => element.id === id)));
@@ -604,75 +789,291 @@ export default function App() {
     setMessage('已退出工具');
   }
 
-  /** Esc：退出当前工具 + 清空选择 + 取消标高选中 */
+  /** Esc：Revit 逐级退出——先关弹窗，再退回上一个取点，退出命令，最后清空选择 */
   function escape() {
-    if (pendingCommandRef.current) {
-      setPendingCommand(null);
-      setMessage('已取消命令');
+    if (modalOpen) {
+      if (importPending) cancelImport();
+      setLayersOpen(false);
+      setMaterialsOpen(false);
+      setScheduleOpen(false);
+      setParametersOpen(false);
+      setAccountOpen(false);
+      setVersionsOpen(false);
+      setMembersOpen(false);
+      return;
+    }
+    const current = modifyRef.current;
+    if (current && current.status !== 'finished') {
+      const next = stepBack(current);
+      if (next.status === 'finished') {
+        setModify(null);
+        modifyRef.current = null;
+        setMessage(`已退出${MODIFY_LABELS[current.command]}命令`);
+      } else {
+        setModify(next);
+        modifyRef.current = next;
+        setMessage(modifyPrompt(next));
+      }
       return;
     }
     const hadSelection = selection.length > 0 || selectedLevelId !== null;
+    // 绘制中先退回第一点，再按一次才退出工具（与 Revit 逐级退出一致）
+    if (draftStart) {
+      setDraftStart(null);
+      setMessage('已取消第一点，重新拾取');
+      return;
+    }
     setTool('select');
     setDraftStart(null);
     setSelection([]);
     setSelectedLevelId(null);
+    setModify(null);
+    modifyRef.current = null;
     if (hadSelection || tool !== 'select') setMessage('已取消选择');
   }
 
   function deleteSelection() {
     if (!selection.length || !canEdit) return;
-    const removed = new Set(selection);
-    commit(
-      (document) => ({ ...document, elements: document.elements.filter((element) => !removed.has(element.id)) }),
-      `已删除 ${selection.length} 个构件`,
+    applyOutcome(immediateModify(projectRef.current, 'delete', selection));
+  }
+
+  /* ---------- Revit 式修改命令 ---------- */
+
+  /** 同步更新会话状态，保证同一个事件里连续两次取点读到最新状态。 */
+  function updateModify(mutator: (session: ModifySession) => ModifySession): void {
+    const current = modifyRef.current;
+    if (!current) return;
+    const next = mutator(current);
+    modifyRef.current = next;
+    setModify(next);
+  }
+
+  function clearModify(): void {
+    setModify(null);
+    modifyRef.current = null;
+  }
+
+  function applyOutcome(outcome: ModifyOutcome): void {
+    if (outcome.error) {
+      setMessage(outcome.error);
+      return;
+    }
+    if (outcome.elements !== projectRef.current.elements) {
+      commit((document) => ({ ...document, elements: outcome.elements }), outcome.label || '已修改构件');
+    } else if (outcome.label) {
+      setMessage(outcome.label);
+    }
+    if (outcome.note) setMessage(`${outcome.label}；${outcome.note}`);
+    setSelection(outcome.selection);
+  }
+
+  function startModifyCommand(command: ModifyCommandId): void {
+    if (!canEdit && command !== 'measure') {
+      setMessage('当前角色为查看者，无法修改项目');
+      return;
+    }
+    if (IMMEDIATE_COMMANDS.has(command)) {
+      applyOutcome(immediateModify(projectRef.current, command as 'pin' | 'unpin' | 'delete', selection));
+      return;
+    }
+    const session = createModifySession(command, projectRef.current, selection);
+    setModify(session);
+    modifyRef.current = session;
+    setTool('select');
+    setDraftStart(null);
+    setRibbonTab('modify');
+    if (session.status === 'await-selection') {
+      setMessage(`${MODIFY_LABELS[command]}：请先选择构件（Shift 加选），选好后按 Enter 或直接开始取点`);
+    } else {
+      setMessage(modifyPrompt(session));
+    }
+  }
+
+  function handleModifyClick(click: ModifyClick): void {
+    const current = modifyRef.current;
+    if (!current || current.status !== 'active') return;
+    const next = advanceModify(current, click);
+    modifyRef.current = next;
+    setModify(next);
+    if (!isReady(next, cursorRef.current)) return;
+    const outcome = finishModify(projectRef.current, next, cursorRef.current);
+    if (outcome.error) {
+      // 无效取点（例如距离为 0）：退回上一步，允许用户重新取点
+      const retry = stepBack(next);
+      modifyRef.current = retry;
+      setModify(retry);
+      setMessage(outcome.error);
+      return;
+    }
+    applyOutcome(outcome);
+    if (outcome.keepSession) {
+      modifyRef.current = outcome.keepSession;
+      setModify(outcome.keepSession);
+    } else {
+      clearModify();
+    }
+  }
+
+  function finishModifyCommand(): void {
+    const current = modifyRef.current;
+    if (!current) return;
+    if (current.status === 'await-selection') {
+      if (!selection.length) {
+        setMessage('请先选择构件');
+        return;
+      }
+      updateModify((session) => withSelection(session, projectRef.current, selection));
+      setMessage(modifyPrompt(modifyRef.current!));
+      return;
+    }
+    const outcome = finishModify(projectRef.current, current, cursorRef.current);
+    if (outcome.error) {
+      setMessage(outcome.error);
+      return;
+    }
+    applyOutcome(outcome);
+    if (outcome.keepSession) {
+      modifyRef.current = outcome.keepSession;
+      setModify(outcome.keepSession);
+    } else {
+      clearModify();
+    }
+  }
+
+  function updateModifyOptions(patch: Partial<ModifyOptions>): void {
+    updateModify((session) => ({ ...session, options: { ...session.options, ...patch } }));
+  }
+
+  function dragMoveSelection(dx: number, dy: number, copy: boolean, ids: string[]): void {
+    if (!canEdit) {
+      setMessage('当前角色为查看者，无法修改项目');
+      return;
+    }
+    const picked = projectRef.current.elements.filter(
+      (element) => ids.includes(element.id) && !isElementLocked(projectRef.current, element),
     );
-    setSelection([]);
+    if (!picked.length) {
+      setMessage('选中的构件已锁定，请先解锁');
+      return;
+    }
+    const idsSet = new Set(picked.map((element) => element.id));
+    if (copy) {
+      const copies = duplicateElements(projectRef.current, picked, { dx, dy });
+      commit((document) => ({ ...document, elements: [...document.elements, ...copies] }),
+        `拖拽复制 ${copies.length} 个构件（${Math.hypot(dx, dy).toFixed(2)} m）`);
+      setSelection(copies.map((element) => element.id));
+    } else {
+      commit(
+        (document) => ({
+          ...document,
+          elements: document.elements.map((element) => (
+            idsSet.has(element.id) ? translateElement(element, { dx, dy }) : element
+          )),
+        }),
+        `拖拽移动 ${picked.length} 个构件（${Math.hypot(dx, dy).toFixed(2)} m）`,
+      );
+      setSelection([...idsSet]);
+    }
   }
 
   const actionsRef = useRef({
-    undo,
-    redo,
-    deleteSelection,
-    cancelTool,
-    escape,
-    copySelection,
-    pasteSelection,
+    undo, redo, deleteSelection, cancelTool, escape,
+    copySelection, pasteSelection,
     duplicateSelection: () => duplicateSelection(),
     nudgeSelection,
-    continueCommand,
-    cancelCommand,
+    finishModifyCommand,
+    startModifyCommand,
+    dragMoveSelection,
+    saveNow: () => void saveNow(),
+    selectAll: selectAllElements,
+    cutSelection,
+    renameSelection: renameSelectedElement,
+    hideSelection,
+    showAll: showAllElements,
+    zoomFitAll: zoomToFitAll,
+    zoomFitSelection: zoomToFitSelection,
+    toggleProperties: () => setPropertiesOpen((open) => !open),
+    toggleBrowser: () => setBrowserOpen((open) => !open),
+    startTool: chooseTool,
   });
   actionsRef.current = {
-    undo,
-    redo,
-    deleteSelection,
-    cancelTool,
-    escape,
-    copySelection,
-    pasteSelection,
+    undo, redo, deleteSelection, cancelTool, escape,
+    copySelection, pasteSelection,
     duplicateSelection: () => duplicateSelection(),
     nudgeSelection,
-    continueCommand,
-    cancelCommand,
+    finishModifyCommand,
+    startModifyCommand,
+    dragMoveSelection,
+    saveNow: () => void saveNow(),
+    selectAll: selectAllElements,
+    cutSelection,
+    renameSelection: renameSelectedElement,
+    hideSelection,
+    showAll: showAllElements,
+    zoomFitAll: zoomToFitAll,
+    zoomFitSelection: zoomToFitSelection,
+    toggleProperties: () => setPropertiesOpen((open) => !open),
+    toggleBrowser: () => setBrowserOpen((open) => !open),
+    startTool: chooseTool,
   };
 
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
       const typing = Boolean(target && ['INPUT', 'SELECT', 'TEXTAREA'].includes(target.tagName));
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'z') {
+      const mod = event.metaKey || event.ctrlKey;
+      // Ctrl/Cmd+S：保存（输入框里也生效，但只保存文档，不打断输入）
+      if (mod && event.key.toLowerCase() === 's') {
+        event.preventDefault();
+        if (!event.repeat) actionsRef.current.saveNow();
+        return;
+      }
+      // 模态弹窗打开时锁定主界面：只响应 Esc 关闭弹窗，其余快捷键交给弹窗自身
+      // （不 preventDefault，保留输入框里的原生撤销/重做/全选/粘贴）
+      if (modalOpenRef.current) {
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          actionsRef.current.escape();
+        }
+        return;
+      }
+      // 输入框内保留浏览器原生的撤销/重做、全选、剪切
+      if (typing) return;
+      if (mod && event.key.toLowerCase() === 'z') {
         event.preventDefault();
         if (event.shiftKey) actionsRef.current.redo();
         else actionsRef.current.undo();
         return;
       }
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'y') {
+      if (mod && event.key.toLowerCase() === 'y') {
         event.preventDefault();
         actionsRef.current.redo();
         return;
       }
-      if (typing) return;
-      const mod = event.metaKey || event.ctrlKey;
+      if (mod && event.key.toLowerCase() === 'a') {
+        event.preventDefault();
+        actionsRef.current.selectAll();
+        return;
+      }
+      if (mod && event.key.toLowerCase() === 'x') {
+        event.preventDefault();
+        actionsRef.current.cutSelection();
+        return;
+      }
+      if (event.key === 'F2') {
+        event.preventDefault();
+        actionsRef.current.renameSelection();
+        return;
+      }
+      // Revit：命令进行中按住 Shift 临时约束到水平/垂直（松开恢复）
+      if (event.key === 'Shift' && !event.repeat) {
+        const session = modifyRef.current;
+        if (session?.status === 'active' && !session.options.constrain) {
+          shiftConstrainRef.current = true;
+          updateModify((current) => ({ ...current, options: { ...current.options, constrain: true } }));
+        }
+        return;
+      }
       if (mod && event.key.toLowerCase() === 'c') {
         event.preventDefault();
         actionsRef.current.copySelection();
@@ -703,189 +1104,117 @@ export default function App() {
       }
       if (event.key === 'Enter') {
         event.preventDefault();
-        actionsRef.current.continueCommand();
+        actionsRef.current.finishModifyCommand();
         return;
       }
-      if (event.key === 'Escape') actionsRef.current.escape();
-      if (event.key === 'Delete' || event.key === 'Backspace') actionsRef.current.deleteSelection();
+      if (event.key === 'Escape') {
+        shortcutRef.current = { buffer: '', at: 0 };
+        actionsRef.current.escape();
+        return;
+      }
+      if (event.key === 'Delete' || event.key === 'Backspace') {
+        actionsRef.current.deleteSelection();
+        return;
+      }
+      // Revit 双字母快捷键：MV / CO / RO / MM / DM / AR / RA / AL / OF / SZ / TR / SL / DI / PN / UP / DE
+      if (/^[a-zA-Z]$/.test(event.key) && !mod && !event.altKey) {
+        const now = Date.now();
+        const previous = now - shortcutRef.current.at < 1500 ? shortcutRef.current.buffer : '';
+        const buffer = `${previous}${event.key.toUpperCase()}`.slice(-2);
+        shortcutRef.current = { buffer, at: now };
+        const toolShortcut = TOOL_SHORTCUTS[buffer];
+        if (toolShortcut) {
+          event.preventDefault();
+          shortcutRef.current = { buffer: '', at: 0 };
+          actionsRef.current.startTool(toolShortcut);
+          return;
+        }
+        // 与 Revit 对齐的双字母快捷键
+        const panels: Record<string, () => void> = {
+          VV: () => setLayersOpen(true), // 可见性/图形 = 图层管理
+          VG: () => setLayersOpen(true),
+          MA: () => setMaterialsOpen(true),
+          GP: () => setParametersOpen(true),
+          PP: () => actionsRef.current.toggleProperties(), // 属性面板
+          PB: () => actionsRef.current.toggleBrowser(), // 项目浏览器
+          ZF: () => actionsRef.current.zoomFitAll(), // 缩放至全部
+          ZE: () => actionsRef.current.zoomFitSelection(), // 缩放至选中
+          HH: () => actionsRef.current.hideSelection(), // 隐藏选中
+          HR: () => actionsRef.current.showAll(), // 恢复显示
+        };
+        const panelAction = panels[buffer];
+        if (panelAction) {
+          event.preventDefault();
+          shortcutRef.current = { buffer: '', at: 0 };
+          panelAction();
+          return;
+        }
+        const command = MODIFY_SHORTCUTS[buffer];
+        if (command) {
+          event.preventDefault();
+          shortcutRef.current = { buffer: '', at: 0 };
+          actionsRef.current.startModifyCommand(command);
+        }
+      }
+    };
+    const onKeyUp = (event: KeyboardEvent) => {
+      if (event.key !== 'Shift' || !shiftConstrainRef.current) return;
+      shiftConstrainRef.current = false;
+      const session = modifyRef.current;
+      if (session?.status === 'active') {
+        updateModify((current) => ({ ...current, options: { ...current.options, constrain: false } }));
+      }
     };
     window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
+    window.addEventListener('keyup', onKeyUp);
+    return () => {
+      window.removeEventListener('keydown', handler);
+      window.removeEventListener('keyup', onKeyUp);
+    };
   }, []);
+
+  function syncAwaitSelection(ids: string[]): void {
+    const session = modifyRef.current;
+    if (session?.status !== 'await-selection') return;
+    const next = withSelection(session, projectRef.current, ids);
+    modifyRef.current = next;
+    setModify(next);
+    if (next.status === 'active') setMessage(modifyPrompt(next));
+  }
 
   function selectElement(id: string, additive: boolean) {
     setSelectedLevelId(null);
-    setSelection((current) => {
-      if (!additive) return [id];
-      return current.includes(id) ? current.filter((value) => value !== id) : [...current, id];
-    });
-  }
-
-  function moveSelection(delta: MoveDelta) {
-    if (!canEdit || !selection.length) return;
-    const selected = new Set(selection);
-    commit(
-      (document) => ({
-        ...document,
-        elements: document.elements.map((element) => (
-          selected.has(element.id) ? translateElement(element, delta) : element
-        )),
-      }),
-      `已平移 ${selection.length} 个构件`,
-    );
-  }
-
-  function rotateSelection(delta: RotateDelta) {
-    if (!canEdit || !selection.length) return;
-    const angle = (delta.angleDeg * Math.PI) / 180;
-    const selected = new Set(selection);
-    commit(
-      (document) => ({
-        ...document,
-        elements: document.elements.map((element) => (
-          selected.has(element.id) ? rotateElement(element, { angle, center: delta.center }) : element
-        )),
-      }),
-      `已旋转 ${selection.length} 个构件（${delta.angleDeg}°）`,
-    );
-  }
-
-  function mirrorSelection(delta: MirrorDelta) {
-    if (!canEdit || !selectedElements.length) return;
-    const usable = selectedElements.filter((element) => element.category !== 'mesh');
-    const skipped = selectedElements.length - usable.length;
-    if (!usable.length) {
-      setMessage('导入网格暂不支持镜像');
-      return;
-    }
-    const options = { axis: delta.axis, position: delta.position };
-    let text = '';
-    if (delta.keepOriginal) {
-      const copies = duplicateElements(project, usable, { dx: 0, dy: 0 })
-        .map((element) => mirrorElement(element, options));
-      commit(
-        (document) => ({ ...document, elements: [...document.elements, ...copies] }),
-        `已镜像复制 ${copies.length} 个构件`,
-      );
-      setSelection(copies.map((element) => element.id));
-      text = `已镜像复制 ${copies.length} 个构件`;
-    } else {
-      const mirrored = usable.map((element) => mirrorElement(element, options));
-      const byId = new Map(mirrored.map((element) => [element.id, element]));
-      commit(
-        (document) => ({
-          ...document,
-          elements: document.elements.map((element) => byId.get(element.id) ?? element),
-        }),
-        `已镜像 ${mirrored.length} 个构件`,
-      );
-      setSelection(mirrored.map((element) => element.id));
-      text = `已镜像 ${mirrored.length} 个构件`;
-    }
-    if (skipped) text += `；跳过 ${skipped} 个导入网格（暂不支持镜像）`;
-    setMessage(text);
-  }
-
-  function applyArray(delta: ArrayDelta) {
-    if (!canEdit || !selectedElements.length) return;
-    const copies = arrayElements(project, selectedElements, delta);
-    if (!copies.length) return;
-    commit(
-      (document) => ({ ...document, elements: [...document.elements, ...copies] }),
-      `已生成阵列：${copies.length} 个副本`,
-    );
-    setSelection(copies.map((element) => element.id));
-  }
-
-  function beginCommand(command: CommandId) {
-    setPendingCommand(command);
-    const need = command === 'union' || command === 'subtract' || command === 'intersect'
-      ? '2 个构件'
-      : '要修改的构件';
-    setMessage(`${COMMAND_LABELS[command]}：请选择${need}，按 Enter 继续，Esc 取消`);
-  }
-
-  function continueCommand() {
-    const command = pendingCommandRef.current;
-    if (!command) return;
-    if (!selection.length) {
-      setMessage('请先在视口中选择构件');
-      return;
-    }
-    const need = command === 'union' || command === 'subtract' || command === 'intersect';
-    if (need && selection.length !== 2) {
-      setMessage(`布尔运算需要选择 2 个构件（当前 ${selection.length}）`);
-      return;
-    }
-    setPendingCommand(null);
-    if (command === 'move') setMoveOpen(true);
-    else if (command === 'rotate') setRotateOpen(true);
-    else if (command === 'mirror') setMirrorOpen(true);
-    else if (command === 'array') setArrayOpen(true);
-    else if (command === 'delete') deleteSelection();
-    else if (command === 'copy') copySelection();
-    else if (command === 'duplicate') duplicateSelection();
-    else runBoolean(command);
-  }
-
-  function cancelCommand() {
-    if (!pendingCommandRef.current) return;
-    setPendingCommand(null);
-    setMessage('已取消命令');
-  }
-
-  function startMove() {
-    if (!canEdit) return;
-    if (selection.length) { setPendingCommand(null); setMoveOpen(true); }
-    else beginCommand('move');
-  }
-
-  function startRotate() {
-    if (!canEdit) return;
-    if (selection.length) { setPendingCommand(null); setRotateOpen(true); }
-    else beginCommand('rotate');
-  }
-
-  function startMirror() {
-    if (!canEdit) return;
-    if (selection.length) { setPendingCommand(null); setMirrorOpen(true); }
-    else beginCommand('mirror');
-  }
-
-  function startArray() {
-    if (!canEdit) return;
-    if (selection.length) { setPendingCommand(null); setArrayOpen(true); }
-    else beginCommand('array');
-  }
-
-  function startDuplicate() {
-    if (!canEdit) return;
-    if (selection.length) { setPendingCommand(null); duplicateSelection(); }
-    else beginCommand('duplicate');
-  }
-
-  function startDelete() {
-    if (!canEdit) return;
-    if (selection.length) { setPendingCommand(null); deleteSelection(); }
-    else beginCommand('delete');
-  }
-
-  function startCopyClipboard() {
-    if (selection.length) { setPendingCommand(null); copySelection(); }
-    else beginCommand('copy');
+    const next = !additive ? [id]
+      : selection.includes(id) ? selection.filter((value) => value !== id) : [...selection, id];
+    setSelection(next);
+    syncAwaitSelection(next);
   }
 
   function startBoolean(operation: 'union' | 'subtract' | 'intersect') {
     if (!canEdit) return;
-    if (selection.length === 2) {
-      setPendingCommand(null);
-      runBoolean(operation);
-    }
-    else beginCommand(operation);
+    if (selection.length === 2) runBoolean(operation);
+    else setMessage('布尔运算需要先选择 2 个构件（Shift 加选）');
   }
 
   function nudgeSelection(dx: number, dy: number) {
-    moveSelection({ dx, dy, dz: 0 });
+    if (!canEdit || !selection.length) return;
+    const movable = projectRef.current.elements.filter(
+      (element) => selection.includes(element.id) && !isElementLocked(projectRef.current, element),
+    );
+    if (!movable.length) {
+      setMessage('选中的构件已锁定，请先解锁');
+      return;
+    }
+    const ids = new Set(movable.map((element) => element.id));
+    commit(
+      (document) => ({
+        ...document,
+        elements: document.elements.map((element) => (
+          ids.has(element.id) ? translateElement(element, { dx, dy }) : element
+        )),
+      }),
+      `已微移 ${movable.length} 个构件（${Math.hypot(dx, dy).toFixed(2)} m）`,
+    );
   }
 
   function copySelection() {
@@ -915,16 +1244,29 @@ export default function App() {
     duplicateSelection(offset);
   }
 
-  function handleContextAction(action: 'select-all' | 'select-same-type' | 'clear', targetId: string | null) {
+  function handleContextAction(
+    action: 'select-all' | 'select-same-type' | 'clear' | 'cancel' | 'finish',
+    targetId: string | null,
+  ) {
+    if (action === 'cancel') {
+      escape();
+      return;
+    }
+    if (action === 'finish') {
+      finishModifyCommand();
+      return;
+    }
     if (action === 'clear') {
       setSelection([]);
       setSelectedLevelId(null);
+      syncAwaitSelection([]);
       return;
     }
     if (action === 'select-all') {
       const ids = project.elements.filter((element) => element.visible).map((element) => element.id);
       setSelectedLevelId(null);
       setSelection(ids);
+      syncAwaitSelection(ids);
       setMessage(`已选择全部 ${ids.length} 个可见构件`);
       return;
     }
@@ -938,18 +1280,16 @@ export default function App() {
       .map((element) => element.id);
     setSelectedLevelId(null);
     setSelection(ids);
+    syncAwaitSelection(ids);
     const typeName = project.types.find((type) => type.id === target.typeId)?.name;
     setMessage(`已选择 ${ids.length} 个同类构件${typeName ? `（${typeName}）` : ''}`);
   }
 
   function boxSelect(ids: string[], additive: boolean) {
     setSelectedLevelId(null);
-    setSelection((current) => {
-      if (!additive) return ids;
-      const merged = new Set(current);
-      for (const id of ids) merged.add(id);
-      return [...merged];
-    });
+    const next = !additive ? ids : [...new Set([...selection, ...ids])];
+    setSelection(next);
+    syncAwaitSelection(next);
     if (!ids.length) setMessage('框选未命中构件');
     else setMessage(`已框选 ${ids.length} 个构件${additive ? '（已加选）' : ''}`);
   }
@@ -965,6 +1305,14 @@ export default function App() {
   }
 
   function patchElement(id: string, patch: Record<string, unknown>) {
+    const element = projectRef.current.elements.find((item) => item.id === id);
+    // 图层锁定：仍允许改图层归属、可见性与外观（视图属性），几何/约束参数需先解锁
+    const viewKeys = new Set(['layerId', 'materialId', 'color', 'visible', 'pinned', 'name']);
+    if (element && isElementLocked(projectRef.current, element)
+      && Object.keys(patch).some((key) => !viewKeys.has(key))) {
+      setMessage('构件所在图层已锁定，请在「图层管理 (VV)」中解锁后再编辑');
+      return;
+    }
     commit(
       (document) => ({
         ...document,
@@ -982,6 +1330,25 @@ export default function App() {
         types: document.types.map((type) => (type.id === typeId ? ({ ...type, ...patch } as FamilyType) : type)),
       }),
       '已修改类型参数（全部实例联动）',
+    );
+  }
+
+  function patchTypeFormula(typeId: string, key: string, formula: string | null) {
+    commit(
+      (document) => setTypeFormula(document, typeId, key, formula),
+      formula ? '已建立类型参数关联（全部实例联动）' : '已解除类型参数关联',
+    );
+  }
+
+  function patchElementFormula(elementId: string, key: string, formula: string | null) {
+    const element = projectRef.current.elements.find((item) => item.id === elementId);
+    if (element && isElementLocked(projectRef.current, element)) {
+      setMessage('构件所在图层已锁定，请在「图层管理 (VV)」中解锁后再建立参数关联');
+      return;
+    }
+    commit(
+      (document) => setElementFormula(document, elementId, key, formula),
+      formula ? '已建立实例参数关联' : '已解除实例参数关联',
     );
   }
 
@@ -1041,10 +1408,57 @@ export default function App() {
       setMessage('当前角色为查看者，无法使用绘制工具。');
       return;
     }
-    setPendingCommand(null);
+    clearModify();
     setTool(next);
     setDraftStart(null);
-    if (next !== 'select') setSelection([]);
+    if (next === 'primitive' && !primitiveKind) setPrimitiveKind('extrude');
+    if (next !== 'select' && next !== 'primitive') setSelection([]);
+  }
+
+  function startPrimitive(kind: PrimitiveKind) {
+    if (!canEdit) {
+      setMessage('当前角色为查看者，无法创建体量');
+      return;
+    }
+    clearModify();
+    setPrimitiveKind(kind);
+    setTool('primitive');
+    setDraftStart(null);
+    setRibbonTab('architecture');
+    setMessage(`${PRIMITIVE_LABELS[kind]}：视口单击确定${kind === 'extrude' ? '轮廓第一角' : '中心'}，再单击确定${kind === 'extrude' ? '对角' : '半径'}，Esc 退出`);
+  }
+
+  function addPrimitive(start: Vec2, end: Vec2) {
+    const kind = primitiveKind ?? 'extrude';
+    const levelId = activeLevelId || project.levels[0]?.id;
+    if (!levelId) return;
+    const radius = Math.max(0.2, Math.hypot(end[0] - start[0], end[1] - start[1]));
+    // 拉伸体用两点作轮廓对角，其余基本体第一点即中心、第二点定半径
+    const center: Vec2 = kind === 'extrude'
+      ? [(start[0] + end[0]) / 2, (start[1] + end[1]) / 2]
+      : [start[0], start[1]];
+    let spec: PrimitiveSpec | undefined;
+    if (kind === 'extrude') {
+      const halfX = Math.abs(end[0] - start[0]) / 2;
+      const halfY = Math.abs(end[1] - start[1]) / 2;
+      if (halfX < 0.05 || halfY < 0.05) {
+        setMessage('拉伸体轮廓太小，请拉开一点');
+        return;
+      }
+      spec = { kind: 'extrude', profile: [[-halfX, -halfY], [halfX, -halfY], [halfX, halfY], [-halfX, halfY]], height: 2 };
+    }
+    const element = createPrimitiveElement({
+      project: projectRef.current,
+      kind,
+      position: center,
+      levelId,
+      spec: spec ?? defaultPrimitive(kind, radius, 2),
+    });
+    commit((document) => ({ ...document, elements: [...document.elements, element] }), `已创建 ${element.name}`);
+    setSelection([element.id]);
+    setTool('select');
+    setDraftStart(null);
+    setMessage(`${element.name} 已创建；可在属性面板修改尺寸，或用「修改」命令编辑`);
   }
 
   function topLevelFor(baseLevelId: string): { topLevelId: string; topOffset: number } {
@@ -1160,6 +1574,7 @@ export default function App() {
     if (tool === 'wall') addWall(draftStart, point);
     else if (tool === 'slab') addSlab(draftStart, point);
     else if (tool === 'grid') addGrid(draftStart, point);
+    else if (tool === 'primitive') addPrimitive(draftStart, point);
     setDraftStart(null);
   }
 
@@ -1203,43 +1618,85 @@ export default function App() {
     setMessage('已导出 OBJ（Z-up → Y-up）。');
   }
 
-  async function importObjFile(file: File, report: (stage: string, percent: number | null) => void) {
-    report('读取 OBJ 文件', 5);
-    const text = (await readFileWithProgress(file, 'text', (ratio) => {
-      report('读取 OBJ 文件', 5 + ratio * 55);
-    })) as string;
-    report('解析 OBJ 网格', null);
-    const object = new OBJLoader().parse(text);
-    object.updateMatrixWorld(true);
-    const geometries: BufferGeometry[] = [];
-    object.traverse((node) => {
-      if (!(node instanceof Mesh)) return;
-      const geometry = node.geometry.clone();
-      geometry.applyMatrix4(node.matrixWorld);
-      const normalized = new BufferGeometry();
-      normalized.setAttribute('position', geometry.getAttribute('position').clone());
-      normalized.setIndex(geometry.index?.clone() ?? null);
-      geometry.dispose();
-      geometries.push(normalized.index ? normalized.toNonIndexed() : normalized.clone());
-      normalized.dispose();
-    });
-    report('合并网格', 85);
-    const merged = geometries.length ? mergeGeometries(geometries, false) : null;
-    geometries.forEach((geometry) => geometry.dispose());
-    if (!merged) throw new Error('OBJ 文件中没有可读取的网格。');
+  function exportIfcDocument() {
+    if (!project.elements.length) {
+      setMessage('当前项目没有可导出的构件。');
+      return;
+    }
     try {
-      report('写入项目', 95);
-      const element = meshElementFromGeometry(merged, {
-        name: file.name.replace(/\.obj$/i, '') || '导入模型',
-        color: '#a3adb8',
-        levelId: activeLevelId || project.levels[0]!.id,
-        source: 'OBJ 导入',
+      downloadFile(`${project.name || 'model'}.ifc`, exportIfc(project), 'application/x-step');
+      setMessage('已导出 IFC4（标高 / 构件类别 / 三角面几何），可在 Revit、BlenderBIM 等软件打开。');
+    } catch (error) {
+      setMessage(error instanceof Error ? `IFC 导出失败：${error.message}` : 'IFC 导出失败');
+    }
+  }
+
+  function handleModifyOptions(patch: Partial<ModifyOptions>) {
+    updateModifyOptions(patch);
+  }
+
+  function handleModifyNumeric(value: number | null) {
+    updateModify((session) => ({ ...session, numeric: value }));
+  }
+
+  function handleModifyCenter() {
+    updateModify((session) => ({ ...session, centerPending: true, note: '单击视口放置旋转中心' }));
+  }
+
+  /**
+   * 从模型库放置一个造型构件：落到当前标高，避开已有构件；
+   * 带参数的模型（支架）落完直接打开特征树，宽 / 高当场能调。
+   */
+  function placeLibraryTemplate(templateId: string) {
+    const template = SOLID_TEMPLATES.find((item) => item.id === templateId);
+    if (!template) return;
+    if (!canEdit) {
+      setMessage('当前角色为查看者，无法新增构件。');
+      return;
+    }
+    const levelId = activeLevelId || projectRef.current.levels[0]?.id;
+    if (!levelId) return;
+    const features = template.build();
+    const parametric: ParametricModel | undefined = template.parametric
+      ? { template: template.parametric.template, params: { ...template.parametric.params } }
+      : undefined;
+    // 落点让位：原点 6 m 内已有造型构件时沿 +X 排开，免得新模型直接叠在旧模型身上
+    const occupied = projectRef.current.elements
+      .filter((element): element is MeshInstance => element.category === 'mesh')
+      .map((element) => element.offset ?? [0, 0, 0]);
+    let x = 0;
+    while (occupied.some((offset) => Math.hypot(offset[0] - x, offset[1]) < 6)) x += 7;
+    const element: MeshInstance = {
+      id: createId(),
+      name: template.name,
+      category: 'mesh',
+      levelId,
+      typeId: '',
+      visible: true,
+      positions: [],
+      indices: [],
+      color: '#a3adb8',
+      source: `模型库：${template.name}`,
+      offset: [x, 0, 0],
+      rotation: 0,
+      primitive: { kind: 'solid', features },
+      ...(parametric ? { parametric } : {}),
+    };
+    commit(
+      (document) => ({ ...document, elements: [...document.elements, element] }),
+      `已放置「${template.name}」`,
+    );
+    setSelection([element.id]);
+    setFitElementId(element.id);
+    if (parametric) {
+      setSolidEdit({
+        id: element.id,
+        name: element.name,
+        features,
+        position: [x, 0],
+        rotation: 0,
+        parametric,
       });
-      commit((document) => ({ ...document, elements: [...document.elements, element] }), `已导入 ${file.name}`);
-      setSelection([element.id]);
-      setFitElementId(element.id);
-    } finally {
-      merged.dispose();
     }
   }
 
@@ -1375,12 +1832,16 @@ export default function App() {
     }
   }
 
-  async function importModel(file: File) {
+  /**
+   * 解析一个文件并进入「导入确认」。
+   * STEP 仍走 OCCT（能力更强，能取回装配面颜色）；其余格式走统一的 import 管线。
+   */
+  async function importModel(file: File, resources?: Map<string, string>) {
     if (!canEdit) {
       setMessage('当前角色为查看者，无法导入模型。');
       return;
     }
-    const extension = file.name.split('.').pop()?.toLowerCase();
+    const isStep = /\.(step|stp)$/i.test(file.name);
     setIsImporting(true);
     const report = (stage: string, percent: number | null) => {
       setImportProgress({
@@ -1389,11 +1850,21 @@ export default function App() {
       });
     };
     report('准备导入', 2);
-    setMessage(extension === 'step' || extension === 'stp' ? '正在解析 STEP 文件…' : '正在导入 OBJ 文件…');
     try {
-      if (extension === 'obj') await importObjFile(file, report);
-      else if (extension === 'step' || extension === 'stp') await importStepFile(file, report);
-      else throw new Error('仅支持 OBJ、STEP 和 STP 格式。');
+      if (isStep) {
+        setMessage('正在解析 STEP 文件…');
+        await importStepFile(file, report);
+      } else {
+        setMessage(`正在解析 ${file.name}…`);
+        report('读取文件', 5);
+        const buffer = (await readFileWithProgress(file, 'buffer', (ratio) => {
+          report('读取文件', 5 + ratio * 45);
+        })) as ArrayBuffer;
+        report('解析模型', null);
+        const model = await parseModelBuffer(file.name, buffer, resources);
+        setMessage(model.blocked ? '这份文件无法直接读出几何。' : '解析完成，请确认轴向与单位。');
+        setImportPending({ fileName: file.name, model });
+      }
       report('完成', 100);
       window.setTimeout(() => {
         setImportProgress((current) => (current?.percent === 100 ? null : current));
@@ -1407,20 +1878,131 @@ export default function App() {
     }
   }
 
+  function cancelImport() {
+    const pending = importPending;
+    if (pending) disposeParts(pending.model.parts);
+    setImportPending(null);
+    setMessage(importQueueRef.current.length ? '已跳过这个模型，继续下一个…' : '已取消导入');
+    continueImportQueue();
+  }
+
+  function confirmImport(transform: ImportTransform) {
+    const pending = importPending;
+    if (!pending) return;
+    const levelId = activeLevelId || projectRef.current.levels[0]?.id;
+    if (!levelId) {
+      setMessage('当前项目没有标高，无法放置导入模型。');
+      return;
+    }
+    try {
+      const geometry = buildImportGeometry(pending.model, transform);
+      try {
+        const element = meshElementFromGeometry(geometry, {
+          name: pending.fileName.replace(/\.[^.]+$/, '') || '导入模型',
+          color: '#ffffff',
+          levelId,
+          source: `${pending.model.formatLabel} 导入`,
+        });
+        commit(
+          (document) => ({ ...document, elements: [...document.elements, element] }),
+          `已导入 ${pending.fileName}`,
+        );
+        setSelection([element.id]);
+        setFitElementId(element.id);
+        setMessage(
+          `已导入 ${pending.fileName}：${pending.model.parts.length.toLocaleString('zh-CN')} 个构件 / `
+          + `${countImportTriangles(pending.model).toLocaleString('zh-CN')} 三角面`,
+        );
+      } finally {
+        geometry.dispose();
+      }
+    } catch (error) {
+      console.error('导入写入项目失败。', error);
+      setMessage(error instanceof Error ? `导入失败：${error.message}` : '导入失败。');
+    } finally {
+      disposeParts(pending.model.parts);
+      setImportPending(null);
+      continueImportQueue();
+    }
+  }
+
+  /**
+   * 拖入 / 多选多个文件：
+   * - 模型文件（含 STEP）按顺序排队，每个都走一次「解析 → 确认」；
+   * - 其余文件（.bin / 贴图 / .mtl）作为当前模型的附属资源，通过 blob URL 提供给 loader。
+   */
+  async function importFiles(files: File[]) {
+    const usable = files.filter((file) => file.size > 0);
+    if (!usable.length) return;
+    const isModel = (file: File) => Boolean(formatForFile(file.name)) || /\.(step|stp)$/i.test(file.name);
+    const models = usable.filter(isModel);
+    const sidecars = usable.filter((file) => !isModel(file));
+    const primary = models.length ? models : usable.slice(0, 1);
+    if (!models.length) sidecars.length = 0;
+
+    const resources = new Map<string, string>();
+    for (const file of sidecars) resources.set(file.name, URL.createObjectURL(file));
+    if (resources.size) {
+      // 贴图是异步加载的，晚点再回收 blob URL
+      window.setTimeout(() => resources.forEach((url) => URL.revokeObjectURL(url)), 30000);
+    }
+
+    importQueueRef.current = primary.slice(1).map((file) => ({ file, resources: resources.size ? resources : undefined }));
+    if (primary.length > 1) {
+      setMessage(`共 ${primary.length} 个模型，将依次导入。`);
+    }
+    await importModel(primary[0]!, resources.size ? resources : undefined);
+  }
+
+  /** 队列里还有模型就接着解析下一个。 */
+  function continueImportQueue() {
+    const next = importQueueRef.current.shift();
+    if (!next) return;
+    void importModel(next.file, next.resources);
+  }
+
+  function handleDragEnter(event: ReactDragEvent) {
+    if (!event.dataTransfer.types.includes('Files')) return;
+    dragDepthRef.current += 1;
+    setDragActive(true);
+  }
+
+  function handleDragLeave(event: ReactDragEvent) {
+    if (!event.dataTransfer.types.includes('Files')) return;
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+    if (dragDepthRef.current === 0) setDragActive(false);
+  }
+
+  function handleDragOver(event: ReactDragEvent) {
+    if (!event.dataTransfer.types.includes('Files')) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'copy';
+  }
+
+  function handleDrop(event: ReactDragEvent) {
+    if (!event.dataTransfer.types.includes('Files')) return;
+    event.preventDefault();
+    dragDepthRef.current = 0;
+    setDragActive(false);
+    void importFiles(Array.from(event.dataTransfer.files));
+  }
+
   async function openProject(id: string) {
     if (!repository || id === projectRef.current.id) return;
-    const loaded = await repository.load(id);
-    if (!loaded) {
+    const raw = await repository.load(id);
+    if (!raw) {
       setMessage('项目不存在或无权访问。');
       return;
     }
+    const loaded = normalizeExternal(raw);
     setProject(loaded);
     projectRef.current = loaded;
     lastSavedRef.current = loaded;
+    lastLocalRevRef.current = null;
     setActiveLevelId(loaded.levels[0]?.id ?? '');
     setSelectedLevelId(null);
     setSelection([]);
-    setHistory({ past: [], future: [] });
+    resetHistory();
     setViewKind('3d');
     setViewLevelId(null);
     setTool('select');
@@ -1449,40 +2031,75 @@ export default function App() {
     commit((document) => ({ ...document, name }), `项目已重命名为「${name}」`);
   }
 
-  async function deleteCurrentProject() {
-    if (!repository || !isAdmin) return;
-    if (!window.confirm(`删除项目「${project.name}」？该操作不可恢复。`)) return;
+  /** 重命名任意项目：当前项目走 commit（可撤销），其它项目直接读写服务端文档 */
+  async function renameProjectById(id: string, name: string) {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    if (id === projectRef.current.id) {
+      commit((document) => ({ ...document, name: trimmed }), `项目已重命名为「${trimmed}」`);
+      return;
+    }
+    if (!repository) return;
     try {
-      await repository.remove(project.id);
+      const raw = await repository.load(id);
+      if (!raw) {
+        setMessage('项目不存在或无权访问。');
+        return;
+      }
+      await repository.save({ ...raw, name: trimmed });
+      setSummaries(await repository.list());
+      setMessage(`项目已重命名为「${trimmed}」`);
+    } catch (error) {
+      setMessage(error instanceof ApiError ? error.message : '重命名失败');
+    }
+  }
+
+  /** 删除任意项目（当前项目删除后自动切到下一个） */
+  async function deleteProjectById(id: string) {
+    if (!repository) return;
+    const target = summaries.find((item) => item.id === id);
+    const label = target?.name ?? project.name;
+    if (!window.confirm(`删除项目「${label}」？该操作不可恢复。`)) return;
+    try {
+      await repository.remove(id);
       const list = await repository.list();
       setSummaries(list);
-      if (list[0]) {
-        await openProject(list[0].id);
-      } else {
-        const created = createProject({ name: '未命名项目' });
-        await repository.save(created);
-        setProject(created);
-        projectRef.current = created;
-        lastSavedRef.current = created;
-        setSummaries(await repository.list());
+      if (id === projectRef.current.id) {
+        if (list[0]) {
+          await openProject(list[0].id);
+        } else {
+          const created = createProject({ name: '未命名项目' });
+          await repository.save(created);
+          setProject(created);
+          projectRef.current = created;
+          lastSavedRef.current = created;
+          setSummaries(await repository.list());
+        }
       }
-      setMessage('项目已删除');
+      setMessage(`已删除项目「${label}」`);
     } catch (error) {
       setMessage(error instanceof ApiError ? error.message : '删除项目失败');
     }
   }
 
+  async function deleteCurrentProject() {
+    if (!repository || !isAdmin) return;
+    await deleteProjectById(project.id);
+  }
+
   async function reloadFromServer() {
     if (!repository) return;
-    const loaded = await repository.load(project.id);
-    if (!loaded) return;
+    const raw = await repository.load(project.id);
+    if (!raw) return;
+    const loaded = normalizeExternal(raw);
     setProject(loaded);
     projectRef.current = loaded;
     lastSavedRef.current = loaded;
+    lastLocalRevRef.current = null;
     setConflictRev(null);
     setSaveState('saved');
     setSelection([]);
-    setHistory({ past: [], future: [] });
+    resetHistory();
     setMessage('已加载服务端最新文档');
   }
 
@@ -1500,19 +2117,133 @@ export default function App() {
     }
   }
 
+  /** Ctrl/Cmd+S：立即保存；协作在线时补丁已实时落库，只提示状态。 */
+  async function saveNow() {
+    if (!repository) return;
+    if (collabRef.current?.online) {
+      setMessage('协作会话已实时同步，无需手动保存');
+      return;
+    }
+    if (projectRef.current === lastSavedRef.current) {
+      setMessage('所有修改已保存');
+      return;
+    }
+    setSaveState('saving');
+    try {
+      const document = projectRef.current;
+      await repository.save(document);
+      lastSavedRef.current = document;
+      setSaveState('saved');
+      setConflictRev(null);
+      setSummaries(await repository.list());
+      setMessage('已保存');
+    } catch (error) {
+      if (error instanceof ConflictError) {
+        setConflictRev(error.rev);
+        setSaveState('dirty');
+        setMessage('服务端文档已被其他会话修改，请选择加载最新或覆盖保存。');
+        return;
+      }
+      setSaveState('dirty');
+      setMessage(error instanceof Error ? `保存失败：${error.message}` : '保存失败');
+    }
+  }
+
+  function selectAllElements() {
+    const ids = projectRef.current.elements.filter((element) => element.visible).map((element) => element.id);
+    setSelectedLevelId(null);
+    setSelection(ids);
+    syncAwaitSelection(ids);
+    setMessage(`已选择全部 ${ids.length} 个可见构件`);
+  }
+
+  function cutSelection() {
+    if (!canEdit || !selectedElements.length) return;
+    copySelection();
+    deleteSelection();
+  }
+
+  function renameSelectedElement() {
+    const target = projectRef.current.elements.find((element) => element.id === selection[0]);
+    if (!target || !canEdit) {
+      setMessage('请先选择一个构件');
+      return;
+    }
+    const name = window.prompt('重命名构件', target.name)?.trim();
+    if (!name || name === target.name) return;
+    patchElement(target.id, { name });
+  }
+
+  function hideSelection() {
+    if (!canEdit || !selection.length) {
+      setMessage('请先选择要隐藏的构件');
+      return;
+    }
+    const ids = new Set(selection);
+    commit(
+      (document) => ({
+        ...document,
+        elements: document.elements.map((element) => (ids.has(element.id) ? { ...element, visible: false } : element)),
+      }),
+      `已隐藏 ${selection.length} 个构件（HR 恢复显示）`,
+    );
+  }
+
+  function showAllElements() {
+    if (!canEdit) return;
+    const hidden = projectRef.current.elements.filter((element) => !element.visible);
+    if (!hidden.length) {
+      setMessage('所有构件都已显示');
+      return;
+    }
+    commit(
+      (document) => ({
+        ...document,
+        elements: document.elements.map((element) => (element.visible ? element : { ...element, visible: true })),
+      }),
+      `已恢复显示 ${hidden.length} 个构件`,
+    );
+  }
+
+  function zoomToFitAll() {
+    setFitElementId(null);
+    setZoomAllRequest((request) => request + 1);
+  }
+
+  function zoomToFitSelection() {
+    if (selection.length === 1) {
+      setFitElementId(selection[0]!);
+      return;
+    }
+    if (!selection.length) {
+      setMessage('未选择构件：已缩放至全部');
+      zoomToFitAll();
+      return;
+    }
+    setMessage('多选时暂按“缩放至全部”处理，可单独选中一个构件再缩放');
+    zoomToFitAll();
+  }
+
   function logout() {
     setAuthToken(null);
     setUser(null);
     setSummaries([]);
     setSelection([]);
-    setHistory({ past: [], future: [] });
+    resetHistory();
     setHydrated(false);
     lastSavedRef.current = null;
+    lastLocalRevRef.current = null;
   }
 
-  const toolHint = tool === 'select'
-    ? '左键拖拽旋转 · 单击空白开始框选 · 再次单击完成 · 中键平移 · 右键菜单'
-    : `左键放置${TOOL_LABELS[tool]} · 左键拖拽旋转 · 中键平移 · Esc 退出`;
+  const toolHint = modify?.status === 'active'
+    ? `${MODIFY_LABELS[modify.command]}：${modifyPrompt(modify)} · Esc 逐级退出 · Enter 完成`
+    : viewSettings.mouseScheme === 'revit'
+      ? (tool === 'select'
+        ? '左键点选 / 拖拽旋转 · 空白轻点两下框选 · Ctrl+拖拽复制 · 中键平移 · 滚轮缩放'
+        : `视口取点绘制${TOOL_LABELS[tool]} · 左上角可输入坐标 · 中键平移 · 滚轮缩放 · Esc 退出`)
+      : (tool === 'select'
+        ? '左键拖拽旋转 · 单击空白开始框选 · 再次单击完成 · 中键平移 · 右键菜单'
+        : `左键放置${TOOL_LABELS[tool]} · 左上角可输入坐标 · 左键拖拽旋转 · 中键平移 · Esc 退出`);
 
   if (mode === 'server' && authReady && !user) {
     return (
@@ -1526,8 +2257,18 @@ export default function App() {
     );
   }
 
+  const accountPageOpen = Boolean(accountOpen && accountUser);
+
   return (
-    <main className="app-shell">
+    <>
+    <main
+      className={`app-shell${accountPageOpen ? ' app-shell-hidden' : ''}`}
+      aria-hidden={accountPageOpen ? true : undefined}
+      onDragEnter={handleDragEnter}
+      onDragLeave={handleDragLeave}
+      onDragOver={handleDragOver}
+      onDrop={handleDrop}
+    >
       <header className="topbar">
         <div className="brand-lockup">
           <div className="brand-mark">S</div>
@@ -1560,11 +2301,11 @@ export default function App() {
             <button className="icon-action" title="撤销 (Ctrl/Cmd+Z)" onClick={undo} disabled={!canEdit || !history.past.length}>↶</button>
             <button className="icon-action" title="重做 (Shift+Ctrl/Cmd+Z)" onClick={redo} disabled={!canEdit || !history.future.length}>↷</button>
             <button
-              className={`icon-action ${settingsOpen ? 'active' : ''}`}
-              title="设置（软件偏好 / 用户 / AI）"
+              className="icon-action"
+              title="软件设置（账户中心 → 软件设置）"
               onClick={() => {
-                setSettingsTab('view');
-                setSettingsOpen(true);
+                setAccountSection('preferences');
+                setAccountOpen(true);
               }}
             >⚙</button>
             <button
@@ -1607,12 +2348,34 @@ export default function App() {
             {mode === 'server' ? '服务端' : mode === 'local' ? '本地' : '连接中'}
           </span>
           {user ? (
-            <>
-              <span className="chip-name" title={user.email}>{user.name}</span>
-              <button className="logout-action" onClick={logout} title="退出登录">退出</button>
-            </>
+            <button
+              className={`account-trigger ${accountOpen ? 'active' : ''}`}
+              onClick={() => {
+                setAccountSection('profile');
+                setAccountOpen(true);
+              }}
+              title={`账户中心 · ${user.email}${user.isAdmin ? ' · 系统管理员' : ''}`}
+            >
+              <span className={`account-trigger-avatar ${user.isAdmin ? 'admin' : ''}`}>
+                {(user.name || user.email).slice(0, 1).toUpperCase()}
+              </span>
+              <span className="chip-name">{user.name}</span>
+              {user.isAdmin ? <em className="chip-admin">超管</em> : null}
+              <i className="chip-caret" aria-hidden>▾</i>
+            </button>
           ) : (
-            <span className="chip-meta">{project.name}</span>
+            <button
+              className={`account-trigger ${accountOpen ? 'active' : ''}`}
+              onClick={() => {
+                setAccountSection('preferences');
+                setAccountOpen(true);
+              }}
+              title="本地模式：查看本机项目与软件设置"
+            >
+              <span className="account-trigger-avatar">本</span>
+              <span className="chip-name">本地工作区</span>
+              <i className="chip-caret" aria-hidden>▾</i>
+            </button>
           )}
         </div>
       </header>
@@ -1643,14 +2406,12 @@ export default function App() {
         tool={tool}
         onTool={chooseTool}
         onBoolean={startBoolean}
-        onDelete={startDelete}
-        onMove={startMove}
-        onCopy={startDuplicate}
-        onRotate={startRotate}
-        onMirror={startMirror}
-        onArray={startArray}
-        onCopyToClipboard={startCopyClipboard}
+        onModify={startModifyCommand}
+        onPrimitive={startPrimitive}
+        onCopyToClipboard={copySelection}
         onPaste={pasteSelection}
+        activeModify={modify?.command ?? null}
+        primitiveKind={primitiveKind}
         viewKind={viewKind}
         onViewKind={(kind) => {
           if (kind === 'plan') activatePlan(selectedLevelId ?? activeLevelId);
@@ -1663,8 +2424,14 @@ export default function App() {
           setZoomAllRequest((request) => request + 1);
         }}
         isImporting={isImporting}
-        onImport={(file) => void importModel(file)}
+        onImport={(files) => void importFiles(files)}
         onExport={exportDocument}
+        onExportIfc={exportIfcDocument}
+        onOpenSchedule={() => setScheduleOpen(true)}
+        onOpenLayers={() => setLayersOpen(true)}
+        onOpenMaterials={() => setMaterialsOpen(true)}
+        onOpenParameters={() => setParametersOpen(true)}
+        onOpenLibrary={() => setLibraryOpen(true)}
         onNewProject={() => void createNewProject()}
         serverMode={mode === 'server'}
         readOnly={!canEdit}
@@ -1672,14 +2439,29 @@ export default function App() {
         onOpenMembers={() => setMembersOpen(true)}
         onDeleteProject={() => void deleteCurrentProject()}
         onOpenSettings={() => {
-          setSettingsTab('view');
-          setSettingsOpen(true);
+          setAccountSection('preferences');
+          setAccountOpen(true);
         }}
         isAdmin={Boolean(user?.isAdmin)}
-        onOpenAdmin={() => window.open('/admin', '_blank', 'noopener')}
+        onOpenAdmin={() => {
+          setAccountSection('system');
+          setAccountOpen(true);
+        }}
       />
 
-      <section className="workspace">
+      {modify ? (
+        <ModifyOptionsBar
+          session={modify}
+          canFinish={modify.status === 'await-selection' ? selection.length > 0 : isReady(modify, cursorRef.current)}
+          onOptions={handleModifyOptions}
+          onNumeric={handleModifyNumeric}
+          onCenter={handleModifyCenter}
+          onFinish={finishModifyCommand}
+          onCancel={() => { clearModify(); setMessage('已取消命令'); }}
+        />
+      ) : null}
+
+      <section className={`workspace${aiDockWidth ? ' ai-docked' : ''}`} style={aiDockWidth ? { paddingRight: aiDockWidth } : undefined}>
         {browserOpen ? (
         <ProjectBrowser
           width={browserWidth}
@@ -1698,9 +2480,24 @@ export default function App() {
           onToggleVisibility={toggleVisibility}
           onDeleteGrid={deleteGrid}
           onRenameProject={renameProject}
+          onOpenLayers={() => setLayersOpen(true)}
+          onOpenMaterials={() => setMaterialsOpen(true)}
+          onToggleLayer={(id) => {
+            const layer = projectRef.current.layers?.find((item) => item.id === id);
+            if (!layer) return;
+            commit(
+              (document) => ({
+                ...document,
+                layers: (document.layers ?? []).map((item) => (
+                  item.id === id ? { ...item, visible: !item.visible } : item
+                )),
+              }),
+              `图层「${layer.name}」已${layer.visible ? '隐藏' : '显示'}`,
+            );
+          }}
         />
         ) : (
-          <button className="panel-rail panel-rail-left" onClick={() => setBrowserOpen(true)} title="展开项目浏览器">
+          <button className="panel-rail panel-rail-left" onClick={() => setBrowserOpen(true)} title="展开项目浏览器 (PB)">
             <span className="rail-icon">▤</span>
             <em>项目浏览器</em>
           </button>
@@ -1726,7 +2523,7 @@ export default function App() {
                 setFitElementId(null);
                 setZoomAllRequest((request) => request + 1);
               }}
-              title="缩放至全部构件"
+              title="缩放至全部构件 (ZF)"
             ><span>⊞</span>缩放至全部</button>
           </div>
 
@@ -1738,31 +2535,50 @@ export default function App() {
             projection={projection}
             tool={tool}
             draftStart={draftStart}
+            primitiveKind={primitiveKind}
             settings={viewSettings}
+            modify={modify}
             onRendererInfo={setRendererInfo}
             onSelect={selectElement}
             onBoxSelect={boxSelect}
             onContextAction={handleContextAction}
-            onHover={setHoverPoint}
+            onHover={(point) => {
+              setHoverPoint(point);
+              cursorRef.current = point ? [point.x, point.y] as Vec2 : null;
+            }}
             onPickPoint={handlePickPoint}
+            onModifyClick={handleModifyClick}
+            onDragMove={dragMoveSelection}
             fitElementId={fitElementId}
             zoomAllRequest={zoomAllRequest}
             onClickEmpty={() => {
               setSelection([]);
               setSelectedLevelId(null);
+              syncAwaitSelection([]);
+            }}
+            onViewportApi={(api) => {
+              viewportRef.current = api;
             }}
           />
 
-          {pendingCommand ? (
+          {tool !== 'select' && !modify ? (
+            <DrawCoordinateBar
+              key={`${tool}-${draftStart ? 'second' : 'first'}`}
+              tool={tool}
+              draftStart={draftStart}
+              cursor={hoverPoint ? [hoverPoint.x, hoverPoint.y] as Vec2 : null}
+              levelLabel={`${activeLevel?.name ?? '工作平面'} ${(activeLevel?.elevation ?? 0).toFixed(2)} m`}
+              onPick={handlePickPoint}
+              onCancel={escape}
+            />
+          ) : null}
+
+          {modify?.status === 'await-selection' ? (
             <div className="command-hint">
-              <strong>{COMMAND_LABELS[pendingCommand]}</strong>
-              <span>
-                {pendingCommand === 'union' || pendingCommand === 'subtract' || pendingCommand === 'intersect'
-                  ? `请选择 2 个构件（已选 ${selection.length}）`
-                  : `已选择 ${selection.length} 个构件 · Enter 继续`}
-              </span>
-              <button className="primary" onClick={() => continueCommand()} disabled={!selection.length}>继续</button>
-              <button onClick={() => cancelCommand()}>取消</button>
+              <strong>{MODIFY_LABELS[modify.command]}</strong>
+              <span>请先在视口中选择构件（Shift 加选），选好后按 Enter 继续</span>
+              <button className="primary" onClick={finishModifyCommand} disabled={!selection.length}>继续</button>
+              <button onClick={() => { clearModify(); setMessage('已取消命令'); }}>取消</button>
             </div>
           ) : null}
 
@@ -1793,12 +2609,14 @@ export default function App() {
             </select>
             <span className="corner-chevron">⌄</span>
           </label>
-          <div className="view-corner compass"><span className="compass-n">N</span><span className="compass-ring">＋</span><span className="compass-e">E</span></div>
 
           <div className="viewport-toolbar-bottom">
             <span>工作平面：{activeLevel?.name ?? '—'}（{activeLevel ? activeLevel.elevation.toFixed(2) : '0.00'} m）</span>
             <span>单位：米</span>
-            {viewKind === 'plan' ? <span className="plan-badge">平面视图 · 旋转已锁定</span> : <span>框选：单击 → 移动 → 单击</span>}
+            {viewKind === 'plan' ? <span className="plan-badge">平面视图 · 旋转已锁定</span> : (
+              <span>{viewSettings.mouseScheme === 'revit' ? 'Revit 鼠标方案：左键拖拽旋转 / 轻点两下框选' : '框选：单击 → 移动 → 单击'}</span>
+            )}
+            {modify ? <span className="modify-badge">{MODIFY_LABELS[modify.command]} · {modify.status === 'await-selection' ? '待选择' : `已取 ${modify.points.length} 点`}</span> : null}
             {draftStart ? <span className="draft-badge">已取第一点 · 再点击确定终点</span> : null}
             {!canEdit ? <span className="readonly-badge">只读</span> : null}
           </div>
@@ -1817,13 +2635,30 @@ export default function App() {
           selectedLevel={selectedElements.length ? null : selectedLevel}
           onElementPatch={patchElement}
           onTypePatch={patchType}
+          onTypeFormula={patchTypeFormula}
+          onElementFormula={patchElementFormula}
           onLevelPatch={patchLevel}
           onDeleteSelection={deleteSelection}
           onBoolean={runBoolean}
+          onEditSolid={(element) => {
+            if (element.category !== 'mesh') return;
+            // 参数化构件也有特征树（快照），两种都能打开编辑器
+            if (element.primitive?.kind !== 'solid' && !element.parametric) return;
+            const offset = element.offset ?? [0, 0, 0];
+            setSolidEdit({
+              id: element.id,
+              name: element.name,
+              // 参数化构件按当前参数重建特征树，对话框里看到的就是视口里的样子
+              features: solidFeaturesOf(element),
+              position: [offset[0] ?? 0, offset[1] ?? 0],
+              rotation: ((element.rotation ?? 0) * 180) / Math.PI,
+              parametric: element.parametric ?? null,
+            });
+          }}
           readOnly={!canEdit}
         />
         ) : (
-          <button className="panel-rail panel-rail-right" onClick={() => setPropertiesOpen(true)} title="展开属性面板">
+          <button className="panel-rail panel-rail-right" onClick={() => setPropertiesOpen(true)} title="展开属性面板 (PP)">
             <span className="rail-icon">▥</span>
             <em>属性</em>
           </button>
@@ -1879,67 +2714,55 @@ export default function App() {
         </div>
       </footer>
 
-      {moveOpen ? (
-        <MoveDialog
-          selectionCount={selection.length}
-            onClose={() => setMoveOpen(false)}
-          onApply={(delta) => {
-            moveSelection(delta);
-            setMoveOpen(false);
-          }}
-        />
-      ) : null}
-
-      {rotateOpen ? (
-        <RotateDialog
-          selectionCount={selection.length}
-            defaultCenter={selectionCenter(selectedElements)}
-          onClose={() => setRotateOpen(false)}
-          onApply={(delta) => {
-            rotateSelection(delta);
-            setRotateOpen(false);
-          }}
-        />
-      ) : null}
-
-      {mirrorOpen ? (
-        <MirrorDialog
-          selectionCount={selection.length}
-            onClose={() => setMirrorOpen(false)}
-          onApply={(delta) => {
-            mirrorSelection(delta);
-            setMirrorOpen(false);
-          }}
-        />
-      ) : null}
-
-      {arrayOpen ? (
-        <ArrayDialog
-          selectionCount={selection.length}
-            defaultCenter={selectionCenter(selectedElements)}
-          onClose={() => setArrayOpen(false)}
-          onApply={(delta) => {
-            applyArray(delta);
-            setArrayOpen(false);
-          }}
-        />
-      ) : null}
-
-      {settingsOpen ? (
-        <SettingsDialog
-          currentUser={user}
-          initialTab={settingsTab}
-          settings={viewSettings}
-          onSettingsChange={setViewSettings}
-          diagnostics={{
-            renderer: rendererInfo?.renderer,
-            software: rendererInfo?.software,
-            elements: project.elements.length,
-            triangles,
-          }}
-          onClose={() => setSettingsOpen(false)}
+      {scheduleOpen ? (
+        <ScheduleDialog
+          project={project}
+          onClose={() => setScheduleOpen(false)}
           onToast={(text) => setMessage(text)}
-          onSelfUpdated={(nextUser) => setUser(nextUser)}
+        />
+      ) : null}
+
+      {importPending ? (
+        <ImportDialog
+          fileName={importPending.fileName}
+          model={importPending.model}
+          onCancel={cancelImport}
+          onConfirm={confirmImport}
+        />
+      ) : null}
+
+      {layersOpen ? (
+        <LayersDialog
+          project={project}
+          selection={selection}
+          currentLayerId={currentLayerId}
+          readOnly={!canEdit}
+          onUpdate={commit}
+          onCurrentLayer={(id) => setCurrentLayerId(id)}
+          onClose={() => setLayersOpen(false)}
+          onToast={(text) => setMessage(text)}
+        />
+      ) : null}
+
+      {materialsOpen ? (
+        <MaterialsDialog
+          project={project}
+          selection={selection}
+          readOnly={!canEdit}
+          onUpdate={commit}
+          onClose={() => setMaterialsOpen(false)}
+          onToast={(text) => setMessage(text)}
+        />
+      ) : null}
+
+      {parametersOpen ? (
+        <ParametersDialog
+          project={project}
+          selection={selection}
+          readOnly={!canEdit}
+          onUpdate={commit}
+          onClose={() => setParametersOpen(false)}
+          onToast={(text) => setMessage(text)}
         />
       ) : null}
 
@@ -1951,17 +2774,20 @@ export default function App() {
           selectedIds={selection}
           onClose={() => setAiOpen(false)}
           currentDocument={project}
+          viewport={aiViewport}
+          onDockChange={setAiDockWidth}
           onApplied={(document, rev, previous) => {
-            setHistory((previousHistory) => ({
-              past: [...previousHistory.past.slice(-(HISTORY_LIMIT - 1)), previous],
-              future: [],
-            }));
+            pushHistory(previous);
+            lastLocalRevRef.current = rev;
             repository?.adoptRevision?.(project.id, rev);
-            setProject(document);
-            projectRef.current = document;
-            lastSavedRef.current = document;
+            const normalized = normalizeExternal(document);
+            setProject(normalized);
+            projectRef.current = normalized;
+            lastSavedRef.current = normalized;
             setSaveState('saved');
             void repository?.list().then(setSummaries);
+            // AI 常生成 1 m 以内的小零件，默认视角下几乎看不见：应用后自动缩放至全部
+            setZoomAllRequest((value) => value + 1);
             setMessage(`AI 已应用修改（rev ${rev}），可用 Ctrl/Cmd+Z 撤销`);
           }}
         />
@@ -1977,6 +2803,45 @@ export default function App() {
         />
       ) : null}
 
+      {libraryOpen ? (
+        <LibraryDialog
+          readOnly={!canEdit}
+          onPlace={placeLibraryTemplate}
+          onClose={() => setLibraryOpen(false)}
+        />
+      ) : null}
+
+      {solidEdit ? (
+        <SolidDialog
+          name={solidEdit.name}
+          features={solidEdit.features}
+          position={solidEdit.position}
+          rotation={solidEdit.rotation}
+          parametric={solidEdit.parametric ?? null}
+          readOnly={!canEdit}
+          onToast={(text) => setMessage(text)}
+          onClose={() => setSolidEdit(null)}
+          onApply={(payload) => {
+            const current = projectRef.current.elements.find((item) => item.id === solidEdit.id);
+            const z = current && current.category === 'mesh' && Array.isArray(current.offset)
+              ? current.offset[2] ?? 0
+              : 0;
+            patchElement(solidEdit.id, {
+              name: payload.name,
+              offset: [payload.position[0], payload.position[1], z],
+              rotation: (payload.rotation * Math.PI) / 180,
+              primitive: { kind: 'solid', features: payload.features },
+              // 传 null 显式断开参数化（patchElement 按字段覆盖，undefined 不会清掉旧值）
+              parametric: payload.parametric ?? null,
+            });
+            setSolidEdit(null);
+            setMessage(payload.parametric
+              ? `已更新「${payload.name}」的参数（${Object.entries(payload.parametric.params).map(([key, value]) => `${key}=${value}`).join(' ')}）`
+              : `已更新「${payload.name}」的特征树（Ctrl/Cmd+Z 可撤销）`);
+          }}
+        />
+      ) : null}
+
       {membersOpen && mode === 'server' ? (
         <MembersDialog
           projectId={project.id}
@@ -1985,8 +2850,56 @@ export default function App() {
           onClose={() => setMembersOpen(false)}
         />
       ) : null}
-
-      {message && <div className="toast-message" role="status">{message}</div>}
     </main>
+
+    {dragActive ? (
+      <div className="drop-overlay" aria-hidden>
+        <div className="drop-card">
+          <b>松开即可导入</b>
+          <span>{IMPORT_FORMATS.map((format) => format.label).join(' · ')} · STEP</span>
+          <em>若 .gltf 引用了 .bin 或贴图，请与主文件一起拖入</em>
+        </div>
+      </div>
+    ) : null}
+
+    {/* 账户中心是独立整页：打开时工作台不渲染（状态保留），关闭即回到原场景 */}
+    {accountOpen && accountUser ? (
+      <AccountCenter
+        user={accountUser}
+        mode={mode}
+        localMode={mode === 'local'}
+        initialSection={accountSection}
+        summaries={summaries}
+        currentProjectId={project.id}
+        settings={viewSettings}
+        diagnostics={{
+          renderer: rendererInfo?.renderer,
+          software: rendererInfo?.software,
+          elements: project.elements.length,
+          triangles,
+        }}
+        onSettingsChange={setViewSettings}
+        onClose={() => setAccountOpen(false)}
+        onLogout={logout}
+        onToast={(text) => setMessage(text)}
+        onUserUpdated={(nextUser) => setUser(nextUser)}
+        onOpenProject={async (id) => {
+          await openProject(id);
+          setAccountOpen(false);
+        }}
+        onCreateProject={async () => {
+          await createNewProject();
+          setAccountOpen(false);
+        }}
+        onRenameProject={renameProjectById}
+        onDeleteProject={deleteProjectById}
+        onRefreshProjects={async () => {
+          if (repository) setSummaries(await repository.list());
+        }}
+      />
+    ) : null}
+
+    {message && <div className="toast-message" role="status">{message}</div>}
+    </>
   );
 }

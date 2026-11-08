@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>古建六角亭 · 特征树案例</title>
+<style>
+  :root {
+    --ink: #16202b; --ink-2: #4a5866; --ink-3: #7b8896;
+    --line: #e3e8ee; --bg: #f7f9fb; --card: #fff;
+    --ok: #1f7a4d; --warn: #b26a00; --accent: #8c4a35;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.65 -apple-system, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 48px 28px 80px; }
+  header h1 { font-size: 27px; margin: 0 0 6px; letter-spacing: -0.4px; }
+  header p { margin: 0; color: var(--ink-2); }
+  .meta { color: var(--ink-3); font-size: 13px; margin-top: 10px; }
+  h2 { font-size: 17px; margin: 44px 0 14px; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
+  .verdict { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-top: 26px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; }
+  .card .tag { font-size: 12px; font-weight: 600; letter-spacing: .4px; color: var(--ink-3); }
+  .card strong { display: block; font-size: 19px; margin: 4px 0 6px; }
+  .card p { margin: 0; color: var(--ink-2); font-size: 13.5px; }
+  figure { margin: 0; }
+  figure img { width: 100%; display: block; border-radius: 10px; border: 1px solid var(--line); background: #fff; }
+  figcaption { font-size: 12.5px; color: var(--ink-3); margin-top: 8px; }
+  .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; align-items: start; }
+  table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 13.5px; }
+  th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--ink-3); font-weight: 600; font-size: 12.5px; letter-spacing: .3px; }
+  td.num { font-variant-numeric: tabular-nums; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; background: #eef2f6; border-radius: 4px; padding: 1px 5px; }
+  ul { margin: 8px 0 0; padding-left: 20px; color: var(--ink-2); }
+  li { margin: 5px 0; }
+  .foot { margin-top: 48px; color: var(--ink-3); font-size: 12.5px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>古建六角攒尖亭：一座"全是曲面"的房子</h1>
+    <p>照着一张江南园林六角亭的照片，用现有特征树接口从零拼出来：台基、柱、木作、座凳栏杆、举折屋面、起翘戗脊、宝顶。</p>
+    <div class="meta">20 特征 · 41,466 三角面 · 面宽 6.82 m · 高 6.08 m · 求值 331 ms<br />模型就是 <code>shared/models/pavilion-hex.json</code> 里的一棵特征树（16.8 KB）：模型库、离线出图、AI few-shot 读的是同一份数据，<b>代码里没有亭子生成器</b>。瓦面只写 24 站轮廓；<b>1,512 片瓦（板瓦 + 筒瓦各 756 片）是内核按「列 × 层」铺出来的</b>，不进文档、也不由 AI 逐片书写。</div>
+  </header>
+
+  <div class="verdict">
+    <div class="card">
+      <div class="tag">表达力</div>
+      <strong>够用</strong>
+      <p>基层用「正多边形截面沿举折曲线放样」，瓦交给内核的 <code>tiles</code> 逐片铺，空腔用一条内缩的同曲线切出，戗脊与翼角是「沿角线扫掠」——四个特征撑起中国屋顶最难的曲面。</p>
+    </div>
+    <div class="card">
+      <div class="tag">数据</div>
+      <strong>模型 = 特征树</strong>
+      <p>亭子是 20 个特征的 JSON 文档，八角版另存一份（<code>pavilion-oct.json</code>）：柱、枋、挂落、座凳、戗脊全是圆周阵列，屋面是正多边形放样，<b>瓦的列数与层数按边长和坡长重排</b>。</p>
+    </div>
+    <div class="card">
+      <div class="tag">代价</div>
+      <strong>1,512 片瓦，一个特征</strong>
+      <p>瓦片是逐片生成的真几何（板瓦 + 筒瓦 + 叠压 + 错缝 + 瓦当滴水），41k 面、331 ms；<b>不进布尔</b>，所以再多面也不拖慢求值链。</p>
+    </div>
+  </div>
+
+  <h2>参考照片 vs 模型</h2>
+  <div class="pair">
+    <figure>
+      <img src="reference.png" alt="参考照片" />
+      <figcaption>目标：六角攒尖亭，深灰瓦、朱漆柱、六条起翘戗脊、宝顶、座凳栏杆。</figcaption>
+    </figure>
+    <figure>
+      <img src="pavilion-hex.png" alt="四视图" />
+      <figcaption>三视角、正视、侧视、俯视（离屏软光栅渲染，几何与视口同源）。</figcaption>
+    </figure>
+  </div>
+
+  <h2>局部：翼角 / 宝顶 / 座凳 / 台基</h2>
+  <figure>
+    <img src="pavilion-hex-detail.png" alt="局部特写" />
+    <figcaption>左上：翼角（戗脊 + 出翘瓦面）、壳状屋面从下能看见内部；右上：攒尖顶与宝顶（俯视可见瓦垄）；左下：座凳、靠背栏杆与挂落；右下：柱础与两级台基。</figcaption>
+  </figure>
+
+  <h2>瓦面：从"一圈波纹"到 1,512 片瓦</h2>
+  <figure>
+    <img src="tiles-macro.png" alt="瓦面大特写" />
+    <figcaption>左：檐口。筒瓦端头凸出的圆盘是<b>瓦当</b>，板瓦端头下垂的舌片是<b>滴水</b>，交替成檐口的花边。右：坡面。凸起的半圆筒是筒瓦，骑在两列板瓦的接缝上；凹下去的板瓦一层压一层，接缝在相邻列之间错开半块。</figcaption>
+  </figure>
+  <p>第一版是给放样截面加余弦起伏 —— 出来是一条条<b>圆脊</b>：没有一片片的边界、没有厚度、
+  没有叠压的台阶，檐口是一条光边。远看像石棉瓦，近看什么都没有。问题不在参数，在方法：
+  瓦顶不是"一个有波纹的面"，而是"一片片瓦叠起来的"。现在基层（望板）保持光滑，瓦由内核的
+  <code>tiles</code> 逐片铺：</p>
+  <table>
+    <thead><tr><th>做什么</th><th>怎么做</th><th>为什么</th></tr></thead>
+    <tbody>
+      <tr><td><b>板瓦</b></td><td>每列一块，横向 3 点内凹（<code>sag</code> 10 mm），顶面 + 底面 + 四条边都生成</td><td>有厚度的薄壳，瓦口才看得见那道边，而不是一张纸</td></tr>
+      <tr><td><b>筒瓦</b></td><td>列缝上压一条 4 段半圆筒（半径 62 mm），每节瓦头比上端粗 7%、端面封口</td><td>板瓦 + 筒瓦才是瓦顶；一节压一节才有"瓦楞"，不然就是一根圆管</td></tr>
+      <tr><td><b>叠压</b></td><td>每片下缘抬起 <code>lift</code> 20 mm、上缘贴屋面</td><td>这就是「压六露四」：相邻两片之间那道台阶与阴影</td></tr>
+      <tr><td><b>错缝</b></td><td>相邻两列沿坡向错开半块（檐口那层不错，瓦口要整齐）</td><td>横缝对成一条直线是"贴瓷砖"，错开半步才是手工铺的</td></tr>
+      <tr><td><b>按弧长分层</b></td><td><code>courses</code> 按屋面坡长均分，不是按 z 等分</td><td>按 z 分会近顶挤成一片、檐口拉得老长——"远看像、近看假"最常见的原因</td></tr>
+      <tr><td><b>瓦当 / 滴水</b></td><td>最下层筒瓦端头套一个 1.55 倍半径的圆盘、再外凸 45%；板瓦端头挂一片下垂舌片</td><td>檐口那条起伏的花边。没有它，整个屋顶像"盖了块布"</td></tr>
+    </tbody>
+  </table>
+  <pre><code>{ "shape": "tiles", "label": "瓦面",
+  "rings": [ { "z": 3.00, "radius": 2.91 },   // 外挑一站 = 瓦口出檐
+             { "z": 3.02, "radius": 2.72 },   // 檐口
+             … 16 层举折 …,
+             { "z": 4.78, "radius": 0.10 } ],
+  "sides": 6, "rows": 7, "courses": 18,
+  "crown": 0.062, "thickness": 0.016, "lift": 0.02, "sag": 0.01 }</code></pre>
+  <p>代价是诚实的：8.4k → 41k 三角面、求值 152 → 331 ms。但瓦片只往屋面上"加"、不进布尔，
+  所以再密也不拖慢求值链；而且这棵树仍然是<b>代码生成的</b>——文档里存的只有三个参数。</p>
+
+  <h2>台基与木作：一行 fillet 补上"磨圆棱角"</h2>
+  <p>石活的棱角是磨圆的、木构件的棱也不会是刀切的直角。台基、台面、踏步、额枋分别挂了
+  <code>fillet</code>（0.018–0.045 m，六棱柱是凸体，滚球倒圆可用）。
+  同样的圆角如果手写，要自己算倒角轮廓再拼面；现在每个构件只多一个数字。</p>
+  <pre><code>{ "shape": "prism", "profile": [...], "height": 0.18, "fillet": 0.045 }
+{ "shape": "box", "width": 3.2, "depth": 0.13, "height": 0.22,
+  "fillet": { "radius": 0.025, "segments": 14 } }</code></pre>
+
+  <h2>屋顶是怎么做出来的</h2>
+  <table>
+    <thead>
+      <tr><th style="width:18%">构件</th><th style="width:36%">做法</th><th>为什么这样做</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><b>望板 / 瓦面</b></td>
+        <td>基层是正多边形截面沿 z 放样（16 层）；瓦由 <code>tiles</code> 逐片铺：每面 7 列 × 沿坡 18 层，筒瓦半径 6.2 cm、瓦厚 16 mm、叠压台阶 20 mm</td>
+        <td>基层只负责"举折"这条曲线（<code>r = R·(1−t)^1.25</code>，檐口平缓、近顶陡立）。瓦走独立特征：真瓦有厚度、有叠压、有错缝，一条波纹做不出来。</td>
+      </tr>
+      <tr>
+        <td><b>内腔</b></td>
+        <td>同一条举折曲线内缩 <code>0.14</code>、下沉 <code>0.05</code>，用 <code>mode: 'cut'</code> 切掉；底面再低 0.18 保证檐口通开</td>
+        <td>屋面从实心锥变成一层壳（体积 9.65 → 2.29 m³，剩 24%）。从亭内抬头是空的，能看见雷公柱与 6 根由戗。</td>
+      </tr>
+      <tr>
+        <td><b>翼角</b></td>
+        <td>沿角线扫一条扁带（横 0.7 m、厚 0.1 m），宽度向角尖收到 1/3，向外挑 15% 檐口半径、抬 0.36 m</td>
+        <td>光有戗脊，角部就是一根孤零零的棒子；只有板，又会变成贴在角上的船形片。翼角（瓦面）与戗脊必须走<b>同一条曲线</b>。</td>
+      </tr>
+      <tr>
+        <td><b>戗脊</b></td>
+        <td><code>sweep</code> 沿屋角棱线扫掠，到檐口接上翼角那条 9 点曲线</td>
+        <td>原来起翘只有 4 个折点，出来是几段直线拼的"撬棍"；平滑采样后才是一条连续上挑的脊。</td>
+      </tr>
+      <tr>
+        <td><b>封檐板</b></td>
+        <td>闭合 <code>sweep</code> 沿檐口走一圈，截面是 8 cm × 16 cm 的竖板，角部只抬 6 cm</td>
+        <td>壳的底边要封住，否则从下往上看是一圈纸边。角部大幅起翘交给翼角 —— 板翘起来而屋面没翘，就会出现悬空的"船形"异物。</td>
+      </tr>
+      <tr>
+        <td><b>木作</b></td>
+        <td>额枋、挂落、座凳都先按"一条边"建好，再 <code>circular</code> 阵列</td>
+        <td>6 条边的位置/朝向只有角度不同，交给阵列就不用手写 6 份。</td>
+      </tr>
+      <tr>
+        <td><b>宝顶</b></td>
+        <td>一条葫芦母线 <code>revolve</code></td>
+        <td>和花瓶同一个特征，改母线就是另一种宝顶。</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>踩到的坑（都写进注释了）</h2>
+  <ul>
+    <li><b>给截面加余弦波 ≠ 瓦</b>：波纹放样只能得到一条条圆脊，瓦片的边界、厚度、叠压、错缝、瓦当滴水一个都没有，远看是石棉瓦。真正的解法是把瓦做成独立特征（<code>tiles</code>），一片片铺。</li>
+    <li><b>封檐板高过瓦面 = 一圈挡水墙</b>：封檐板原来顶面在 <code>eaveZ + 0.095</code>，比瓦口高 4 cm，把整圈瓦当和滴水全挡住了。瓦要外挑到板外（第一站半径 ×1.07），板顶只托住瓦底（+0.01）。</li>
+    <li><b>瓦层间距 0.3 m 太稀</b>：真实板瓦只露 12–15 cm，按 0.3 m 铺出来只剩一道道横线，看不出「压六露四」。加密到 0.18 m 才有层层叠压的样子。</li>
+    <li><b><code>prism</code> 是居中拉伸</b>：z 从 −h/2 到 +h/2。台基忘了抬 h/2，整座亭子埋进地里 0.18 m——测试里加了「底面贴 z=0」的断言。</li>
+    <li><b>靠背装反了</b>：按边布置时局部 +Y 指向圆心（不是外侧），靠背被装到了座位里面，看着像一张桌子。改成 −Y 才朝向外面。</li>
+    <li><b>挂落离额枋 8 cm</b>：横木没贴住梁底，看起来是一排悬空的牙签。</li>
+    <li><b>戗脊太细太长</b>：第一版延伸出檐 16%、翘起 0.34 m，像两根触角；收成 4% / 0.38 m 垂直上挑才像"翘角"。</li>
+    <li><b>封檐板翘得太高 = 角上一艘船</b>：屋面是旋转对称放样、檐口永远在同一个 z，而板在角部抬了 0.34 m，两者之间就裂开一道缝，远看是块悬空的船形片。板只抬 6 cm，起翘交给与戗脊同路径的翼角，才接得住。</li>
+    <li><b>翼角外挑太少就成了铲子</b>：先做 5%（0.14 m）外挑 + 0.42 m 抬升，等于在檐口立一片竖板；改成外挑 15%（0.4 m）+ 抬 0.36 m，约 40°，才是"飞"出去。</li>
+    <li><b>轮廓被等弧长重采样</b>：<code>stitchRings</code> 会把每层截面按周长等分到同一个点数，轮廓上限 192。六角亭每面只能排 8 垄（<code>sides × 8 × 4 = 192</code>），八角亭自动降到 6 垄 —— 否则瓦楞会被采样抹平。</li>
+  </ul>
+
+  <h2>顺便：八角亭</h2>
+  <figure>
+    <img src="pavilion-oct.png" alt="八角亭" />
+    <figcaption>同一份代码 <code>sides: 8</code>：柱、额枋、挂落、座凳、戗脊、翼角的阵列数跟着变，屋面变成八边形放样，每面瓦列数按边长重排（铺位 1,512 → 1,440，八角每面窄所以列数少但面多）。20 个特征、44,719 面。</figcaption>
+  </figure>
+
+  <h2>已加入设计库（案例库）</h2>
+  <ul>
+    <li>功能区「造型」页 → <b>模型库</b> → 双击「六角攒尖亭」直接放到当前标高；选中构件后也可在属性面板「编辑造型」里换模板。</li>
+    <li>两份特征树是 <code>shared/models/pavilion-hex.json</code> / <code>pavilion-oct.json</code>：模型库、离线出图、AI few-shot 引用同一份，不存在"库里一个样、AI 生成另一个样"。</li>
+    <li>新增 <code>scripts/template-test.ts</code>：每个模板都走 <code>applyOps</code> → <code>buildElementModel</code> 真实链路，断言「能落库 / 有面 / 不超特征上限 / 尺寸合理 / 亭子落地」。挂在 <code>npm test</code> 里。</li>
+  </ul>
+
+  <p class="foot">
+    复现：<code>npm run pavilion</code>（出图到 <code>diagnostics/pavilion/</code>）· 飞机见 <code>diagnostics/aircraft/index.html</code><br />
+    渲染器 <code>scripts/lib/mini-render.ts</code> 为纯 CPU 软光栅，几何取自 <code>buildElementModel</code>，与视口同源；只有光照与材质表现不同。
+  </p>
+</div>
+</body>
+</html>

@@ -19,7 +19,12 @@ import {
 } from './auth.js';
 import { applyOps, OpsError, summarizeOps } from './ai/ops.js';
 import { buildProjectContext } from './ai/context.js';
+import { describeOpsBrief, compactConversation, maybeSummarize } from './ai/memory.js';
+import { contextWindowOf, describeUsage, estimateTokens } from './ai/budget.js';
 import { createProvider, resolveAiConfig } from './ai/provider.js';
+import { planWithRepair } from './ai/repair.js';
+import { ImageInputError, normalizeImages, quickMainSupportsImages } from './ai/vision.js';
+import { applyAttachments, describeAttachments, parseAttachments } from './ai/attachments.js';
 import { createSecretBox } from './crypto.js';
 import { createRateLimiter } from './limits.js';
 import { createStore } from './store.js';
@@ -86,21 +91,44 @@ if (store.countSystemAdmins() === 0) {
 }
 
 /** AI 配置：数据库设置优先，其次环境变量；apiKey 加密存储、只在服务端解密。 */
+const LEGACY_AI_TIMEOUT_MS = 60000;
+const DEFAULT_AI_TIMEOUT_MS = 180000;
+
 function loadAiConfig() {
   const envConfig = resolveAiConfig(process.env);
   const provider = store.getSetting('ai.provider') ?? envConfig.provider;
   const baseUrl = store.getSetting('ai.baseUrl') ?? envConfig.baseUrl;
   const model = store.getSetting('ai.model') ?? envConfig.model;
-  const timeoutRaw = Number(store.getSetting('ai.timeoutMs') ?? envConfig.timeoutMs);
+  const storedTimeout = store.getSetting('ai.timeoutMs');
+  let timeoutMs = Number(storedTimeout ?? envConfig.timeoutMs);
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) timeoutMs = DEFAULT_AI_TIMEOUT_MS;
+  // 旧版本默认 60 s：thinking 类模型（deepseek-v4-pro / qwen3 等）出一个精细特征树常要 1–4 分钟，
+  // 60 s 会被误判成超时。没手动改过的配置自动放宽到 3 分钟。
+  if (timeoutMs === LEGACY_AI_TIMEOUT_MS) timeoutMs = DEFAULT_AI_TIMEOUT_MS;
   const storedKey = store.getSetting('ai.apiKey');
   const apiKey = (storedKey ? secretBox.open(storedKey) : '') || envConfig.apiKey;
   const normalizedProvider = provider === 'openai' ? 'openai' : 'mock';
+  // 上下文窗口：留空按模型名推断；代理部署或私有量化模型可显式指定
+  const storedContextTokens = Number(store.getSetting('ai.contextTokens') ?? 0);
+
+  // 独立视觉模型：默认关闭，由用户在 AI 设置里显式开启；地址与 Key 都与主模型分开
+  const storedVisionEnabled = store.getSetting('ai.visionEnabled');
+  const storedVisionKey = store.getSetting('ai.visionApiKey');
   return {
     provider: normalizedProvider,
     baseUrl: String(baseUrl).replace(/\/+$/, ''),
     model,
     apiKey,
-    timeoutMs: Number.isFinite(timeoutRaw) ? timeoutRaw : envConfig.timeoutMs,
+    timeoutMs,
+    contextTokens: Number.isFinite(storedContextTokens) && storedContextTokens > 0
+      ? storedContextTokens
+      : envConfig.contextTokens,
+    vision: {
+      enabled: storedVisionEnabled === null ? envConfig.vision.enabled : storedVisionEnabled === '1',
+      model: String(store.getSetting('ai.visionModel') ?? envConfig.vision.model ?? '').trim(),
+      baseUrl: String(store.getSetting('ai.visionBaseUrl') ?? envConfig.vision.baseUrl ?? '').trim().replace(/\/+$/, ''),
+      apiKey: (storedVisionKey ? secretBox.open(storedVisionKey) : '') || envConfig.vision.apiKey,
+    },
     ready: normalizedProvider === 'mock' || Boolean(apiKey),
   };
 }
@@ -266,6 +294,40 @@ function sendJson(res, status, body) {
   res.end(raw);
 }
 
+/**
+ * 打开一个 SSE 流：text/event-stream + 关缓冲，返回发送 / 心跳 / 断开判断三个能力。
+ * 用于把 AI 的中间过程（思考、草稿、参数生成）实时推给前端。
+ */
+function beginEventStream(req, res) {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+  res.socket?.setNoDelay?.(true);
+  res.flushHeaders?.();
+
+  let closed = false;
+  res.on('close', () => { closed = true; });
+  req.on('aborted', () => { closed = true; });
+
+  return {
+    closed: () => closed,
+    send(event) {
+      if (closed || res.writableEnded) return;
+      res.write(`data: ${JSON.stringify(event)}\n\n`);
+    },
+    comment(text = 'ping') {
+      if (closed || res.writableEnded) return;
+      res.write(`: ${text}\n\n`);
+    },
+    end() {
+      if (!res.writableEnded) res.end();
+    },
+  };
+}
+
 function readBody(req, limit) {
   return new Promise((resolve, reject) => {
     const chunks = [];
@@ -294,8 +356,128 @@ async function readJson(req, limit = 1024 * 1024) {
   }
 }
 
-function userFromRequest(req) {
-  const header = req.headers.authorization ?? '';
+/** 带图请求的体积上限：图片以 base64 传输，比原始字节多约 1/3 */
+const MAX_AI_BODY_BYTES = 14 * 1024 * 1024;
+
+/** 图片校验（数量 / 格式 / 体积），错误转成 400 而不是 500 */
+function parseImageBody(body) {
+  try {
+    return normalizeImages(body?.images);
+  } catch (error) {
+    if (error instanceof ImageInputError) throw new HttpError(400, error.message);
+    throw error;
+  }
+}
+
+/** 允许「只传图不写字」：此时给一句默认需求，模型照着图建模 */
+/** 这次需求的那句话：没写字时按「只发了图 / 只发了文件」补一句，两者都没有才算缺需求 */
+function aiMessageOf(body, images, attachments = []) {
+  const text = String(body?.message ?? '').trim();
+  if (text) return text;
+  if (images.length) return '请参照这张图片把这个产品建出来（尺寸按图上比例估算）。';
+  if (attachments.length) return '请参考这几个附件里的内容，把模型建出来。';
+  throw new HttpError(400, '请输入需求描述，或上传一张参考图片 / 文本文件');
+}
+
+/** 会话里的参考图只留缩略图：原图几 MB，历史记录不该被图片撑爆 */
+const MAX_THUMB_CHARS = 60000;
+
+function parseThumbs(input) {
+  if (!Array.isArray(input)) return [];
+  return input
+    .filter((item) => typeof item === 'string' && item.startsWith('data:image/') && item.length <= MAX_THUMB_CHARS)
+    .slice(0, 4);
+}
+
+/**
+ * 打开会话上下文（多轮对话的落点）：
+ * - 滚动摘要 → 长期记忆，替代更早的原文
+ * - 摘要之后的消息 → 本次请求的 history
+ * - 当前这句用户需求立刻落库，即使生成失败也留在历史里
+ * conversationId 缺省时返回 null，调用方退回「前端自带 history」的旧行为。
+ */
+function openConversation({ conversationId, projectId, userId, message, thumbs, shots = 0, internal = false }) {
+  if (typeof conversationId !== 'string' || !conversationId) return null;
+  const conversation = store.getConversation(conversationId, { withMessages: false });
+  if (!conversation) throw new HttpError(404, '会话不存在');
+  if (conversation.projectId !== projectId) throw new HttpError(400, '该会话不属于当前项目');
+  requireProjectRole(conversation.projectId, userId, 'read');
+  const history = store.listMessages(conversationId, { afterSeq: conversation.summarySeq, limit: 60 })
+    .filter((item) => item.role === 'user' || item.role === 'assistant')
+    .map((item) => {
+      // 助手回复只存了自然语言，模型看不到自己上一轮到底改了什么，这里补一行指令标签
+      const brief = item.role === 'assistant' ? describeOpsBrief(item.ops) : '';
+      return { role: item.role, content: brief ? `${item.content}\n[本轮指令] ${brief}` : item.content };
+    });
+  // shots 标出末尾哪几张缩略图是「发送时自动附上的视口截图」：前端据此只把用户上传的那几张
+  // 画成参考图，自动截图折成一个小提示（旧数据没有这个字段，前端按正文里的标记兜底）。
+  const payload = {
+    ...(thumbs.length ? { thumbs } : {}),
+    ...(shots > 0 ? { shots: Math.min(thumbs.length, Math.trunc(shots)) } : {}),
+    // 自检循环里前端代发的「[自检第 n 步] 图给你了」不算用户发言：仍进上下文，但不在聊天区显示
+    ...(internal ? { internal: true } : {}),
+  };
+  const saved = store.appendMessage({
+    conversationId,
+    role: 'user',
+    content: message,
+    ...(Object.keys(payload).length ? { payload } : {}),
+  });
+  return {
+    id: conversationId,
+    memory: conversation.summary ?? '',
+    history,
+    userMessageId: saved.id,
+    title: saved.title ?? conversation.title ?? null,
+  };
+}
+
+/** AI 回复落库：带上 ops / 耗时 / 读图信息 / 上下文用量，历史里回看还能知道当时生成了什么 */
+function saveAssistantMessage(session, { reply, ops, summary, error, model, ms, repaired, warning, vision, inspect, context }) {
+  if (!session) return null;
+  return store.appendMessage({
+    conversationId: session.id,
+    role: 'assistant',
+    content: reply ?? '',
+    payload: {
+      ...(error ? { error: true } : {}),
+      ...(Array.isArray(ops) ? { ops } : {}),
+      ...(summary ? { summary } : {}),
+      ...(model ? { model } : {}),
+      ...(Number.isFinite(ms) ? { ms } : {}),
+      ...(repaired ? { repaired } : {}),
+      ...(warning ? { warning } : {}),
+      ...(vision ? { vision } : {}),
+      ...(Array.isArray(inspect) && inspect.length ? { inspect } : {}),
+      ...(context ? { context } : {}),
+    },
+  });
+}
+
+/**
+ * 会话当前的上下文占用（不调模型，纯估算）：
+ * 打开历史会话时先给个数字，用户才知道该不该点「压缩」。
+ */
+function conversationUsage(conversation) {
+  if (!conversation?.id) return null;
+  const pending = store.listMessages(conversation.id, { afterSeq: conversation.summarySeq ?? 0, limit: 400 })
+    .filter((item) => (item.role === 'user' || item.role === 'assistant') && item.content);
+  const historyTokens = estimateTokens(pending.map((item) => item.content).join('\n'));
+  const memoryTokens = estimateTokens(conversation.summary ?? '');
+  return {
+    model: aiConfig.model,
+    window: contextWindowOf(aiConfig.model, aiConfig.contextTokens),
+    tokens: historyTokens + memoryTokens,
+    breakdown: { memory: memoryTokens, history: historyTokens },
+    historyItems: pending.length,
+    compressed: 0,
+    // 未压缩的部分能压到多小：简单给个「压完只剩摘要 + 最近 6 条」的估计
+    estimatedAfter: memoryTokens + estimateTokens(pending.slice(-6).map((item) => item.content).join('\n')),
+    canCompact: pending.length > 6,
+  };
+}
+
+function userFromRequest(req) {  const header = req.headers.authorization ?? '';
   if (!header.startsWith('Bearer ')) return null;
   const payload = verifyToken(header.slice(7), SECRET);
   if (!payload) return null;
@@ -349,7 +531,15 @@ function checkAuthRate(req) {
 }
 
 function publicUser(user) {
-  return user ? { id: user.id, email: user.email, name: user.name, isAdmin: Boolean(user.isAdmin) } : null;
+  return user
+    ? {
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      isAdmin: Boolean(user.isAdmin),
+      createdAt: user.createdAt ?? null,
+    }
+    : null;
 }
 
 function enforceLimit(limiter, user, label) {
@@ -372,7 +562,16 @@ function aiSettingsView() {
     provider: aiConfig.provider,
     baseUrl: aiConfig.baseUrl,
     model: aiConfig.model,
+    visionEnabled: Boolean(aiConfig.vision?.enabled),
+    visionModel: aiConfig.vision?.model ?? '',
+    visionBaseUrl: aiConfig.vision?.baseUrl ?? '',
+    hasVisionKey: Boolean(aiConfig.vision?.apiKey),
+    visionKeyHint: aiConfig.vision?.apiKey ? `****${aiConfig.vision.apiKey.slice(-4)}` : '',
     timeoutMs: aiConfig.timeoutMs,
+    /** 0 表示按模型名自动推断窗口（见 server/ai/budget.js） */
+    contextTokens: aiConfig.contextTokens ?? 0,
+    /** 实际生效的窗口：前端据此显示「用了多少 / 总共多少」 */
+    contextWindow: contextWindowOf(aiConfig.model, aiConfig.contextTokens),
     hasKey: Boolean(aiConfig.apiKey),
     keyHint: aiConfig.apiKey ? `****${aiConfig.apiKey.slice(-4)}` : '',
     ready: aiConfig.ready,
@@ -380,6 +579,9 @@ function aiSettingsView() {
       provider: stored['ai.provider'] ? 'db' : 'env',
       baseUrl: stored['ai.baseUrl'] ? 'db' : 'env',
       model: stored['ai.model'] ? 'db' : 'env',
+      visionModel: stored['ai.visionModel'] ? 'db' : (process.env.STRU_AI_VISION_MODEL ? 'env' : 'none'),
+      visionBaseUrl: stored['ai.visionBaseUrl'] ? 'db' : (process.env.STRU_AI_VISION_BASE_URL ? 'env' : 'none'),
+      visionApiKey: stored['ai.visionApiKey'] ? 'db' : (process.env.STRU_AI_VISION_API_KEY ? 'env' : 'none'),
       apiKey: stored['ai.apiKey'] ? 'db' : (process.env.STRU_AI_API_KEY || process.env.OPENAI_API_KEY ? 'env' : 'none'),
     },
   };
@@ -461,6 +663,36 @@ async function handleApi(ctx) {
   if (pathname === '/api/me' && method === 'GET') {
     const user = requireUser(ctx);
     return sendJson(res, 200, { user: publicUser(user) });
+  }
+
+  // 改自己的显示名称（账号中心 → 个人资料）
+  if (pathname === '/api/me' && method === 'PATCH') {
+    const user = requireUser(ctx);
+    const body = await readJson(req);
+    const name = String(body.name ?? '').trim();
+    if (!name) throw new HttpError(400, '名称不能为空');
+    if (name.length > 40) throw new HttpError(400, '名称最多 40 个字符');
+    store.updateUser(user.id, { name });
+    store.audit(null, user.id, 'auth.profile.update', { name });
+    return sendJson(res, 200, { user: publicUser(store.userById(user.id)) });
+  }
+
+  // 改自己的密码（账号中心 → 安全）：必须验旧密码，按登录接口同样限流
+  if (pathname === '/api/me/password' && method === 'POST') {
+    checkAuthRate(req);
+    const user = requireUser(ctx);
+    const body = await readJson(req);
+    const currentPassword = String(body.currentPassword ?? '');
+    const newPassword = String(body.newPassword ?? '');
+    if (newPassword.length < 6) throw new HttpError(400, '新密码至少 6 位');
+    if (currentPassword === newPassword) throw new HttpError(400, '新密码不能与当前密码相同');
+    const record = store.findUserByEmail(user.email);
+    if (!record || !verifyPassword(currentPassword, record.passwordHash)) {
+      throw new HttpError(400, '当前密码不正确');
+    }
+    store.updateUser(user.id, { passwordHash: hashPassword(newPassword) });
+    store.audit(null, user.id, 'auth.password.change', {});
+    return sendJson(res, 200, { ok: true });
   }
 
   if (pathname === '/api/users/lookup' && method === 'GET') {
@@ -804,15 +1036,52 @@ async function handleApi(ctx) {
     if (body.model !== undefined && (typeof body.model !== 'string' || !body.model.trim())) {
       throw new HttpError(400, 'model 不能为空');
     }
+    if (body.visionModel !== undefined && typeof body.visionModel !== 'string') {
+      throw new HttpError(400, 'visionModel 必须是字符串（留空表示不启用）');
+    }
+    if (body.visionBaseUrl !== undefined) {
+      const value = String(body.visionBaseUrl).trim();
+      if (value && !/^https?:\/\//.test(value)) throw new HttpError(400, '视觉模型接口地址必须以 http:// 或 https:// 开头');
+    }
+    if (body.visionEnabled !== undefined && typeof body.visionEnabled !== 'boolean') {
+      throw new HttpError(400, 'visionEnabled 必须是布尔值');
+    }
     if (body.timeoutMs !== undefined) {
       const timeout = Number(body.timeoutMs);
       if (!Number.isFinite(timeout) || timeout < 1000 || timeout > 300000) {
         throw new HttpError(400, 'timeoutMs 需在 1000–300000 之间');
       }
     }
+    if (body.contextTokens !== undefined) {
+      const value = Number(body.contextTokens);
+      // 0 表示「按模型名自动推断」，避免用户不知道自己的模型窗口时被逼着填
+      if (!Number.isFinite(value) || value < 0 || value > 2000000) {
+        throw new HttpError(400, 'contextTokens 需在 0–2000000 之间（0 = 按模型名自动推断）');
+      }
+    }
     if (body.provider !== undefined) store.setSetting('ai.provider', String(body.provider), admin.id);
     if (body.baseUrl !== undefined) store.setSetting('ai.baseUrl', String(body.baseUrl).replace(/\/+$/, ''), admin.id);
     if (body.model !== undefined) store.setSetting('ai.model', String(body.model).trim(), admin.id);
+    if (body.contextTokens !== undefined) {
+      const value = Math.round(Number(body.contextTokens));
+      if (value > 0) store.setSetting('ai.contextTokens', String(value), admin.id);
+      else store.deleteSetting('ai.contextTokens');
+    }
+    if (body.visionEnabled !== undefined) store.setSetting('ai.visionEnabled', body.visionEnabled ? '1' : '0', admin.id);
+    if (body.visionModel !== undefined) {
+      const visionModel = String(body.visionModel).trim();
+      if (visionModel) store.setSetting('ai.visionModel', visionModel, admin.id);
+      else store.deleteSetting('ai.visionModel');
+    }
+    if (body.visionBaseUrl !== undefined) {
+      const visionBaseUrl = String(body.visionBaseUrl).trim().replace(/\/+$/, '');
+      if (visionBaseUrl) store.setSetting('ai.visionBaseUrl', visionBaseUrl, admin.id);
+      else store.deleteSetting('ai.visionBaseUrl');
+    }
+    if (typeof body.visionApiKey === 'string' && body.visionApiKey.trim()) {
+      store.setSetting('ai.visionApiKey', secretBox.seal(body.visionApiKey.trim()), admin.id);
+    }
+    if (body.clearVisionKey === true) store.deleteSetting('ai.visionApiKey');
     if (body.timeoutMs !== undefined) store.setSetting('ai.timeoutMs', String(Math.round(Number(body.timeoutMs))), admin.id);
     if (typeof body.apiKey === 'string' && body.apiKey.trim()) {
       store.setSetting('ai.apiKey', secretBox.seal(body.apiKey.trim()), admin.id);
@@ -837,6 +1106,7 @@ async function handleApi(ctx) {
         ok: true,
         provider: aiProvider.id,
         model: aiConfig.model,
+        degraded: Boolean(result.degraded),
         reply: String(result.reply ?? '').slice(0, 200),
       });
     } catch (error) {
@@ -848,16 +1118,123 @@ async function handleApi(ctx) {
     }
   }
 
+  /* ---------- AI 会话：历史对话（关掉面板 / 换设备都能接着看、接着改） ---------- */
+
+  // 会话本身不带权限位，归属靠 project_members 判定
+  const conversationFor = (conversationId, userId, level = 'read') => {
+    const conversation = store.getConversation(conversationId, { withMessages: false });
+    if (!conversation) throw new HttpError(404, '会话不存在');
+    requireProjectRole(conversation.projectId, userId, level);
+    return conversation;
+  };
+
+  if ((match = pathname.match(/^\/api\/projects\/([^/]+)\/ai\/conversations$/))) {
+    const projectId = match[1];
+    const user = requireUser(ctx);
+    requireProjectRole(projectId, user.id, 'read');
+    if (method === 'GET') {
+      return sendJson(res, 200, { conversations: store.listConversations(projectId) });
+    }
+    if (method === 'POST') {
+      const body = await readJson(req, 64 * 1024);
+      const title = typeof body.title === 'string' ? body.title.trim().slice(0, 80) : '';
+      const conversation = store.createConversation({ projectId, userId: user.id, title: title || null });
+      store.audit(projectId, user.id, 'ai.conversation.create', { id: conversation.id });
+      return sendJson(res, 201, { conversation });
+    }
+  }
+
+  if ((match = pathname.match(/^\/api\/ai\/conversations\/([^/]+)$/))) {
+    const conversationId = match[1];
+    const user = requireUser(ctx);
+    if (method === 'GET') {
+      conversationFor(conversationId, user.id, 'read');
+      const full = store.getConversation(conversationId);
+      return sendJson(res, 200, { conversation: { ...full, usage: conversationUsage(full) } });
+    }
+    if (method === 'PATCH') {
+      conversationFor(conversationId, user.id, 'read');
+      const body = await readJson(req, 64 * 1024);
+      if (typeof body.title === 'string') {
+        const title = body.title.trim().slice(0, 80);
+        if (title) store.renameConversation(conversationId, title);
+      }
+      return sendJson(res, 200, { conversation: store.getConversation(conversationId, { withMessages: false }) });
+    }
+    if (method === 'DELETE') {
+      const conversation = conversationFor(conversationId, user.id, 'write');
+      store.deleteConversation(conversationId);
+      store.audit(conversation.projectId, user.id, 'ai.conversation.delete', { id: conversationId });
+      return sendJson(res, 200, { ok: true });
+    }
+  }
+
+  // 手动压缩上下文：把更早的消息压成备忘（面板上的「压缩」按钮）。
+  // 自动压缩要攒到 18 条 / 9k token 才触发，用户想立刻省 token 时得有这条手动通道。
+  if ((match = pathname.match(/^\/api\/projects\/([^/]+)\/ai\/conversations\/([^/]+)\/compact$/)) && method === 'POST') {
+    const [, projectId, conversationId] = match;
+    const user = requireUser(ctx);
+    requireProjectRole(projectId, user.id, 'read');
+    enforceLimit(aiLimiter, user, 'AI');
+    if (aiProvider.id === 'mock') {
+      throw new HttpError(400, 'Mock 模式没有可用的摘要模型，压缩需要先在 AI 设置里配置真实模型');
+    }
+    if (!aiConfig.ready) {
+      throw new HttpError(503, 'AI 未配置：设置 STRU_AI_API_KEY（或 STRU_AI_PROVIDER=mock 使用本地模拟）');
+    }
+    const conversation = store.getConversation(conversationId, { withMessages: false });
+    if (!conversation) throw new HttpError(404, '会话不存在');
+    if (conversation.projectId !== projectId) throw new HttpError(400, '该会话不属于当前项目');
+    try {
+      const result = await compactConversation({ store, provider: aiProvider, conversationId });
+      store.audit(projectId, user.id, 'ai.conversation.compact', {
+        conversationId,
+        compacted: result.compacted,
+        before: result.before,
+        after: result.after,
+        remaining: result.remaining,
+      });
+      return sendJson(res, 200, {
+        ...result,
+        usage: conversationUsage(store.getConversation(conversationId, { withMessages: false })),
+      });
+    } catch (error) {
+      throw new HttpError(502, error instanceof Error ? error.message : '压缩失败');
+    }
+  }
+
+  // 回写某条 AI 回复的状态：是否已应用到模型、产生了哪个 rev
+  if ((match = pathname.match(/^\/api\/ai\/conversations\/([^/]+)\/messages\/([^/]+)$/)) && method === 'PATCH') {
+    const [, conversationId, messageId] = match;
+    const user = requireUser(ctx);
+    conversationFor(conversationId, user.id, 'read');
+    const body = await readJson(req, 256 * 1024);
+    const patch = {};
+    if (typeof body.applied === 'boolean') patch.applied = body.applied;
+    if (Number.isFinite(body.rev)) patch.rev = body.rev;
+    const merged = store.updateMessagePayload(conversationId, messageId, patch);
+    if (!merged) throw new HttpError(404, '消息不存在');
+    return sendJson(res, 200, { message: { id: messageId, ...merged } });
+  }
+
   /* ---------- AI 建模助手 ---------- */
 
   if (pathname === '/api/ai/status' && method === 'GET') {
     requireUser(ctx);
+    // 主模型能不能读图：前端据此决定要不要在发送时附上视口截图（看成品自检）。
+    // null 代表网关没给出模态信息，按「能读」试一次；Mock 明确不读图。
+    const mainImage = aiProvider.id === 'mock' ? false : await quickMainSupportsImages(aiConfig);
+    const canSeeImages = mainImage !== false || Boolean(aiConfig.vision?.enabled);
     return sendJson(res, 200, {
       provider: aiProvider.id,
       model: aiConfig.model,
+      vision: { enabled: Boolean(aiConfig.vision?.enabled), model: aiConfig.vision?.model ?? '' },
+      canSeeImages,
+      /** 上下文窗口（前端显示「已用 / 总量」，超过 70% 变黄提示压缩） */
+      contextWindow: contextWindowOf(aiConfig.model, aiConfig.contextTokens),
       ready: aiConfig.ready,
       mock: aiProvider.id === 'mock',
-      ops: ['addLevel', 'addGrid', 'addWall', 'addColumn', 'addSlab', 'updateElement', 'setTypeProperty', 'deleteElement'],
+      ops: ['addLevel', 'addGrid', 'addWall', 'addColumn', 'addSlab', 'addSolid', 'addFeature', 'editFeature', 'deleteFeature', 'updateElement', 'setTypeProperty', 'deleteElement'],
     });
   }
 
@@ -869,35 +1246,272 @@ async function handleApi(ctx) {
     if (!aiConfig.ready) {
       throw new HttpError(503, 'AI 未配置：设置 STRU_AI_API_KEY（或 STRU_AI_PROVIDER=mock 使用本地模拟）');
     }
-    const body = await readJson(req);
-    const message = String(body.message ?? '').trim();
-    if (!message) throw new HttpError(400, '请输入需求描述');
-    if (message.length > 4000) throw new HttpError(400, '需求描述过长');
+    const body = await readJson(req, MAX_AI_BODY_BYTES);
+    const images = parseImageBody(body);
+    // 文本附件（txt / md / json / csv / 代码…）先解析：只给文件不写字时还要靠它补一句默认需求
+    const attachments = parseAttachments(body.attachments);
+    const typed = aiMessageOf(body, images, attachments);
+    if (typed.length > 4000) throw new HttpError(400, '需求描述过长');
+    const message = applyAttachments(typed, attachments);
     const stored = store.getDocument(projectId);
     if (!stored) throw new HttpError(404, '项目文档不存在');
     const context = buildProjectContext(
       stored.document,
       Array.isArray(body.selectedIds) ? body.selectedIds.slice(0, 200) : [],
     );
+    // 会话上下文：命中会话就用库里存的摘要 + 未压缩消息，否则退回前端传的 history
+    const session = openConversation({
+      conversationId: body.conversationId,
+      projectId,
+      userId: user.id,
+      message,
+      thumbs: parseThumbs(body.imageThumbs),
+      shots: Number(body.imageShots) || 0,
+      internal: body.internal === true,
+    });
     let result;
+    let repaired = 0;
+    let warning = '';
+    const planStarted = Date.now();
+    const history = session ? session.history : Array.isArray(body.history) ? body.history : [];
+    const memory = session?.memory ?? '';
     try {
-      result = await aiProvider.plan({
+      const planned = await planWithRepair({
+        run: (args) => aiProvider.plan(args),
         message,
         context,
-        history: Array.isArray(body.history) ? body.history : [],
+        history,
+        memory,
+        images,
+        document: stored.document,
       });
+      result = planned.result;
+      repaired = planned.repaired ?? 0;
+      warning = planned.warning ?? '';
     } catch (error) {
-      throw new HttpError(502, error instanceof Error ? error.message : 'AI 调用失败');
+      const detail = error instanceof Error ? error.message : 'AI 调用失败';
+      // 失败也留痕：排查「非 JSON / 超时 / 网关错误」时不必再猜（审计表只记成功调用）
+      console.warn(`[ai] plan 失败 ${Date.now() - planStarted}ms provider=${aiProvider.id} model=${aiConfig.model} baseUrl=${aiConfig.baseUrl} images=${images.length} :: ${detail.slice(0, 500)}`);
+      saveAssistantMessage(session, { reply: `生成失败：${detail}`, error: true });
+      throw new HttpError(502, detail);
     }
-    store.audit(projectId, user.id, 'ai.plan', { provider: aiProvider.id, message: message.slice(0, 200) });
+    const ops = Array.isArray(result.ops) ? result.ops : [];
+    const inspect = Array.isArray(result.inspect) ? result.inspect : [];
+    const summary = summarizeOps(ops);
+    const saved = saveAssistantMessage(session, {
+      reply: result.reply ?? '',
+      ops,
+      summary,
+      model: aiConfig.model,
+      ms: Date.now() - planStarted,
+      repaired,
+      warning,
+      vision: result.vision ?? null,
+      inspect,
+      context: result.context ?? null,
+    });
+    // 会话变长后压缩更早的消息（后台跑，不影响这次响应）
+    void maybeSummarize({ store, provider: aiProvider, session });
+    store.audit(projectId, user.id, 'ai.plan', {
+      provider: aiProvider.id,
+      message: message.slice(0, 200),
+      ms: Date.now() - planStarted,
+      degraded: Boolean(result.degraded),
+      repaired,
+      images: images.length,
+      vision: result.vision?.model,
+      inspect: inspect.length,
+      attachments: describeAttachments(attachments),
+      conversationId: session?.id ?? null,
+      context: result.context ? describeUsage(result.context) : '',
+    });
     return sendJson(res, 200, {
       reply: result.reply ?? '',
-      ops: Array.isArray(result.ops) ? result.ops : [],
-      summary: summarizeOps(result.ops ?? []),
+      ops,
+      inspect,
+      done: result.done === true,
+      summary,
       provider: aiProvider.id,
       model: aiConfig.model,
       mock: aiProvider.id === 'mock',
+      ms: Date.now() - planStarted,
+      repaired,
+      warning,
+      vision: result.vision ?? null,
+      context: result.context ?? null,
+      conversationId: session?.id ?? null,
+      messageId: saved?.id ?? null,
+      userMessageId: session?.userMessageId ?? null,
     });
+  }
+
+  // 流式版：把模型的思考过程、输出草稿、特征树生成进度实时推给前端（SSE）。
+  // thinking 模型一次请求要几十秒到几分钟，没有中间过程用户只会以为卡死。
+  if ((match = pathname.match(/^\/api\/projects\/([^/]+)\/ai\/plan\/stream$/)) && method === 'POST') {
+    const projectId = match[1];
+    const user = requireUser(ctx);
+    requireProjectRole(projectId, user.id, 'read');
+    enforceLimit(aiLimiter, user, 'AI');
+    if (!aiConfig.ready) {
+      throw new HttpError(503, 'AI 未配置：设置 STRU_AI_API_KEY（或 STRU_AI_PROVIDER=mock 使用本地模拟）');
+    }
+    const body = await readJson(req, MAX_AI_BODY_BYTES);
+    const images = parseImageBody(body);
+    // 文本附件（txt / md / json / csv / 代码…）先解析：只给文件不写字时还要靠它补一句默认需求
+    const attachments = parseAttachments(body.attachments);
+    const typed = aiMessageOf(body, images, attachments);
+    if (typed.length > 4000) throw new HttpError(400, '需求描述过长');
+    const message = applyAttachments(typed, attachments);
+    const stored = store.getDocument(projectId);
+    if (!stored) throw new HttpError(404, '项目文档不存在');
+    const context = buildProjectContext(
+      stored.document,
+      Array.isArray(body.selectedIds) ? body.selectedIds.slice(0, 200) : [],
+    );
+    // 权限/归属校验必须在开 SSE 之前：抛错时还能返回正常 JSON 错误
+    const session = openConversation({
+      conversationId: body.conversationId,
+      projectId,
+      userId: user.id,
+      message,
+      thumbs: parseThumbs(body.imageThumbs),
+      shots: Number(body.imageShots) || 0,
+      internal: body.internal === true,
+    });
+    const memory = session?.memory ?? '';
+    const history = session ? session.history : Array.isArray(body.history) ? body.history : [];
+
+    const stream = beginEventStream(req, res);
+    const heartbeat = setInterval(() => stream.comment(), 15000);
+    heartbeat.unref?.();
+    // 客户端点了「停止」：把上游请求一起掐掉，别白烧 token
+    const cancel = new AbortController();
+    let finished = false;
+    res.on('close', () => {
+      if (!finished) cancel.abort();
+    });
+
+    const planStarted = Date.now();
+    let events = 0;
+    stream.send({
+      type: 'start',
+      provider: aiProvider.id,
+      model: aiConfig.model,
+      mock: aiProvider.id === 'mock',
+      images: images.length,
+    });
+    // 上游是逐 token 吐的，一个汉字一帧 SSE 太浪费：按 100ms 合并成一批再推
+    let pendingReasoning = '';
+    let pendingContent = '';
+    let lastFlush = 0;
+    const flushDeltas = (force = false) => {
+      const stamp = Date.now();
+      if (!force && stamp - lastFlush < 100 && pendingReasoning.length < 2000 && pendingContent.length < 2000) return;
+      lastFlush = stamp;
+      if (pendingReasoning) {
+        stream.send({ type: 'reasoning', delta: pendingReasoning });
+        pendingReasoning = '';
+      }
+      if (pendingContent) {
+        stream.send({ type: 'content', delta: pendingContent });
+        pendingContent = '';
+      }
+    };
+    // 上游事件统一入口：增量合帧后推 SSE；自动修正轮复用同一个出口
+    const onEvent = (event) => {
+      if (event.type === 'reasoning') {
+        pendingReasoning += event.delta;
+        flushDeltas();
+        return;
+      }
+      if (event.type === 'content') {
+        pendingContent += event.delta;
+        flushDeltas();
+        return;
+      }
+      events += 1;
+      flushDeltas(true);
+      if (cancel.signal.aborted) return;
+      stream.send(event);
+    };
+    try {
+      const planned = await planWithRepair({
+        run: (args) => aiProvider.planStream({ ...args, signal: cancel.signal, onEvent }),
+        message,
+        context,
+        history,
+        memory,
+        images,
+        document: stored.document,
+        // 修正轮也要把「在改什么」推给前端，否则用户会以为模型卡住重来了一次
+        onEvent,
+      });
+      const result = planned.result;
+      flushDeltas(true);
+      const ops = Array.isArray(result.ops) ? result.ops : [];
+      const inspect = Array.isArray(result.inspect) ? result.inspect : [];
+      const summary = summarizeOps(ops);
+      const saved = saveAssistantMessage(session, {
+        reply: result.reply ?? '',
+        ops,
+        summary,
+        model: aiConfig.model,
+        ms: Date.now() - planStarted,
+        repaired: planned.repaired ?? 0,
+        warning: planned.warning ?? '',
+        vision: result.vision ?? null,
+        inspect,
+        context: result.context ?? null,
+      });
+      void maybeSummarize({ store, provider: aiProvider, session });
+      store.audit(projectId, user.id, 'ai.plan', {
+        provider: aiProvider.id,
+        message: message.slice(0, 200),
+        ms: Date.now() - planStarted,
+        degraded: Boolean(result.degraded),
+        stream: true,
+        repaired: planned.repaired ?? 0,
+        images: images.length,
+        vision: result.vision?.model,
+        inspect: inspect.length,
+        attachments: describeAttachments(attachments),
+        conversationId: session?.id ?? null,
+        context: result.context ? describeUsage(result.context) : '',
+      });
+      stream.send({
+        type: 'result',
+        reply: result.reply ?? '',
+        ops,
+        inspect,
+        done: result.done === true,
+        summary,
+        provider: aiProvider.id,
+        model: aiConfig.model,
+        mock: aiProvider.id === 'mock',
+        ms: Date.now() - planStarted,
+        events,
+        repaired: planned.repaired ?? 0,
+        warning: planned.warning ?? '',
+        vision: result.vision ?? null,
+        context: result.context ?? null,
+        conversationId: session?.id ?? null,
+        messageId: saved?.id ?? null,
+        userMessageId: session?.userMessageId ?? null,
+      });
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : 'AI 调用失败';
+      // 用户点了「停止」/ 关了页面：不算故障，静默收尾
+      if (!cancel.signal.aborted) {
+        console.warn(`[ai] plan(stream) 失败 ${Date.now() - planStarted}ms provider=${aiProvider.id} model=${aiConfig.model} baseUrl=${aiConfig.baseUrl} images=${images.length} events=${events} :: ${detail.slice(0, 500)}`);
+      }
+      saveAssistantMessage(session, { reply: `生成中断：${detail}`, error: true });
+      stream.send({ type: 'error', message: detail });
+    } finally {
+      finished = true;
+      clearInterval(heartbeat);
+      stream.end();
+    }
+    return;
   }
 
   if ((match = pathname.match(/^\/api\/projects\/([^/]+)\/ai\/apply$/)) && method === 'POST') {
@@ -925,7 +1539,7 @@ async function handleApi(ctx) {
     });
     if (!saved || !saved.rev) throw new HttpError(400, saved?.error ?? '保存失败');
     store.audit(projectId, user.id, 'ai.apply', { rev: saved.rev, summary: summarizeOps(body.ops) });
-    collab.broadcastDocument(projectId, saved.rev, result.document);
+    collab.broadcastDocument(projectId, saved.rev, result.document, user.id);
     return sendJson(res, 200, {
       rev: saved.rev,
       document: result.document,

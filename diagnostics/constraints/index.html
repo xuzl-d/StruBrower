@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>通用约束：任意模型上的尺寸依赖与设计规则</title>
+<style>
+  :root {
+    --ink: #16202b; --ink-2: #4a5866; --ink-3: #7b8896;
+    --line: #e3e8ee; --bg: #f7f9fb; --card: #fff;
+    --ok: #1f7a4d; --warn: #b26a00; --accent: #2f5d8a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.65 -apple-system, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 48px 28px 80px; }
+  header h1 { font-size: 27px; margin: 0 0 6px; letter-spacing: -0.4px; }
+  header p { margin: 0; color: var(--ink-2); }
+  .meta { color: var(--ink-3); font-size: 13px; margin-top: 10px; }
+  h2 { font-size: 17px; margin: 44px 0 14px; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
+  h3 { font-size: 14px; margin: 22px 0 8px; color: var(--ink-2); }
+  .verdict { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-top: 26px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; }
+  .card .tag { font-size: 12px; font-weight: 600; letter-spacing: .4px; color: var(--ink-3); }
+  .card strong { display: block; font-size: 19px; margin: 4px 0 6px; }
+  .card p { margin: 0; color: var(--ink-2); font-size: 13.5px; }
+  figure { margin: 14px 0 0; }
+  figure img { width: 100%; display: block; border-radius: 10px; border: 1px solid var(--line); background: #fff; }
+  figcaption { font-size: 12.5px; color: var(--ink-3); margin-top: 8px; }
+  table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 13.5px; }
+  th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--ink-3); font-weight: 600; font-size: 12.5px; letter-spacing: .3px; }
+  td.num { font-variant-numeric: tabular-nums; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; background: #eef2f6; border-radius: 4px; padding: 1px 5px; }
+  pre { background: #16202b; color: #e7edf3; padding: 14px 16px; border-radius: 10px; overflow-x: auto; font-size: 12.5px; line-height: 1.6; }
+  pre code { background: none; padding: 0; color: inherit; }
+  ul { margin: 8px 0 0; padding-left: 20px; color: var(--ink-2); }
+  li { margin: 5px 0; }
+  .note { background: #fff8e8; border: 1px solid #f0e0bd; border-radius: 10px; padding: 14px 18px; color: #6b4d12; font-size: 13.5px; margin-top: 16px; }
+  .ok { color: var(--ok); font-weight: 600; }
+  .bad { color: var(--warn); font-weight: 600; }
+  .foot { margin-top: 48px; color: var(--ink-3); font-size: 12.5px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>通用约束：任意模型上的尺寸依赖与设计规则</h1>
+    <p>不是「模板能调尺寸」，而是任何一棵特征树都能被 AI 后加约束：改一个源参数整组重算，违反设计规则就报警。</p>
+    <div class="meta">
+      实现：<code>shared/dimensions.js</code>（尺寸寻址）· <code>shared/constraints.js</code>（求值）·
+      <code>server/ai/constraints.js</code>（<code>setConstraints</code> 校验）· 复现命令 <code>npm run constraint</code>
+    </div>
+  </header>
+
+  <div class="verdict">
+    <div class="card">
+      <div class="tag">模型</div>
+      <strong>手写特征树，非模板</strong>
+      <p>踏步阵列 + 立柱阵列，2 个特征；约束是后加的，没有一行生成器代码。</p>
+    </div>
+    <div class="card">
+      <div class="tag">约束体积</div>
+      <strong>731 B / 32 个数字</strong>
+      <p>8 个尺寸别名 + 8 条驱动式 + 2 条校验式，几何一个字节都不复制。</p>
+    </div>
+    <div class="card">
+      <div class="tag">验证</div>
+      <strong class="ok">104 项全绿</strong>
+      <p>寻址 / 求值 / 校验 / 拒绝 / 特征增删搬家，全走真实链路。</p>
+    </div>
+  </div>
+
+  <h2>1. 只改「层高」，楼梯自己长</h2>
+  <figure>
+    <img src="stair-height.png" alt="三座楼梯：层高 2.8 / 3.3 / 3.9 m，踏步数与踏步高由约束算出" />
+    <figcaption>同一份特征树、同一组约束，只把「层高」改成 2.8 / 3.3 / 3.9 m。
+      踏步数、踏步高、阵列步距、立柱数量与起点高度全部由公式算出。</figcaption>
+  </figure>
+
+  <table>
+    <thead>
+      <tr><th>层高</th><th>踏步数</th><th>踏步高</th><th>外廓高</th><th>水平投影</th><th>校验</th></tr>
+    </thead>
+    <tbody>
+      <tr><td class="num">2.8 m</td><td class="num">17</td><td class="num">158 mm</td><td class="num">3.58 m</td><td class="num">4.76 m</td><td class="ok">通过</td></tr>
+      <tr><td class="num">3.3 m</td><td class="num">20</td><td class="num">159 mm</td><td class="num">4.08 m</td><td class="num">5.60 m</td><td class="ok">通过</td></tr>
+      <tr><td class="num">3.9 m</td><td class="num">24</td><td class="num">158 mm</td><td class="num">4.68 m</td><td class="num">6.72 m</td><td class="ok">通过</td></tr>
+    </tbody>
+  </table>
+  <p style="color: var(--ink-2); font-size: 13.5px; margin-top: 10px;">
+    把踏步高强行改成 220 mm：模型照改（<span class="bad">220 mm</span>），但校验式报
+    「踏步高大于 180 mm，上楼吃力」——<b>只报警，不偷偷夹回</b>。
+  </p>
+
+  <h2>2. 约束长什么样</h2>
+<pre><code>const CONSTRAINTS = {
+  dimensions: [
+    { name: '踏步数',   path: 'f1.count' },
+    { name: '踏步高',   path: 'f1.height' },
+    { name: '踏步起点Z', path: 'f1.translate.2' },
+    { name: '踏步步距Z', path: 'f1.step.2' },
+    { name: '立柱数',   path: 'f2.count' },
+    { name: '立柱起点Z', path: 'f2.translate.2' },
+    { name: '立柱步距Z', path: 'f2.step.2' },
+    { name: '踏步步距Y', path: 'f1.step.1' },
+  ],
+  checks: [
+    { expr: '踏步高 &gt;= 0.14', message: '踏步高小于 140 mm，上楼梯容易踩空' },
+    { expr: '踏步高 &lt;= 0.18', message: '踏步高大于 180 mm，上楼吃力' },
+  ],
+};
+
+const FORMULAS = {
+  踏步数:   'round((层高 - 0.12) / 0.16)',
+  踏步高:   '(层高 - 0.12) / 踏步数',
+  踏步起点Z: '0.12 + 踏步高 / 2',
+  踏步步距Z: '踏步高',
+  立柱数:   '踏步数',
+  立柱起点Z: '0.12 + 踏步高 + 0.45',
+  立柱步距Z: '踏步高',
+  踏步步距Y: '0.28',
+};</code></pre>
+
+  <h2>3. 三种写法，三种职责</h2>
+  <table>
+    <thead><tr><th>字段</th><th>语义</th><th>求值方式</th><th>失败时</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>dimensions</code></td>
+        <td>给尺寸起名：别名 → 路径</td>
+        <td>只影响可读性，不参与计算</td>
+        <td>别名指向不存在的路径 → 服务端 400，列出可用路径</td>
+      </tr>
+      <tr>
+        <td><code>formulas</code></td>
+        <td>驱动式：这个数 = 表达式</td>
+        <td>依赖拓扑排序，一次算完写回</td>
+        <td>引用未知量 / 成环 / 一尺寸两公式 → 400</td>
+      </tr>
+      <tr>
+        <td><code>checks</code></td>
+        <td>校验式：写「要求」，为假即违规</td>
+        <td>算完再核对，不参与求解</td>
+        <td>语法错 → 400；不满足 → 进报告，模型不变</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>4. 可寻址的尺寸</h2>
+  <table>
+    <thead><tr><th>写法</th><th>含义</th><th>例</th></tr></thead>
+    <tbody>
+      <tr><td><code>f&lt;n&gt;.&lt;字段&gt;</code></td><td>第 n 个特征的形状字段</td><td><code>f2.height</code> <code>f2.radius</code> <code>f2.thickness</code></td></tr>
+      <tr><td><code>f&lt;n&gt;.&lt;字段&gt;.&lt;下标&gt;</code></td><td>数组字段（变换、阵列、放样截面）</td><td><code>f2.translate.2</code> <code>f2.step.1</code> <code>f2.sections.0.ellipse.rx</code></td></tr>
+      <tr><td><code>f&lt;n&gt;.count</code></td><td>阵列数量（整数，1–192）</td><td><code>f1.count</code></td></tr>
+      <tr><td><code>f&lt;n&gt;.fillet / shell / offset</code></td><td>曲面修饰的标量</td><td><code>f4.fillet</code></td></tr>
+      <tr><td><code>f&lt;n&gt;.g&lt;m&gt;.&lt;字段&gt;</code></td><td>子特征组内的第 m 个特征</td><td><code>f3.g1.height</code></td></tr>
+      <tr><td><code>param.&lt;key&gt;</code></td><td>模型参数</td><td><code>param.width</code></td></tr>
+      <tr><td><code>primitive.&lt;key&gt;</code></td><td>基本体尺寸</td><td><code>primitive.width</code></td></tr>
+    </tbody>
+  </table>
+
+  <h2>5. 已知边界</h2>
+  <ul>
+    <li><b>只驱动特征字段，不做几何约束</b>：相切 / 同心 / 共线需要 B-rep 拓扑命名与数值求解，
+      与「特征树每次重建」冲突，明确留白。</li>
+    <li><b>单向</b>：改源参数 → 派生量变；改派生尺寸会在下次重算时被覆盖（与 Revit 公式参数一致）。</li>
+    <li><b>只校验、不夹取</b>：违反 <code>checks</code> 的模型照样生成，问题进面板与报告。</li>
+    <li><b>参数化构件只暴露 <code>param.*</code></b>：它的几何由生成器按参数重建，写特征字段会被下次重建吞掉。</li>
+    <li><b>特征增删会自动搬家</b>：插在 <code>f2</code> 前面的特征会把约束挪到 <code>f3</code>，被删特征上的约束直接清掉。</li>
+  </ul>
+
+  <div class="note">
+    设计取舍与完整接口见 <code>docs/CONSTRAINTS.md</code>；测试 <code>scripts/constraint-test.ts</code>（104 项）。
+    本文档由 <code>npm run constraint</code> 的同一套数据手工校对。
+  </div>
+
+  <div class="foot">StruBrowser · 通用约束 · 尺寸寻址 + 单向驱动 + 规则校验</div>
+</div>
+</body>
+</html>

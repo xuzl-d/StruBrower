@@ -12,9 +12,9 @@ export interface CollabUser {
 
 export interface CollabHandlers {
   onStatus: (status: CollabStatus) => void;
-  onHello: (payload: { rev: number; document: ProjectDocument; users: CollabUser[]; role: string }) => void;
-  onPatch: (payload: { rev: number; diff: DocumentDiff; from: string }) => void;
-  onDocument: (payload: { rev: number; document: ProjectDocument }) => void;
+  onHello: (payload: { rev: number; document: ProjectDocument; users: CollabUser[]; role: string; clientId: string }) => void;
+  onPatch: (payload: { rev: number; diff: DocumentDiff; from: string; userId: string; self: boolean }) => void;
+  onDocument: (payload: { rev: number; document: ProjectDocument; userId: string }) => void;
   onPresence: (users: CollabUser[]) => void;
   onError: (message: string) => void;
 }
@@ -28,6 +28,8 @@ export class CollabClient {
   private stopped = false;
   private retries = 0;
   private reconnectTimer: number | null = null;
+  /** 服务端分配的连接 id：用于识别自己补丁的回显（同一账号多标签页也能区分）。 */
+  private clientId = '';
 
   constructor(
     private readonly projectId: string,
@@ -118,6 +120,8 @@ export class CollabClient {
       users?: CollabUser[];
       diff?: DocumentDiff;
       from?: string;
+      userId?: string;
+      clientId?: string;
       role?: string;
       message?: string;
     };
@@ -127,11 +131,13 @@ export class CollabClient {
       return;
     }
     if (message.type === 'hello' && message.document && typeof message.rev === 'number') {
+      this.clientId = message.clientId ?? '';
       this.handlers.onHello({
         rev: message.rev,
         document: message.document,
         users: message.users ?? [],
         role: message.role ?? 'viewer',
+        clientId: this.clientId,
       });
       return;
     }
@@ -140,11 +146,21 @@ export class CollabClient {
       return;
     }
     if (message.type === 'patch' && message.diff && typeof message.rev === 'number') {
-      this.handlers.onPatch({ rev: message.rev, diff: message.diff, from: message.from ?? '' });
+      this.handlers.onPatch({
+        rev: message.rev,
+        diff: message.diff,
+        from: message.from ?? '',
+        userId: message.userId ?? '',
+        self: Boolean(this.clientId && message.from === this.clientId),
+      });
       return;
     }
     if (message.type === 'doc' && message.document && typeof message.rev === 'number') {
-      this.handlers.onDocument({ rev: message.rev, document: message.document });
+      this.handlers.onDocument({
+        rev: message.rev,
+        document: message.document,
+        userId: message.userId ?? '',
+      });
       return;
     }
     if (message.type === 'error' && message.message) {

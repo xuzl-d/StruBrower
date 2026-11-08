@@ -1,4 +1,6 @@
 import { createId } from './id';
+import { defaultCategoryOverrides, defaultLayers, layerIdForCategory } from './layers';
+import { defaultParameters, defaultTypeFormulas } from './parameters';
 import type { FamilyType, Material, ProjectDocument } from './types';
 
 export interface ProjectTemplate {
@@ -7,19 +9,20 @@ export interface ProjectTemplate {
 }
 
 const MATERIALS: Material[] = [
-  { id: 'mat-concrete', name: '混凝土', color: '#a3adb8' },
-  { id: 'mat-masonry', name: '砌体', color: '#c6bba8' },
-  { id: 'mat-steel', name: '钢材', color: '#8b98a8' },
-  { id: 'mat-glass', name: '玻璃', color: '#9fd3e4' },
-  { id: 'mat-wood', name: '木材', color: '#c79a68' },
+  { id: 'mat-concrete', name: '混凝土 · C30', color: '#a3adb8', opacity: 100, roughness: 0.85, metalness: 0.02, description: '现浇混凝土，灰色哑光' },
+  { id: 'mat-masonry', name: '砌体 · 加气块', color: '#c6bba8', opacity: 100, roughness: 0.9, metalness: 0.01, description: '砌块墙体' },
+  { id: 'mat-steel', name: '钢材 · Q355', color: '#8b98a8', opacity: 100, roughness: 0.35, metalness: 0.75, description: '结构钢，半光泽金属' },
+  { id: 'mat-glass', name: '玻璃 · 中空', color: '#9fd3e4', opacity: 35, roughness: 0.08, metalness: 0.05, description: '透明玻璃，用于幕墙与门窗' },
+  { id: 'mat-wood', name: '木材 · 胶合木', color: '#c79a68', opacity: 100, roughness: 0.72, metalness: 0.01, description: '木纹饰面' },
 ];
 
 function baseTypes(): FamilyType[] {
+  const formulas = defaultTypeFormulas();
   return [
-    { id: 'type-wall-200', category: 'wall', name: '基本墙 200mm', thickness: 0.2, materialId: 'mat-concrete' },
-    { id: 'type-wall-100', category: 'wall', name: '内墙 100mm', thickness: 0.1, materialId: 'mat-masonry' },
-    { id: 'type-column-400', category: 'column', name: '矩形柱 400×400', width: 0.4, depth: 0.4, materialId: 'mat-concrete' },
-    { id: 'type-slab-150', category: 'slab', name: '楼板 150mm', thickness: 0.15, materialId: 'mat-concrete' },
+    { id: 'type-wall-200', category: 'wall', name: '基本墙 200mm', thickness: 0.2, materialId: 'mat-concrete', formulas: formulas['type-wall-200'] },
+    { id: 'type-wall-100', category: 'wall', name: '内墙 100mm', thickness: 0.1, materialId: 'mat-masonry', formulas: formulas['type-wall-100'] },
+    { id: 'type-column-400', category: 'column', name: '矩形柱 400×400', width: 0.4, depth: 0.4, materialId: 'mat-concrete', formulas: formulas['type-column-400'] },
+    { id: 'type-slab-150', category: 'slab', name: '楼板 150mm', thickness: 0.15, materialId: 'mat-concrete', formulas: formulas['type-slab-150'] },
   ];
 }
 
@@ -38,6 +41,9 @@ export function createProject(template: ProjectTemplate = { name: '未命名项�
     levels: levelSpecs.map((level) => ({ id: createId(), name: level.name, elevation: level.elevation })),
     grids: [],
     materials: MATERIALS.map((material) => ({ ...material })),
+    layers: defaultLayers(),
+    categoryOverrides: defaultCategoryOverrides(),
+    parameters: defaultParameters(),
     types: baseTypes(),
     elements: [],
   };
@@ -125,5 +131,9 @@ export function createDemoProject(): ProjectDocument {
     { id: 'demo-grid-A', name: 'A', start: [-2, 0], end: [8, 0] },
     { id: 'demo-grid-B', name: 'B', start: [-2, 4], end: [8, 4] },
   ];
+  project.elements = project.elements.map((element) => ({
+    ...element,
+    layerId: layerIdForCategory(element.category),
+  }));
   return project;
 }

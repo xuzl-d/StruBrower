@@ -1,4 +1,4 @@
-import type { BimElement, FamilyType, Grid, Level, Material, ProjectDocument } from '../bim/types';
+import type { BimElement, CategoryOverride, ElementCategory, FamilyType, Grid, Layer, Level, Material, ProjectDocument, ProjectParameter } from '../bim/types';
 
 /**
  * 协作补丁：与服务端 server/validate.js 使用同一套语义。
@@ -12,6 +12,11 @@ export interface DocumentDiff {
   grids?: Grid[];
   types?: FamilyType[];
   materials?: Material[];
+  /** 图层表与类别可见性替换为小集合，整包替换 */
+  layers?: Layer[];
+  categoryOverrides?: Partial<Record<ElementCategory, CategoryOverride>>;
+  /** 全局参数表整包替换 */
+  parameters?: ProjectParameter[];
   elements?: {
     put?: BimElement[];
     remove?: string[];
@@ -35,6 +40,11 @@ export function diffDocuments(prev: ProjectDocument, next: ProjectDocument): Doc
   if (prev.grids !== next.grids && !sameContent(prev.grids, next.grids)) diff.grids = next.grids;
   if (prev.types !== next.types && !sameContent(prev.types, next.types)) diff.types = next.types;
   if (prev.materials !== next.materials && !sameContent(prev.materials, next.materials)) diff.materials = next.materials;
+  if (prev.layers !== next.layers && !sameContent(prev.layers, next.layers)) diff.layers = next.layers;
+  if (prev.categoryOverrides !== next.categoryOverrides && !sameContent(prev.categoryOverrides, next.categoryOverrides)) {
+    diff.categoryOverrides = next.categoryOverrides;
+  }
+  if (prev.parameters !== next.parameters && !sameContent(prev.parameters, next.parameters)) diff.parameters = next.parameters;
 
   const previousById = new Map(prev.elements.map((element) => [element.id, element]));
   const nextIds = new Set(next.elements.map((element) => element.id));
@@ -66,6 +76,9 @@ export function applyDocumentDiff(document: ProjectDocument, diff: DocumentDiff)
   if (diff.grids) next.grids = diff.grids;
   if (diff.types) next.types = diff.types;
   if (diff.materials) next.materials = diff.materials;
+  if (diff.layers) next.layers = diff.layers;
+  if (diff.categoryOverrides) next.categoryOverrides = diff.categoryOverrides;
+  if (diff.parameters) next.parameters = diff.parameters;
 
   if (diff.elements) {
     const remove = new Set(diff.elements.remove ?? []);

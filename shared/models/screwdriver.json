@@ -1,0 +1,226 @@
+{
+  "id": "screwdriver",
+  "name": "一体化电动螺丝刀",
+  "summary": "扁机身 + 20° 后倾握把 + 分瓣夹头 + 扭矩环 + 换向键",
+  "features": [
+    {
+      "id": "sd-body",
+      "label": "机身",
+      "material": "paintWhite",
+      "shape": {
+        "shape": "roundedBox",
+        "width": 0.16,
+        "depth": 0.062,
+        "height": 0.048,
+        "radius": 0.01,
+        "segments": 48
+      },
+      "translate": [0.02, 0, 0]
+    },
+    {
+      "id": "sd-tail",
+      "label": "尾部圆弧",
+      "material": "paintWhite",
+      "shape": {
+        "shape": "ellipsoid",
+        "rx": 0.02,
+        "ry": 0.031,
+        "rz": 0.024,
+        "segments": 40
+      },
+      "translate": [-0.06, 0, 0]
+    },
+    {
+      "id": "sd-battery",
+      "label": "电池盖",
+      "material": "plasticDark",
+      "shape": {
+        "shape": "cylinder",
+        "radius": 0.026,
+        "height": 0.014,
+        "segments": 40
+      },
+      "rotate": [0, 90, 0],
+      "translate": [-0.068, 0, 0]
+    },
+    {
+      "id": "sd-torque-ring",
+      "label": "扭矩调节环",
+      "material": "steel",
+      "shape": {
+        "shape": "tube",
+        "radius": 0.0265,
+        "thickness": 0.0032,
+        "height": 0.013,
+        "segments": 40
+      },
+      "rotate": [0, 90, 0],
+      "translate": [0.094, 0, 0]
+    },
+    {
+      "id": "sd-knurl",
+      "label": "滚花齿",
+      "material": "steel",
+      "shape": {
+        "shape": "box",
+        "width": 0.011,
+        "depth": 0.0022,
+        "height": 0.0042
+      },
+      "translate": [0.094, 0.0268, 0],
+      "pattern": {
+        "type": "circular",
+        "count": 12,
+        "axis": "x",
+        "angle": 360
+      }
+    },
+    {
+      "id": "sd-chuck",
+      "label": "夹头锥体",
+      "material": "aluminum",
+      "shape": {
+        "shape": "cone",
+        "radius": 0.019,
+        "topRadius": 0.0125,
+        "height": 0.03,
+        "segments": 40
+      },
+      "rotate": [0, 90, 0],
+      "translate": [0.112, 0, 0]
+    },
+    {
+      "id": "sd-chuck-slit",
+      "label": "夹头分瓣缝",
+      "mode": "cut",
+      "material": "aluminum",
+      "shape": {
+        "shape": "box",
+        "width": 0.034,
+        "depth": 0.0015,
+        "height": 0.042
+      },
+      "translate": [0.112, 0, 0],
+      "pattern": {
+        "type": "circular",
+        "count": 3,
+        "axis": "x",
+        "angle": 360
+      }
+    },
+    {
+      "id": "sd-chuck-bore",
+      "label": "六角批头孔",
+      "mode": "cut",
+      "material": "aluminum",
+      "shape": {
+        "shape": "prism",
+        "profile": [
+          [0.0054, 0.0031],
+          [0, 0.0062],
+          [-0.0054, 0.0031],
+          [-0.0054, -0.0031],
+          [0, -0.0062],
+          [0.0054, -0.0031]
+        ],
+        "height": 0.05
+      },
+      "rotate": [0, 90, 0],
+      "translate": [0.118, 0, 0]
+    },
+    {
+      "id": "sd-grip",
+      "label": "握把",
+      "material": "plasticDark",
+      "shape": {
+        "shape": "capsule",
+        "radius": 0.0175,
+        "height": 0.12,
+        "segments": 40
+      },
+      "rotate": [0, 20, 0],
+      "translate": [-0.0705, 0, -0.0644]
+    },
+    {
+      "id": "sd-grip-sleeve",
+      "label": "橡胶握套",
+      "material": "rubber",
+      "shape": {
+        "shape": "tube",
+        "radius": 0.0205,
+        "thickness": 0.0028,
+        "height": 0.086,
+        "segments": 40
+      },
+      "rotate": [0, 20, 0],
+      "translate": [-0.0746, 0, -0.0757]
+    },
+    {
+      "id": "sd-grip-rib",
+      "label": "防滑棱",
+      "material": "rubber",
+      "shape": {
+        "shape": "torus",
+        "radius": 0.0208,
+        "tube": 0.0018,
+        "segments": 40,
+        "tubeSegments": 14
+      },
+      "rotate": [0, 20, 0],
+      "translate": [-0.063, 0, -0.0437],
+      "pattern": {
+        "type": "linear",
+        "count": 6,
+        "step": [-0.0046, 0, -0.0127]
+      }
+    },
+    {
+      "id": "sd-reverse",
+      "label": "正反转拨钮",
+      "material": "paintOrange",
+      "shape": {
+        "shape": "roundedBox",
+        "width": 0.022,
+        "depth": 0.014,
+        "height": 0.009,
+        "radius": 0.003,
+        "segments": 32
+      },
+      "translate": [-0.018, 0, 0.026]
+    },
+    {
+      "id": "sd-vent",
+      "label": "散热槽",
+      "mode": "cut",
+      "material": "paintWhite",
+      "shape": {
+        "shape": "box",
+        "width": 0.006,
+        "depth": 0.05,
+        "height": 0.016
+      },
+      "translate": [0.042, 0, 0.019],
+      "pattern": {
+        "type": "linear",
+        "count": 4,
+        "step": [0.016, 0, 0]
+      }
+    },
+    {
+      "id": "sd-led",
+      "label": "电量指示灯",
+      "material": {
+        "name": "指示灯",
+        "color": "#3ddc84",
+        "roughness": 0.35,
+        "metalness": 0.05
+      },
+      "shape": {
+        "shape": "sphere",
+        "radius": 0.0038,
+        "segments": 24
+      },
+      "translate": [-0.032, 0.02, 0.0235]
+    }
+  ]
+}

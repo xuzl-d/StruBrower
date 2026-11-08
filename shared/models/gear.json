@@ -1,0 +1,67 @@
+{
+  "id": "gear",
+  "name": "正齿轮",
+  "summary": "轮体 + 12 齿圆周阵列 + 轴孔 + 4 个减重孔",
+  "features": [
+    {
+      "id": "gear-1",
+      "label": "轮体",
+      "mode": "add",
+      "translate": [0, 0, 0.01],
+      "shape": {
+        "shape": "cylinder",
+        "radius": 0.09,
+        "height": 0.02,
+        "segments": 48
+      }
+    },
+    {
+      "id": "gear-2",
+      "label": "轮齿",
+      "mode": "add",
+      "translate": [0.0981, 0, 0.01],
+      "pattern": {
+        "type": "circular",
+        "count": 12,
+        "axis": "z",
+        "angle": 360
+      },
+      "shape": {
+        "shape": "box",
+        "width": 0.0216,
+        "depth": 0.027,
+        "height": 0.02
+      }
+    },
+    {
+      "id": "gear-3",
+      "label": "轴孔",
+      "mode": "cut",
+      "translate": [0, 0, 0.01],
+      "shape": {
+        "shape": "cylinder",
+        "radius": 0.0216,
+        "height": 0.06,
+        "segments": 24
+      }
+    },
+    {
+      "id": "gear-4",
+      "label": "减重孔",
+      "mode": "cut",
+      "translate": [0.0522, 0, 0.01],
+      "pattern": {
+        "type": "circular",
+        "count": 4,
+        "axis": "z",
+        "angle": 360
+      },
+      "shape": {
+        "shape": "cylinder",
+        "radius": 0.0117,
+        "height": 0.06,
+        "segments": 20
+      }
+    }
+  ]
+}

@@ -9,3 +9,14 @@ server/convert/fixtures/*.bin
 .logs/
 
 .tools/
+
+# 本地工作区数据（记忆、会话缓存）
+.workbuddy/
+
+# 参考素材与下载件：二进制源模型，不进仓库
+model/
+downloads/
+
+# 诊断截图是过程产物，只保留说明与探针脚本
+diagnostics/*.png
+diagnostics/**/*.png

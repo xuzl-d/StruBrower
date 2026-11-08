@@ -1,0 +1,970 @@
+{
+  "id": "aircraft-a350",
+  "name": "A350 客机（1:10）",
+  "summary": "超椭圆机身 + 翼型后掠翼（镜像）+ 垂尾平尾 + 短舱切孔 + 一排舷窗；展示模型约 6.7 m 长",
+  "features": [
+    {
+      "id": "ac-root",
+      "label": "A350-900",
+      "scale": 0.1,
+      "translate": [0, 0, 0.335],
+      "shape": {
+        "shape": "group",
+        "features": [
+          {
+            "id": "ac-fuselage",
+            "label": "机身",
+            "material": {
+              "name": "白漆",
+              "color": "#eef2f5",
+              "roughness": 0.34,
+              "metalness": 0.05
+            },
+            "shape": {
+              "shape": "loft",
+              "sections": [
+                {
+                  "z": -33.45,
+                  "ellipse": {
+                    "rx": 0.2,
+                    "ry": 0.22,
+                    "power": 2.35
+                  },
+                  "points": 32,
+                  "offset": [-1.3, 0]
+                },
+                {
+                  "z": -33.3,
+                  "ellipse": {
+                    "rx": 0.3,
+                    "ry": 0.34,
+                    "power": 2.35
+                  },
+                  "points": 32,
+                  "offset": [-1.3, 0]
+                },
+                {
+                  "z": -32.9,
+                  "ellipse": {
+                    "rx": 0.42,
+                    "ry": 0.5,
+                    "power": 2.35
+                  },
+                  "points": 32,
+                  "offset": [-1.26, 0]
+                },
+                {
+                  "z": -32.2,
+                  "ellipse": {
+                    "rx": 0.78,
+                    "ry": 0.9,
+                    "power": 2.35
+                  },
+                  "points": 32,
+                  "offset": [-1.14, 0]
+                },
+                {
+                  "z": -31.2,
+                  "ellipse": {
+                    "rx": 1.2,
+                    "ry": 1.3,
+                    "power": 2.35
+                  },
+                  "points": 32,
+                  "offset": [-0.98, 0]
+                },
+                {
+                  "z": -30,
+                  "ellipse": {
+                    "rx": 1.66,
+                    "ry": 1.74,
+                    "power": 2.35
+                  },
+                  "points": 32,
+                  "offset": [-0.78, 0]
+                },
+                {
+                  "z": -28.4,
+                  "ellipse": {
+                    "rx": 2.1,
+                    "ry": 2.14,
+                    "power": 2.35
+                  },
+                  "points": 32,
+                  "offset": [-0.56, 0]
+                },
+                {
+                  "z": -26.4,
+                  "ellipse": {
+                    "rx": 2.48,
+                    "ry": 2.52,
+                    "power": 2.35
+                  },
+                  "points": 32,
+                  "offset": [-0.34, 0]
+                },
+                {
+                  "z": -24,
+                  "ellipse": {
+                    "rx": 2.8,
+                    "ry": 2.86,
+                    "power": 2.35
+                  },
+                  "points": 32,
+                  "offset": [-0.16, 0]
+                },
+                {
+                  "z": -21,
+                  "ellipse": {
+                    "rx": 2.97,
+                    "ry": 3.05,
+                    "power": 2.35
+                  },
+                  "points": 32,
+                  "offset": [-0.05, 0]
+                },
+                {
+                  "z": -16,
+                  "ellipse": {
+                    "rx": 2.98,
+                    "ry": 3.05,
+                    "power": 2.35
+                  },
+                  "points": 32,
+                  "offset": [0, 0]
+                },
+                {
+                  "z": -8,
+                  "ellipse": {
+                    "rx": 2.98,
+                    "ry": 3.05,
+                    "power": 2.35
+                  },
+                  "points": 32,
+                  "offset": [0, 0]
+                },
+                {
+                  "z": 0,
+                  "ellipse": {
+                    "rx": 2.98,
+                    "ry": 3.05,
+                    "power": 2.35
+                  },
+                  "points": 32,
+                  "offset": [0, 0]
+                },
+                {
+                  "z": 8,
+                  "ellipse": {
+                    "rx": 2.98,
+                    "ry": 3.05,
+                    "power": 2.35
+                  },
+                  "points": 32,
+                  "offset": [0, 0]
+                },
+                {
+                  "z": 16,
+                  "ellipse": {
+                    "rx": 2.98,
+                    "ry": 3.05,
+                    "power": 2.35
+                  },
+                  "points": 32,
+                  "offset": [0, 0]
+                },
+                {
+                  "z": 22,
+                  "ellipse": {
+                    "rx": 2.96,
+                    "ry": 3.03,
+                    "power": 2.35
+                  },
+                  "points": 32,
+                  "offset": [0, 0]
+                },
+                {
+                  "z": 26,
+                  "ellipse": {
+                    "rx": 2.88,
+                    "ry": 2.95,
+                    "power": 2.35
+                  },
+                  "points": 32,
+                  "offset": [0.02, 0]
+                },
+                {
+                  "z": 28.6,
+                  "ellipse": {
+                    "rx": 2.62,
+                    "ry": 2.7,
+                    "power": 2.35
+                  },
+                  "points": 32,
+                  "offset": [0, 0]
+                },
+                {
+                  "z": 30.2,
+                  "ellipse": {
+                    "rx": 2.2,
+                    "ry": 2.32,
+                    "power": 2.35
+                  },
+                  "points": 32,
+                  "offset": [-0.02, 0]
+                },
+                {
+                  "z": 31.4,
+                  "ellipse": {
+                    "rx": 1.75,
+                    "ry": 1.9,
+                    "power": 2.35
+                  },
+                  "points": 32,
+                  "offset": [-0.05, 0]
+                },
+                {
+                  "z": 32.2,
+                  "ellipse": {
+                    "rx": 1.3,
+                    "ry": 1.45,
+                    "power": 2.35
+                  },
+                  "points": 32,
+                  "offset": [-0.08, 0]
+                },
+                {
+                  "z": 32.9,
+                  "ellipse": {
+                    "rx": 0.8,
+                    "ry": 0.92,
+                    "power": 2.35
+                  },
+                  "points": 32,
+                  "offset": [-0.1, 0]
+                },
+                {
+                  "z": 33.3,
+                  "ellipse": {
+                    "rx": 0.34,
+                    "ry": 0.4,
+                    "power": 2.35
+                  },
+                  "points": 32,
+                  "offset": [-0.12, 0]
+                },
+                {
+                  "z": 33.45,
+                  "ellipse": {
+                    "rx": 0.1,
+                    "ry": 0.12,
+                    "power": 2.35
+                  },
+                  "points": 32,
+                  "offset": [-0.12, 0]
+                }
+              ]
+            },
+            "rotate": [0, 90, 0]
+          },
+          {
+            "id": "ac-windshield",
+            "label": "风挡",
+            "material": {
+              "name": "暗色件",
+              "color": "#1a2028",
+              "roughness": 0.42,
+              "metalness": 0.1
+            },
+            "shape": {
+              "shape": "ellipsoid",
+              "rx": 1.45,
+              "ry": 1.64,
+              "rz": 0.3,
+              "segments": 24
+            },
+            "translate": [29.8, 0, 1.95]
+          },
+          {
+            "id": "ac-window-r",
+            "label": "舷窗·右",
+            "material": {
+              "name": "暗色件",
+              "color": "#1a2028",
+              "roughness": 0.42,
+              "metalness": 0.1
+            },
+            "shape": {
+              "shape": "box",
+              "width": 0.26,
+              "depth": 0.12,
+              "height": 0.36
+            },
+            "translate": [27, 2.94, 0.55],
+            "pattern": {
+              "type": "linear",
+              "count": 91,
+              "step": [-0.58, 0, 0]
+            }
+          },
+          {
+            "id": "ac-window-l",
+            "label": "舷窗·左",
+            "material": {
+              "name": "暗色件",
+              "color": "#1a2028",
+              "roughness": 0.42,
+              "metalness": 0.1
+            },
+            "shape": {
+              "shape": "box",
+              "width": 0.26,
+              "depth": 0.12,
+              "height": 0.36
+            },
+            "translate": [27, -2.94, 0.55],
+            "pattern": {
+              "type": "linear",
+              "count": 91,
+              "step": [-0.58, 0, 0]
+            }
+          },
+          {
+            "id": "ac-wing",
+            "label": "机翼",
+            "material": {
+              "name": "白漆",
+              "color": "#eef2f5",
+              "roughness": 0.34,
+              "metalness": 0.05
+            },
+            "shape": {
+              "shape": "loft",
+              "sections": [
+                {
+                  "z": 0,
+                  "airfoil": {
+                    "chord": 15.2,
+                    "thickness": 0.135,
+                    "le": 11.8
+                  },
+                  "points": 22
+                },
+                {
+                  "z": 3.3992,
+                  "airfoil": {
+                    "chord": 13.7189,
+                    "thickness": 0.1295,
+                    "le": 9.6857
+                  },
+                  "points": 22
+                },
+                {
+                  "z": 7.4004,
+                  "airfoil": {
+                    "chord": 11.9755,
+                    "thickness": 0.1231,
+                    "le": 7.197
+                  },
+                  "points": 22
+                },
+                {
+                  "z": 12.4012,
+                  "airfoil": {
+                    "chord": 9.7966,
+                    "thickness": 0.1151,
+                    "le": 4.0865
+                  },
+                  "points": 22
+                },
+                {
+                  "z": 18.0012,
+                  "airfoil": {
+                    "chord": 7.3566,
+                    "thickness": 0.1061,
+                    "le": 0.6033
+                  },
+                  "points": 22
+                },
+                {
+                  "z": 23.5004,
+                  "airfoil": {
+                    "chord": 4.9605,
+                    "thickness": 0.0972,
+                    "le": -2.8172
+                  },
+                  "points": 22
+                },
+                {
+                  "z": 27.4988,
+                  "airfoil": {
+                    "chord": 3.2184,
+                    "thickness": 0.0908,
+                    "le": -5.3043
+                  },
+                  "points": 22
+                },
+                {
+                  "z": 28,
+                  "airfoil": {
+                    "chord": 3,
+                    "thickness": 0.09,
+                    "le": -5.616
+                  },
+                  "points": 22
+                }
+              ]
+            },
+            "rotate": [84.4, 0, 0],
+            "translate": [0, -2.6, -1.5],
+            "pattern": {
+              "type": "mirror",
+              "axis": "y"
+            }
+          },
+          {
+            "id": "ac-winglet",
+            "label": "翼梢小翼",
+            "material": {
+              "name": "白漆",
+              "color": "#eef2f5",
+              "roughness": 0.34,
+              "metalness": 0.05
+            },
+            "shape": {
+              "shape": "loft",
+              "sections": [
+                {
+                  "z": 0,
+                  "airfoil": {
+                    "chord": 3,
+                    "thickness": 0.09,
+                    "le": -5.616
+                  },
+                  "points": 22
+                },
+                {
+                  "z": 1.4,
+                  "airfoil": {
+                    "chord": 2.608,
+                    "thickness": 0.09,
+                    "le": -6.246
+                  },
+                  "points": 22
+                },
+                {
+                  "z": 2.8,
+                  "airfoil": {
+                    "chord": 2.216,
+                    "thickness": 0.09,
+                    "le": -6.876
+                  },
+                  "points": 22
+                },
+                {
+                  "z": 4,
+                  "airfoil": {
+                    "chord": 1.88,
+                    "thickness": 0.09,
+                    "le": -7.416
+                  },
+                  "points": 22
+                }
+              ]
+            },
+            "rotate": [28, 0, 0],
+            "translate": [0, -30.454, 1.486],
+            "pattern": {
+              "type": "mirror",
+              "axis": "y"
+            }
+          },
+          {
+            "id": "ac-fin",
+            "label": "垂尾",
+            "material": {
+              "name": "深蓝漆",
+              "color": "#1c3f74",
+              "roughness": 0.36,
+              "metalness": 0.08
+            },
+            "shape": {
+              "shape": "loft",
+              "sections": [
+                {
+                  "z": 0.9,
+                  "airfoil": {
+                    "chord": 10,
+                    "thickness": 0.1,
+                    "le": -18.8
+                  },
+                  "points": 22
+                },
+                {
+                  "z": 2.4,
+                  "airfoil": {
+                    "chord": 9.5,
+                    "thickness": 0.1,
+                    "le": -19.3
+                  },
+                  "points": 22
+                },
+                {
+                  "z": 4,
+                  "airfoil": {
+                    "chord": 8.9,
+                    "thickness": 0.1,
+                    "le": -19.9
+                  },
+                  "points": 22
+                },
+                {
+                  "z": 5.6,
+                  "airfoil": {
+                    "chord": 8.2,
+                    "thickness": 0.1,
+                    "le": -20.6
+                  },
+                  "points": 22
+                },
+                {
+                  "z": 7.2,
+                  "airfoil": {
+                    "chord": 7.4,
+                    "thickness": 0.1,
+                    "le": -21.4
+                  },
+                  "points": 22
+                },
+                {
+                  "z": 8.6,
+                  "airfoil": {
+                    "chord": 6.6,
+                    "thickness": 0.1,
+                    "le": -22.2
+                  },
+                  "points": 22
+                },
+                {
+                  "z": 9.8,
+                  "airfoil": {
+                    "chord": 5.8,
+                    "thickness": 0.1,
+                    "le": -23
+                  },
+                  "points": 22
+                },
+                {
+                  "z": 10.8,
+                  "airfoil": {
+                    "chord": 4.9,
+                    "thickness": 0.1,
+                    "le": -23.9
+                  },
+                  "points": 22
+                },
+                {
+                  "z": 11.4,
+                  "airfoil": {
+                    "chord": 3.9,
+                    "thickness": 0.1,
+                    "le": -24.9
+                  },
+                  "points": 22
+                },
+                {
+                  "z": 11.8,
+                  "airfoil": {
+                    "chord": 3,
+                    "thickness": 0.1,
+                    "le": -25.8
+                  },
+                  "points": 22
+                }
+              ]
+            }
+          },
+          {
+            "id": "ac-fin-cap",
+            "label": "垂尾顶圆角",
+            "material": {
+              "name": "深蓝漆",
+              "color": "#1c3f74",
+              "roughness": 0.36,
+              "metalness": 0.08
+            },
+            "shape": {
+              "shape": "capsule",
+              "radius": 0.42,
+              "height": 2.9,
+              "segments": 16
+            },
+            "rotate": [0, 90, 0],
+            "translate": [-27.35, 0, 11.74]
+          },
+          {
+            "id": "ac-dorsal",
+            "label": "背鳍",
+            "material": {
+              "name": "深蓝漆",
+              "color": "#1c3f74",
+              "roughness": 0.36,
+              "metalness": 0.08
+            },
+            "shape": {
+              "shape": "loft",
+              "sections": [
+                {
+                  "z": 2.7,
+                  "ellipse": {
+                    "rx": 2.2,
+                    "ry": 0.7
+                  },
+                  "offset": [-18.4, 0]
+                },
+                {
+                  "z": 3.6,
+                  "ellipse": {
+                    "rx": 1.9,
+                    "ry": 0.6
+                  },
+                  "offset": [-19.2, 0]
+                },
+                {
+                  "z": 4.8,
+                  "ellipse": {
+                    "rx": 1.5,
+                    "ry": 0.46
+                  },
+                  "offset": [-20.4, 0]
+                },
+                {
+                  "z": 6.2,
+                  "ellipse": {
+                    "rx": 1.15,
+                    "ry": 0.34
+                  },
+                  "offset": [-21.65, 0]
+                },
+                {
+                  "z": 7.6,
+                  "ellipse": {
+                    "rx": 0.85,
+                    "ry": 0.22
+                  },
+                  "offset": [-22.85, 0]
+                },
+                {
+                  "z": 9,
+                  "ellipse": {
+                    "rx": 0.55,
+                    "ry": 0.12
+                  },
+                  "offset": [-24.05, 0]
+                }
+              ]
+            }
+          },
+          {
+            "id": "ac-stabilizer",
+            "label": "平尾",
+            "material": {
+              "name": "白漆",
+              "color": "#eef2f5",
+              "roughness": 0.34,
+              "metalness": 0.05
+            },
+            "shape": {
+              "shape": "loft",
+              "sections": [
+                {
+                  "z": 0,
+                  "airfoil": {
+                    "chord": 6.8,
+                    "thickness": 0.1,
+                    "le": -23.2
+                  },
+                  "points": 22
+                },
+                {
+                  "z": 3,
+                  "airfoil": {
+                    "chord": 5.6,
+                    "thickness": 0.1,
+                    "le": -24.85
+                  },
+                  "points": 22
+                },
+                {
+                  "z": 6.2,
+                  "airfoil": {
+                    "chord": 4.32,
+                    "thickness": 0.1,
+                    "le": -26.61
+                  },
+                  "points": 22
+                },
+                {
+                  "z": 8.8,
+                  "airfoil": {
+                    "chord": 3.28,
+                    "thickness": 0.1,
+                    "le": -28.04
+                  },
+                  "points": 22
+                },
+                {
+                  "z": 11,
+                  "airfoil": {
+                    "chord": 2.4,
+                    "thickness": 0.1,
+                    "le": -29.25
+                  },
+                  "points": 22
+                }
+              ]
+            },
+            "rotate": [83.5, 0, 0],
+            "translate": [0, -2.2, 1.15],
+            "pattern": {
+              "type": "mirror",
+              "axis": "y"
+            }
+          },
+          {
+            "id": "ac-fairing",
+            "label": "翼身整流罩",
+            "material": {
+              "name": "白漆",
+              "color": "#eef2f5",
+              "roughness": 0.34,
+              "metalness": 0.05
+            },
+            "shape": {
+              "shape": "ellipsoid",
+              "rx": 9.5,
+              "ry": 3.35,
+              "rz": 1.15,
+              "segments": 32
+            },
+            "translate": [2, 0, -2.25]
+          },
+          {
+            "id": "ac-cowl-r",
+            "label": "短舱·右",
+            "material": {
+              "name": "白漆",
+              "color": "#eef2f5",
+              "roughness": 0.34,
+              "metalness": 0.05
+            },
+            "shape": {
+              "shape": "revolve",
+              "profile": [
+                [1.2, 3.8],
+                [1.42, 3.72],
+                [1.54, 3.5],
+                [1.58, 2.6],
+                [1.55, 1.2],
+                [1.44, -0.8],
+                [1.16, -2.4],
+                [0.96, -3.4],
+                [0.92, -3.8]
+              ],
+              "segments": 32
+            },
+            "rotate": [0, 90, 0],
+            "translate": [8.2, 5.9, -3.35]
+          },
+          {
+            "id": "ac-intake-r",
+            "label": "进气道",
+            "mode": "cut",
+            "shape": {
+              "shape": "cylinder",
+              "radius": 1.3,
+              "height": 1.9,
+              "segments": 32
+            },
+            "rotate": [0, 90, 0],
+            "translate": [11.1, 5.9, -3.35]
+          },
+          {
+            "id": "ac-exhaust-r",
+            "label": "尾喷口",
+            "mode": "cut",
+            "shape": {
+              "shape": "cylinder",
+              "radius": 0.84,
+              "height": 3.2,
+              "segments": 32
+            },
+            "rotate": [0, 90, 0],
+            "translate": [5.9, 5.9, -3.35]
+          },
+          {
+            "id": "ac-fan-r",
+            "label": "风扇",
+            "material": {
+              "name": "暗色件",
+              "color": "#1a2028",
+              "roughness": 0.42,
+              "metalness": 0.1
+            },
+            "shape": {
+              "shape": "cylinder",
+              "radius": 1.42,
+              "height": 0.24,
+              "segments": 32
+            },
+            "rotate": [0, 90, 0],
+            "translate": [10.8, 5.9, -3.35]
+          },
+          {
+            "id": "ac-spinner-r",
+            "label": "整流锥",
+            "material": {
+              "name": "镀铬",
+              "color": "#b9c2cb",
+              "roughness": 0.24,
+              "metalness": 0.9
+            },
+            "shape": {
+              "shape": "cone",
+              "radius": 0.56,
+              "height": 1.3,
+              "segments": 24
+            },
+            "rotate": [0, 90, 0],
+            "translate": [11.55, 5.9, -3.35]
+          },
+          {
+            "id": "ac-pylon-r",
+            "label": "挂架",
+            "material": {
+              "name": "白漆",
+              "color": "#eef2f5",
+              "roughness": 0.34,
+              "metalness": 0.05
+            },
+            "shape": {
+              "shape": "roundedBox",
+              "width": 4.2,
+              "depth": 0.38,
+              "height": 1.05,
+              "radius": 0.16
+            },
+            "translate": [6.6, 5.9, -1.5]
+          },
+          {
+            "id": "ac-cowl-l",
+            "label": "短舱·左",
+            "material": {
+              "name": "白漆",
+              "color": "#eef2f5",
+              "roughness": 0.34,
+              "metalness": 0.05
+            },
+            "shape": {
+              "shape": "revolve",
+              "profile": [
+                [1.2, 3.8],
+                [1.42, 3.72],
+                [1.54, 3.5],
+                [1.58, 2.6],
+                [1.55, 1.2],
+                [1.44, -0.8],
+                [1.16, -2.4],
+                [0.96, -3.4],
+                [0.92, -3.8]
+              ],
+              "segments": 32
+            },
+            "rotate": [0, 90, 0],
+            "translate": [8.2, -5.9, -3.35]
+          },
+          {
+            "id": "ac-intake-l",
+            "label": "进气道",
+            "mode": "cut",
+            "shape": {
+              "shape": "cylinder",
+              "radius": 1.3,
+              "height": 1.9,
+              "segments": 32
+            },
+            "rotate": [0, 90, 0],
+            "translate": [11.1, -5.9, -3.35]
+          },
+          {
+            "id": "ac-exhaust-l",
+            "label": "尾喷口",
+            "mode": "cut",
+            "shape": {
+              "shape": "cylinder",
+              "radius": 0.84,
+              "height": 3.2,
+              "segments": 32
+            },
+            "rotate": [0, 90, 0],
+            "translate": [5.9, -5.9, -3.35]
+          },
+          {
+            "id": "ac-fan-l",
+            "label": "风扇",
+            "material": {
+              "name": "暗色件",
+              "color": "#1a2028",
+              "roughness": 0.42,
+              "metalness": 0.1
+            },
+            "shape": {
+              "shape": "cylinder",
+              "radius": 1.42,
+              "height": 0.24,
+              "segments": 32
+            },
+            "rotate": [0, 90, 0],
+            "translate": [10.8, -5.9, -3.35]
+          },
+          {
+            "id": "ac-spinner-l",
+            "label": "整流锥",
+            "material": {
+              "name": "镀铬",
+              "color": "#b9c2cb",
+              "roughness": 0.24,
+              "metalness": 0.9
+            },
+            "shape": {
+              "shape": "cone",
+              "radius": 0.56,
+              "height": 1.3,
+              "segments": 24
+            },
+            "rotate": [0, 90, 0],
+            "translate": [11.55, -5.9, -3.35]
+          },
+          {
+            "id": "ac-pylon-l",
+            "label": "挂架",
+            "material": {
+              "name": "白漆",
+              "color": "#eef2f5",
+              "roughness": 0.34,
+              "metalness": 0.05
+            },
+            "shape": {
+              "shape": "roundedBox",
+              "width": 4.2,
+              "depth": 0.38,
+              "height": 1.05,
+              "radius": 0.16
+            },
+            "translate": [6.6, -5.9, -1.5]
+          }
+        ]
+      }
+    }
+  ]
+}

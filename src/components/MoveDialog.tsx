@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import ModalShell from './ModalShell';
 
 export interface MoveDelta {
   dx: number;
@@ -32,8 +33,7 @@ export default function MoveDialog({ selectionCount, onClose, onApply }: MoveDia
   };
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal-card move-card" onClick={(event) => event.stopPropagation()}>
+    <ModalShell cardClassName="modal-card move-card" ariaLabel="平移构件">
         <div className="modal-head">
           <div>
             <strong>平移构件</strong>
@@ -59,7 +59,6 @@ export default function MoveDialog({ selectionCount, onClose, onApply }: MoveDia
             <button className="primary" onClick={apply}>应用</button>
           </div>
         </div>
-      </div>
-    </div>
+    </ModalShell>
   );
 }

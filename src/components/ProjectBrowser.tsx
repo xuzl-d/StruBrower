@@ -19,6 +19,9 @@ interface ProjectBrowserProps {
   onToggleVisibility: (id: string) => void;
   onDeleteGrid: (id: string) => void;
   onRenameProject: () => void;
+  onOpenLayers: () => void;
+  onOpenMaterials: () => void;
+  onToggleLayer: (id: string) => void;
 }
 
 const CATEGORY_ORDER: ElementCategory[] = ['wall', 'column', 'slab', 'mesh'];
@@ -47,6 +50,9 @@ export default function ProjectBrowser({
   onToggleVisibility,
   onDeleteGrid,
   onRenameProject,
+  onOpenLayers,
+  onOpenMaterials,
+  onToggleLayer,
 }: ProjectBrowserProps) {
   const typeName = (element: BimElement): string =>
     project.types.find((type) => type.id === element.typeId)?.name ?? (element.category === 'mesh' ? element.source : '未指定类型');
@@ -123,6 +129,38 @@ export default function ProjectBrowser({
               </div>
             ))
           )}
+        </section>
+
+        <section className="browser-section">
+          <div className="tree-section-title">
+            <span>⌄</span> 图层 <em>{project.layers?.length ?? 0}</em>
+            <button className="section-add" onClick={onOpenLayers} title="打开图层管理器 / 可见性图形 (VV)">⚙</button>
+          </div>
+          {(project.layers ?? []).map((layer) => (
+            <div className={`grid-row ${layer.visible ? '' : 'layer-hidden'}`} key={layer.id}>
+              <span className="layer-dot" style={{ background: layer.color }} />
+              <span className="grid-name">{layer.name}</span>
+              {layer.locked ? <span className="layer-lock" title="图层已锁定">🔒</span> : null}
+              <button
+                className={`visibility-toggle ${layer.visible ? '' : 'muted'}`}
+                onClick={() => onToggleLayer(layer.id)}
+                title={layer.visible ? '隐藏图层' : '显示图层'}
+              >{layer.visible ? '◉' : '⊘'}</button>
+            </div>
+          ))}
+        </section>
+
+        <section className="browser-section">
+          <div className="tree-section-title">
+            <span>⌄</span> 材质 <em>{project.materials.length}</em>
+            <button className="section-add" onClick={onOpenMaterials} title="打开材质浏览器 (MA)">⚙</button>
+          </div>
+          {project.materials.map((material) => (
+            <div className="grid-row" key={material.id} title={material.description || material.name}>
+              <span className="layer-dot" style={{ background: material.color, opacity: (material.opacity ?? 100) / 100 }} />
+              <span className="grid-name">{material.name}</span>
+            </div>
+          ))}
         </section>
 
         <section className="browser-section">

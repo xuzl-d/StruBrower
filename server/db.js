@@ -64,9 +64,37 @@ create table if not exists audit_log (
   created_at text not null
 );
 
+-- AI 会话：一个项目多条会话，消息永久保留，关掉面板/换设备都能接着聊
+create table if not exists ai_conversations (
+  id text primary key,
+  project_id text not null references projects(id) on delete cascade,
+  created_by text,
+  title text,
+  -- 更早消息压成的滚动摘要：长对话不用把所有原文都塞回模型
+  summary text,
+  -- 已折进摘要的最后一条消息序号，避免重复压缩
+  summary_seq integer not null default 0,
+  created_at text not null,
+  updated_at text not null,
+  archived integer not null default 0
+);
+
+create table if not exists ai_messages (
+  id text primary key,
+  conversation_id text not null references ai_conversations(id) on delete cascade,
+  seq integer not null,
+  role text not null,
+  content text not null,
+  -- 结构化附加信息：ops / summary / warning / vision / 缩略图 / 是否已应用
+  payload text,
+  created_at text not null
+);
+
 create index if not exists idx_members_user on project_members (user_id);
 create index if not exists idx_versions_project on document_versions (project_id, version desc);
 create index if not exists idx_audit_project on audit_log (project_id, id desc);
+create index if not exists idx_ai_conv_project on ai_conversations (project_id, updated_at desc);
+create index if not exists idx_ai_msg_conversation on ai_messages (conversation_id, seq);
 `;
 
 /**

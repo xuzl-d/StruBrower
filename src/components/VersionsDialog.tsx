@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { ApiError, versionsApi } from '../data';
 import type { VersionEntry } from '../data';
+import ModalShell from './ModalShell';
 
 interface VersionsDialogProps {
   projectId: string;
@@ -67,8 +68,7 @@ export default function VersionsDialog({ projectId, projectName, canWrite, onClo
   };
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal-card" onClick={(event) => event.stopPropagation()}>
+    <ModalShell cardClassName="modal-card" ariaLabel="版本历史">
         <div className="modal-head">
           <div>
             <strong>版本历史</strong>
@@ -117,10 +117,10 @@ export default function VersionsDialog({ projectId, projectName, canWrite, onClo
           </div>
         </div>
 
-        <div className="modal-foot">
-          版本是不可变快照；恢复会生成新的 rev，不会删除历史。
+        <div className="modal-foot version-foot">
+          <span>版本是不可变快照；恢复会生成新的 rev，不会删除历史。</span>
+          <button className="primary" onClick={onClose}>关闭</button>
         </div>
-      </div>
-    </div>
+    </ModalShell>
   );
 }

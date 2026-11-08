@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>看图生成结果</title>
+  <style>
+    body { margin: 0; background: #10151c; display: flex; flex-wrap: wrap; }
+    figure { margin: 0; position: relative; }
+    figcaption { position: absolute; left: 12px; top: 10px; color: #9fb6cf; font: 13px/1.4 -apple-system, sans-serif; }
+    canvas { display: block; }
+  </style>
+</head>
+<body>
+<div id="root" style="display:flex;flex-wrap:wrap"></div>
+<script type="module">
+  import * as THREE from 'three';
+  import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
+  import { buildSolidModel } from '/src/bim/solid.ts';
+  import { visionFeatures } from './vision-features.js';
+
+  const cases = [
+    { title: '等轴测', camera: [0.85, -1.0, 0.55], zoom: 3.4 },
+    { title: '侧视（看握把倾角与整体轮廓）', camera: [0.02, -1.0, 0.06], zoom: 3.4 },
+  ];
+
+  const W = 620;
+  const H = 520;
+
+  for (const item of cases) {
+    const figure = document.createElement('figure');
+    const caption = document.createElement('figcaption');
+    caption.textContent = item.title;
+    const canvas = document.createElement('canvas');
+    canvas.width = W;
+    canvas.height = H;
+    figure.append(canvas, caption);
+    document.getElementById('root').append(figure);
+
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+    renderer.setPixelRatio(1);
+    renderer.setSize(W, H, false);
+    renderer.setClearColor(0x10151c, 1);
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 0.95;
+
+    const scene = new THREE.Scene();
+    const pmrem = new THREE.PMREMGenerator(renderer);
+    scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+    scene.environmentIntensity = 1.0;
+    pmrem.dispose();
+
+    const camera = new THREE.PerspectiveCamera(30, W / H, 0.0005, 100);
+    const model = buildSolidModel(visionFeatures);
+    const geometry = model.geometry;
+    geometry.computeBoundingSphere();
+    const sphere = geometry.boundingSphere;
+    const materials = model.materials.map((entry) => new THREE.MeshStandardMaterial({
+      color: entry?.color ?? '#8fb9e8',
+      roughness: entry?.roughness ?? 0.5,
+      metalness: entry?.metalness ?? 0.1,
+      transparent: (entry?.opacity ?? 100) < 100,
+      opacity: (entry?.opacity ?? 100) / 100,
+    }));
+    scene.add(new THREE.Mesh(geometry, materials.length > 1 ? materials : materials[0]));
+
+    const key = new THREE.DirectionalLight(0xffffff, 1.6);
+    key.position.set(0.8, -0.9, 1.4);
+    scene.add(key);
+    const fill = new THREE.DirectionalLight(0x9dc6ff, 0.5);
+    fill.position.set(-1.0, 0.6, 0.5);
+    scene.add(fill);
+    scene.add(new THREE.AmbientLight(0xffffff, 0.35));
+
+    const dir = new THREE.Vector3(...item.camera).normalize();
+    const focus = sphere?.center ?? new THREE.Vector3();
+    camera.position.copy(focus).addScaledVector(dir, (sphere?.radius ?? 0.1) * item.zoom);
+    camera.lookAt(focus);
+    renderer.render(scene, camera);
+
+    const info = document.createElement('div');
+    info.style.cssText = 'position:absolute;right:12px;bottom:10px;color:#6b8299;font:12px/1.4 -apple-system,sans-serif';
+    const tri = (geometry.index ? geometry.index.count : geometry.attributes.position.count) / 3;
+    info.textContent = `${materials.length} 种材质 · ${tri} 三角形`;
+    figure.append(info);
+  }
+  window.__ready = true;
+</script>
+</body>
+</html>

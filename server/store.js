@@ -417,5 +417,133 @@ export function createStore(file) {
       audit(projectId, userId, 'version.restore', { version, rev: nextRev });
       return { rev: nextRev, document };
     },
+
+    /* ---------- AI 会话（长对话 + 历史查看） ---------- */
+
+    createConversation({ projectId, userId, title }) {
+      const id = newId();
+      const timestamp = nowIso();
+      db.prepare(`insert into ai_conversations (id, project_id, created_by, title, summary, summary_seq, created_at, updated_at, archived)
+                  values (?, ?, ?, ?, null, 0, ?, ?, 0)`)
+        .run(id, projectId, userId ?? null, title ?? null, timestamp, timestamp);
+      return this.getConversation(id);
+    },
+
+    /** 项目下的会话列表（按最近活跃排序），带消息条数与最后一句用于列表预览 */
+    listConversations(projectId, { limit = 60 } = {}) {
+      const rows = db.prepare(`
+        select c.id, c.project_id, c.title, c.created_at, c.updated_at,
+          (select count(*) from ai_messages m where m.conversation_id = c.id) as message_count,
+          (select m.content from ai_messages m where m.conversation_id = c.id order by m.seq desc limit 1) as last_content,
+          (select m.role from ai_messages m where m.conversation_id = c.id order by m.seq desc limit 1) as last_role
+        from ai_conversations c
+        where c.project_id = ? and c.archived = 0
+        order by c.updated_at desc
+        limit ?
+      `).all(projectId, limit);
+      return rows.map((row) => ({
+        id: row.id,
+        projectId: row.project_id,
+        title: row.title,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+        messageCount: row.message_count,
+        preview: typeof row.last_content === 'string' ? row.last_content.slice(0, 80) : '',
+        previewRole: row.last_role ?? null,
+      }));
+    },
+
+    getConversation(conversationId, { withMessages = true } = {}) {
+      const row = db.prepare('select * from ai_conversations where id = ?').get(conversationId);
+      if (!row) return null;
+      const conversation = {
+        id: row.id,
+        projectId: row.project_id,
+        createdBy: row.created_by,
+        title: row.title,
+        summary: row.summary,
+        summarySeq: row.summary_seq,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+        archived: Boolean(row.archived),
+      };
+      if (withMessages) conversation.messages = this.listMessages(conversationId);
+      return conversation;
+    },
+
+    listMessages(conversationId, { afterSeq = 0, limit = 500 } = {}) {
+      const rows = db.prepare(`select * from ai_messages where conversation_id = ? and seq > ? order by seq asc limit ?`)
+        .all(conversationId, afterSeq, limit);
+      return rows.map((row) => ({
+        id: row.id,
+        conversationId: row.conversation_id,
+        seq: row.seq,
+        role: row.role,
+        content: row.content,
+        ...(row.payload ? safeJson(row.payload) : {}),
+        createdAt: row.created_at,
+      }));
+    },
+
+    renameConversation(conversationId, title) {
+      db.prepare('update ai_conversations set title = ?, updated_at = ? where id = ?')
+        .run(title, nowIso(), conversationId);
+    },
+
+    deleteConversation(conversationId) {
+      db.prepare('delete from ai_conversations where id = ?').run(conversationId);
+    },
+
+    /** 追加一条消息；seq 由服务端按会话内自增分配，前端不必关心 */
+    appendMessage({ conversationId, role, content, payload }) {
+      const next = (db.prepare('select coalesce(max(seq), 0) as seq from ai_messages where conversation_id = ?')
+        .get(conversationId).seq) + 1;
+      const id = newId();
+      const timestamp = nowIso();
+      db.prepare(`insert into ai_messages (id, conversation_id, seq, role, content, payload, created_at)
+                  values (?, ?, ?, ?, ?, ?, ?)`)
+        .run(id, conversationId, next, role, String(content ?? ''), payload ? JSON.stringify(payload) : null, timestamp);
+      const title = this.maybeTitle(conversationId, role, content);
+      db.prepare('update ai_conversations set updated_at = ? where id = ?').run(timestamp, conversationId);
+      return { id, seq: next, role, content, createdAt: timestamp, ...(payload ?? {}), ...(title ? { title } : {}) };
+    },
+
+    /** 会话还没有标题时，用第一句用户需求当标题（与 ChatGPT 一致的行为） */
+    maybeTitle(conversationId, role, content) {
+      if (role !== 'user') return null;
+      const row = db.prepare('select title from ai_conversations where id = ?').get(conversationId);
+      if (!row || (row.title && row.title.trim())) return null;
+      const text = String(content ?? '').replace(/\s+/g, ' ').trim();
+      if (!text) return null;
+      const title = text.length > 24 ? `${text.slice(0, 24)}…` : text;
+      db.prepare('update ai_conversations set title = ? where id = ?').run(title, conversationId);
+      return title;
+    },
+
+    /** 补写消息的附加信息（例如「已应用到模型」、修正后的 ops） */
+    updateMessagePayload(conversationId, messageId, patch) {
+      const row = db.prepare('select payload from ai_messages where id = ? and conversation_id = ?')
+        .get(messageId, conversationId);
+      if (!row) return null;
+      const merged = { ...(row.payload ? safeJson(row.payload) : {}), ...patch };
+      db.prepare('update ai_messages set payload = ? where id = ?').run(JSON.stringify(merged), messageId);
+      return merged;
+    },
+
+    /** 滚动摘要：把前若干条压成一段话，只保留在会话记录里，不再回传原文 */
+    setConversationSummary(conversationId, summary, seq) {
+      db.prepare('update ai_conversations set summary = ?, summary_seq = ? where id = ?')
+        .run(summary ?? null, seq ?? 0, conversationId);
+    },
   };
+}
+
+/** payload 是早期版本写入的非法 JSON 时不要让整个会话打不开 */
+function safeJson(text) {
+  try {
+    const value = JSON.parse(text);
+    return value && typeof value === 'object' ? value : {};
+  } catch {
+    return {};
+  }
 }

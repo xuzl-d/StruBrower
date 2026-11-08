@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { ApiError, membersApi } from '../data';
 import type { MemberEntry } from '../data';
+import ModalShell from './ModalShell';
 
 interface MembersDialogProps {
   projectId: string;
@@ -86,8 +87,7 @@ export default function MembersDialog({ projectId, currentUserId, isAdmin, onClo
   };
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal-card" onClick={(event) => event.stopPropagation()}>
+    <ModalShell cardClassName="modal-card" ariaLabel="成员与权限">
         <div className="modal-head">
           <div>
             <strong>成员与权限</strong>
@@ -159,8 +159,10 @@ export default function MembersDialog({ projectId, currentUserId, isAdmin, onClo
           </div>
         </div>
 
-        <div className="modal-foot">项目至少保留一名管理者；被移出的成员会立即失去访问权限。</div>
-      </div>
-    </div>
+        <div className="modal-foot version-foot">
+          <span>项目至少保留一名管理者；被移出的成员会立即失去访问权限。</span>
+          <button className="primary" onClick={onClose}>关闭</button>
+        </div>
+    </ModalShell>
   );
 }

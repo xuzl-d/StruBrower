@@ -1,0 +1,634 @@
+{
+  "id": "quadcopter",
+  "name": "四翼螺旋桨无人机",
+  "summary": "机身 + 电池舱 + 4 机臂 + 4 组旋翼 + 起落架 + 前视相机",
+  "features": [
+    {
+      "id": "q-body",
+      "material": "paintWhite",
+      "label": "机身",
+      "shape": {
+        "shape": "roundedBox",
+        "width": 0.26,
+        "depth": 0.18,
+        "height": 0.05,
+        "radius": 0.014,
+        "segments": 40
+      },
+      "translate": [0, 0, 0.03]
+    },
+    {
+      "id": "q-belly",
+      "material": "carbon",
+      "label": "底部加强板",
+      "shape": {
+        "shape": "roundedBox",
+        "width": 0.228,
+        "depth": 0.152,
+        "height": 0.012,
+        "radius": 0.006,
+        "segments": 32
+      },
+      "translate": [0, 0, 0.004]
+    },
+    {
+      "id": "q-nose",
+      "material": "paintWhite",
+      "label": "机头整流罩",
+      "shape": {
+        "shape": "ellipsoid",
+        "rx": 0.036,
+        "ry": 0.066,
+        "rz": 0.026,
+        "segments": 32
+      },
+      "translate": [0.118, 0, 0.03]
+    },
+    {
+      "id": "q-tail",
+      "material": "paintWhite",
+      "label": "尾部整流罩",
+      "shape": {
+        "shape": "ellipsoid",
+        "rx": 0.03,
+        "ry": 0.054,
+        "rz": 0.022,
+        "segments": 28
+      },
+      "translate": [-0.122, 0, 0.03]
+    },
+    {
+      "id": "q-canopy",
+      "material": "carbon",
+      "label": "上盖",
+      "shape": {
+        "shape": "roundedBox",
+        "width": 0.206,
+        "depth": 0.138,
+        "height": 0.026,
+        "radius": 0.011,
+        "segments": 36
+      },
+      "translate": [0, 0, 0.058]
+    },
+    {
+      "id": "q-battery",
+      "material": "plasticDark",
+      "label": "电池仓",
+      "shape": {
+        "shape": "roundedBox",
+        "width": 0.148,
+        "depth": 0.096,
+        "height": 0.024,
+        "radius": 0.006,
+        "segments": 28
+      },
+      "translate": [-0.01, 0, 0.082]
+    },
+    {
+      "id": "q-hub",
+      "material": "aluminum",
+      "label": "中心加强盘",
+      "shape": {
+        "shape": "revolve",
+        "profile": [
+          [0, 0],
+          [0.052, 0],
+          [0.052, 0.006],
+          [0.046, 0.012],
+          [0, 0.012]
+        ],
+        "segments": 48
+      },
+      "translate": [0, 0, 0.051]
+    },
+    {
+      "id": "q-arm",
+      "material": "carbon",
+      "label": "机臂",
+      "shape": {
+        "shape": "tube",
+        "radius": 0.0115,
+        "thickness": 0.0022,
+        "height": 0.239,
+        "segments": 28
+      },
+      "rotate": [0, 90, 45],
+      "translate": [0.1446, 0.1446, 0.03],
+      "pattern": {
+        "type": "circular",
+        "count": 4,
+        "axis": "z",
+        "angle": 360,
+        "center": [0, 0, 0]
+      }
+    },
+    {
+      "id": "q-arm-clamp",
+      "material": "plasticDark",
+      "label": "机臂根部加强套",
+      "shape": {
+        "shape": "roundedBox",
+        "width": 0.05,
+        "depth": 0.028,
+        "height": 0.03,
+        "radius": 0.007,
+        "segments": 28
+      },
+      "rotate": [0, 0, 45],
+      "translate": [0.0686, 0.0686, 0.03],
+      "pattern": {
+        "type": "circular",
+        "count": 4,
+        "axis": "z",
+        "angle": 360,
+        "center": [0, 0, 0]
+      }
+    },
+    {
+      "id": "q-arm-end",
+      "material": "aluminum",
+      "label": "机臂端部封盖",
+      "shape": {
+        "shape": "capsule",
+        "radius": 0.0118,
+        "height": 0.032,
+        "segments": 24
+      },
+      "rotate": [0, 90, 45],
+      "translate": [0.2277, 0.2277, 0.03],
+      "pattern": {
+        "type": "circular",
+        "count": 4,
+        "axis": "z",
+        "angle": 360,
+        "center": [0, 0, 0]
+      }
+    },
+    {
+      "id": "q-motor-mount",
+      "material": "aluminum",
+      "label": "电机安装座",
+      "shape": {
+        "shape": "cylinder",
+        "radius": 0.0175,
+        "height": 0.008,
+        "segments": 32
+      },
+      "translate": [0.2192, 0.2192, 0.04],
+      "pattern": {
+        "type": "circular",
+        "count": 4,
+        "axis": "z",
+        "angle": 360,
+        "center": [0, 0, 0]
+      }
+    },
+    {
+      "id": "q-rotor",
+      "material": "aluminum",
+      "label": "旋翼组",
+      "translate": [0.2192, 0.2192, 0.044],
+      "rotate": [0, 0, 45],
+      "pattern": {
+        "type": "circular",
+        "count": 4,
+        "axis": "z",
+        "angle": 360,
+        "center": [0, 0, 0]
+      },
+      "shape": {
+        "shape": "group",
+        "features": [
+          {
+            "id": "q-motor-bell",
+            "material": "aluminum",
+            "label": "电机外壳",
+            "shape": {
+              "shape": "revolve",
+              "profile": [
+                [0, 0],
+                [0.0195, 0],
+                [0.0195, 0.016],
+                [0.0192, 0.021],
+                [0.0175, 0.024],
+                [0, 0.024]
+              ],
+              "segments": 40
+            }
+          },
+          {
+            "id": "q-motor-fin",
+            "label": "电机散热筋",
+            "shape": {
+              "shape": "box",
+              "width": 0.0035,
+              "depth": 0.0012,
+              "height": 0.016
+            },
+            "translate": [0.0193, 0, 0.011],
+            "pattern": {
+              "type": "circular",
+              "count": 12,
+              "axis": "z",
+              "angle": 360,
+              "center": [0, 0, 0]
+            }
+          },
+          {
+            "id": "q-shaft",
+            "material": "steel",
+            "label": "电机轴",
+            "shape": {
+              "shape": "cylinder",
+              "radius": 0.0032,
+              "height": 0.012,
+              "segments": 16
+            },
+            "translate": [0, 0, 0.028]
+          },
+          {
+            "id": "q-prop-hub",
+            "material": "aluminum",
+            "label": "桨毂",
+            "shape": {
+              "shape": "revolve",
+              "profile": [
+                [0, 0],
+                [0.0095, 0],
+                [0.0095, 0.006],
+                [0.006, 0.009],
+                [0, 0.009]
+              ],
+              "segments": 32
+            },
+            "translate": [0, 0, 0.03]
+          },
+          {
+            "id": "q-blade",
+            "material": {
+              "name": "哑光黑桨叶",
+              "color": "#20242a",
+              "roughness": 0.46,
+              "metalness": 0.06
+            },
+            "label": "桨叶",
+            "shape": {
+              "shape": "loft",
+              "sections": [
+                {
+                  "z": 0.0077,
+                  "profile": [
+                    [0.0003, -0.0014],
+                    [0.0007, -0.0006],
+                    [0.0023, 0.0006],
+                    [0.0048, 0.0019],
+                    [0.0077, 0.003],
+                    [0.0104, 0.0038],
+                    [0.0124, 0.0042],
+                    [0.0131, 0.0043],
+                    [0.0125, 0.004],
+                    [0.0107, 0.0031],
+                    [0.0082, 0.0019],
+                    [0.0054, 0.0004],
+                    [0.0029, -0.0008],
+                    [0.0011, -0.0015]
+                  ]
+                },
+                {
+                  "z": 0.0465,
+                  "profile": [
+                    [0.0023, -0.0019],
+                    [0.0031, -0.0005],
+                    [0.006, 0.0013],
+                    [0.0105, 0.003],
+                    [0.0157, 0.0044],
+                    [0.0205, 0.0052],
+                    [0.0239, 0.0055],
+                    [0.0251, 0.0056],
+                    [0.024, 0.0051],
+                    [0.0209, 0.004],
+                    [0.0164, 0.0023],
+                    [0.0114, 0.0003],
+                    [0.0069, -0.0013],
+                    [0.0036, -0.0022]
+                  ]
+                },
+                {
+                  "z": 0.0837,
+                  "profile": [
+                    [0.0042, -0.0015],
+                    [0.0052, -0.0001],
+                    [0.0085, 0.0015],
+                    [0.0135, 0.003],
+                    [0.0192, 0.004],
+                    [0.0245, 0.0044],
+                    [0.0282, 0.0044],
+                    [0.0295, 0.0044],
+                    [0.0283, 0.004],
+                    [0.0248, 0.0031],
+                    [0.0197, 0.0017],
+                    [0.0142, 0.0001],
+                    [0.0092, -0.0013],
+                    [0.0056, -0.0019]
+                  ]
+                },
+                {
+                  "z": 0.1209,
+                  "profile": [
+                    [0.0061, -0.0008],
+                    [0.0069, 0.0002],
+                    [0.0095, 0.0013],
+                    [0.0135, 0.0022],
+                    [0.0179, 0.0026],
+                    [0.022, 0.0026],
+                    [0.0248, 0.0025],
+                    [0.0258, 0.0024],
+                    [0.0248, 0.0021],
+                    [0.0221, 0.0016],
+                    [0.0182, 0.0008],
+                    [0.0138, -0.0002],
+                    [0.0099, -0.0009],
+                    [0.0071, -0.0012]
+                  ]
+                },
+                {
+                  "z": 0.155,
+                  "profile": [
+                    [0.008, -0.0002],
+                    [0.0084, 0.0002],
+                    [0.0096, 0.0006],
+                    [0.0114, 0.0009],
+                    [0.0134, 0.001],
+                    [0.0152, 0.0009],
+                    [0.0165, 0.0008],
+                    [0.017, 0.0007],
+                    [0.0165, 0.0006],
+                    [0.0153, 0.0005],
+                    [0.0135, 0.0002],
+                    [0.0115, -0.0001],
+                    [0.0097, -0.0004],
+                    [0.0085, -0.0005]
+                  ]
+                }
+              ]
+            },
+            "rotate": [-90, 0, 90],
+            "translate": [0, 0, 0.0355],
+            "pattern": {
+              "type": "circular",
+              "count": 2,
+              "axis": "z",
+              "angle": 360,
+              "center": [0, 0, 0]
+            }
+          },
+          {
+            "id": "q-spinner",
+            "material": "plasticDark",
+            "label": "桨毂罩",
+            "shape": {
+              "shape": "revolve",
+              "profile": [
+                [0, 0],
+                [0.008, 0],
+                [0.0075, 0.005],
+                [0.004, 0.009],
+                [0, 0.011]
+              ],
+              "segments": 32
+            },
+            "translate": [0, 0, 0.036]
+          },
+          {
+            "id": "q-prop-nut",
+            "material": "steel",
+            "label": "桨夹螺母",
+            "shape": {
+              "shape": "cylinder",
+              "radius": 0.0042,
+              "height": 0.004,
+              "segments": 6
+            },
+            "translate": [0, 0, 0.0475]
+          }
+        ]
+      }
+    },
+    {
+      "id": "q-strut",
+      "material": "carbon",
+      "label": "起落架弯管",
+      "shape": {
+        "shape": "sweep",
+        "profile": [
+          [0.0062, 0],
+          [0.005, 0.0036],
+          [0.0019, 0.0059],
+          [-0.0019, 0.0059],
+          [-0.005, 0.0036],
+          [-0.0062, 0],
+          [-0.005, -0.0036],
+          [-0.0019, -0.0059],
+          [0.0019, -0.0059],
+          [0.005, -0.0036]
+        ],
+        "path": [
+          [0, 0, 0],
+          [0.03, 0, -0.016],
+          [0.052, 0, -0.04],
+          [0.056, 0, -0.075],
+          [0.056, 0, -0.098]
+        ],
+        "taper": [1, 0.9]
+      },
+      "rotate": [0, 0, 45],
+      "translate": [0.041, 0.041, 0.004],
+      "pattern": {
+        "type": "circular",
+        "count": 4,
+        "axis": "z",
+        "angle": 360,
+        "center": [0, 0, 0]
+      }
+    },
+    {
+      "id": "q-foot",
+      "material": "rubber",
+      "label": "脚垫",
+      "shape": {
+        "shape": "capsule",
+        "radius": 0.0095,
+        "height": 0.032,
+        "segments": 24
+      },
+      "rotate": [90, 0, 45],
+      "translate": [0.0806, 0.0806, -0.098],
+      "pattern": {
+        "type": "circular",
+        "count": 4,
+        "axis": "z",
+        "angle": 360,
+        "center": [0, 0, 0]
+      }
+    },
+    {
+      "id": "q-gimbal-bracket",
+      "material": "aluminum",
+      "label": "云台挂架",
+      "shape": {
+        "shape": "roundedBox",
+        "width": 0.03,
+        "depth": 0.05,
+        "height": 0.008,
+        "radius": 0.003,
+        "segments": 24
+      },
+      "translate": [0.095, 0, 0.006]
+    },
+    {
+      "id": "q-gimbal-damper",
+      "material": "rubber",
+      "label": "减震球",
+      "shape": {
+        "shape": "ellipsoid",
+        "rx": 0.005,
+        "ry": 0.005,
+        "rz": 0.007,
+        "segments": 20
+      },
+      "translate": [0.095, 0.017, -0.002],
+      "pattern": {
+        "type": "linear",
+        "count": 2,
+        "step": [0, -0.034, 0]
+      }
+    },
+    {
+      "id": "q-camera",
+      "material": "plasticDark",
+      "label": "相机机身",
+      "shape": {
+        "shape": "roundedBox",
+        "width": 0.036,
+        "depth": 0.032,
+        "height": 0.03,
+        "radius": 0.006,
+        "segments": 28
+      },
+      "translate": [0.1, 0, -0.03]
+    },
+    {
+      "id": "q-lens",
+      "material": "aluminum",
+      "label": "镜头筒",
+      "shape": {
+        "shape": "revolve",
+        "profile": [
+          [0, 0],
+          [0.011, 0],
+          [0.011, 0.006],
+          [0.0098, 0.012],
+          [0.0088, 0.014],
+          [0, 0.014]
+        ],
+        "segments": 36
+      },
+      "rotate": [0, 90, 0],
+      "translate": [0.118, 0, -0.03]
+    },
+    {
+      "id": "q-lens-glass",
+      "material": "glass",
+      "label": "镜片",
+      "shape": {
+        "shape": "cylinder",
+        "radius": 0.0092,
+        "height": 0.002,
+        "segments": 32
+      },
+      "rotate": [0, 90, 0],
+      "translate": [0.128, 0, -0.03]
+    },
+    {
+      "id": "q-antenna",
+      "material": "plasticDark",
+      "label": "天线",
+      "shape": {
+        "shape": "cylinder",
+        "radius": 0.0022,
+        "height": 0.05,
+        "segments": 12
+      },
+      "translate": [-0.1, 0.05, 0.068],
+      "rotate": [-18, 0, 0]
+    },
+    {
+      "id": "q-antenna-tip",
+      "material": "rubber",
+      "label": "天线帽",
+      "shape": {
+        "shape": "capsule",
+        "radius": 0.0032,
+        "height": 0.012,
+        "segments": 16
+      },
+      "translate": [-0.1, 0.0435, 0.092]
+    },
+    {
+      "id": "q-vent",
+      "label": "电池仓散热孔",
+      "mode": "cut",
+      "shape": {
+        "shape": "cylinder",
+        "radius": 0.0055,
+        "height": 0.06,
+        "segments": 20
+      },
+      "translate": [-0.045, 0.03, 0.06],
+      "pattern": {
+        "type": "linear",
+        "count": 3,
+        "step": [0, -0.03, 0]
+      }
+    },
+    {
+      "id": "q-bolt",
+      "label": "上盖螺栓孔",
+      "mode": "cut",
+      "shape": {
+        "shape": "cylinder",
+        "radius": 0.0018,
+        "height": 0.08,
+        "segments": 12
+      },
+      "translate": [0.0509, 0.0509, 0.05],
+      "pattern": {
+        "type": "circular",
+        "count": 4,
+        "axis": "z",
+        "angle": 360,
+        "center": [0, 0, 0]
+      }
+    },
+    {
+      "id": "q-arm-bolt",
+      "label": "机臂固定孔",
+      "mode": "cut",
+      "shape": {
+        "shape": "cylinder",
+        "radius": 0.0022,
+        "height": 0.05,
+        "segments": 12
+      },
+      "translate": [0.0686, 0.0686, 0.03],
+      "pattern": {
+        "type": "circular",
+        "count": 4,
+        "axis": "z",
+        "angle": 360,
+        "center": [0, 0, 0]
+      }
+    }
+  ]
+}

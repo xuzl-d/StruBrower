@@ -1,7 +1,7 @@
 {
   "name": "strubrowser",
   "private": true,
-  "version": "0.8.0",
+  "version": "0.9.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -11,15 +11,22 @@
     "dev:all": "node scripts/dev.mjs",
     "start": "npm run build && npm run server",
     "test": "node scripts/test.mjs",
+    "reset-password": "node --experimental-sqlite scripts/reset-password.mjs",
     "setup:step": "node scripts/setup-step.mjs",
     "share": "bash scripts/share.sh cloudflared",
-    "load-test": "node scripts/load-test.mjs"
+    "load-test": "node scripts/load-test.mjs",
+    "aircraft": "esbuild scripts/aircraft-demo.ts --bundle --platform=node --format=esm --outfile=.tmp/aircraft.mjs --log-level=warning && node .tmp/aircraft.mjs",
+    "pavilion": "esbuild scripts/pavilion-demo.ts --bundle --platform=node --format=esm --outfile=.tmp/pavilion.mjs --log-level=warning && node .tmp/pavilion.mjs",
+    "crane": "esbuild scripts/crane-demo.ts --bundle --platform=node --format=esm --outfile=.tmp/crane.mjs --log-level=warning && node .tmp/crane.mjs",
+    "modifiers": "esbuild scripts/modifiers-demo.ts --bundle --platform=node --format=esm --outfile=.tmp/modifiers.mjs --log-level=warning && node .tmp/modifiers.mjs",
+    "constraint": "esbuild scripts/constraint-demo.ts --bundle --platform=node --format=esm --outfile=.tmp/constraint.mjs --log-level=warning && node .tmp/constraint.mjs"
   },
   "dependencies": {
     "occt-import-js": "^0.0.23",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
     "three": "^0.180.0",
+    "three-bvh-csg": "^0.0.18",
     "three-csg-ts": "^3.2.0"
   },
   "devDependencies": {
@@ -27,6 +34,7 @@
     "@types/react-dom": "^19.1.7",
     "@types/three": "^0.180.0",
     "@vitejs/plugin-react": "^5.0.2",
+    "linkedom": "^0.18.15",
     "typescript": "~5.9.2",
     "vite": "^7.1.4"
   },

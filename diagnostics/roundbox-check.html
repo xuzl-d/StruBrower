@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>圆角盒几何自检</title>
+  <style>
+    body { margin: 0; background: #10151c; display: flex; flex-wrap: wrap; }
+    figure { margin: 0; position: relative; }
+    figcaption { position: absolute; left: 12px; top: 10px; color: #9fb6cf; font: 13px/1.4 -apple-system, sans-serif; }
+    canvas { display: block; }
+  </style>
+</head>
+<body>
+<div id="root" style="display:flex;flex-wrap:wrap"></div>
+<script type="module">
+  import * as THREE from 'three';
+  import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
+  import { buildSolidModel } from '/src/bim/solid.ts';
+
+  const cases = [
+    {
+      title: '① AI 实际给的机身 220×48×48 R18（方截面 + 大圆角 → 仍偏胶囊）',
+      features: [{ id: 'a', shape: { shape: 'roundedBox', width: 0.22, depth: 0.048, height: 0.048, radius: 0.018, segments: 48 } }],
+      camera: [0.9, -1.0, 0.75],
+    },
+    {
+      title: '② 合理机身 220×76×58 R14（扁截面 + 小圆角 → 有平面、有棱）',
+      features: [{ id: 'b', shape: { shape: 'roundedBox', width: 0.22, depth: 0.076, height: 0.058, radius: 0.014, segments: 48 } }],
+      camera: [0.9, -1.0, 0.75],
+    },
+    {
+      title: '③ 薄板 200×160×6 R20（俯视：圆角矩形，不是椭圆）',
+      features: [{ id: 'c', shape: { shape: 'roundedBox', width: 0.2, depth: 0.16, height: 0.006, radius: 0.02, segments: 48 } }],
+      camera: [0.0001, -0.0001, 1],
+    },
+    {
+      title: '④ 立方体 60×60×60 R10（棱边倒圆，面是平的）',
+      features: [{ id: 'd', shape: { shape: 'roundedBox', width: 0.06, depth: 0.06, height: 0.06, radius: 0.01, segments: 48 } }],
+      camera: [0.9, -1.0, 0.75],
+      zoom: 3.4,
+    },
+  ];
+
+  const W = 620;
+  const H = 460;
+
+  for (const item of cases) {
+    const figure = document.createElement('figure');
+    const caption = document.createElement('figcaption');
+    caption.textContent = item.title;
+    const canvas = document.createElement('canvas');
+    canvas.width = W;
+    canvas.height = H;
+    figure.append(canvas, caption);
+    document.getElementById('root').append(figure);
+
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+    renderer.setPixelRatio(1);
+    renderer.setSize(W, H, false);
+    renderer.setClearColor(0x10151c, 1);
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 0.95;
+
+    const scene = new THREE.Scene();
+    const pmrem = new THREE.PMREMGenerator(renderer);
+    scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+    scene.environmentIntensity = 1.0;
+    pmrem.dispose();
+
+    const camera = new THREE.PerspectiveCamera(30, W / H, 0.0005, 100);
+    const model = buildSolidModel(item.features);
+    const geometry = model.geometry;
+    geometry.computeBoundingSphere();
+    const sphere = geometry.boundingSphere;
+    const mesh = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({
+      color: 0xdfe4ea, roughness: 0.35, metalness: 0.08,
+    }));
+    scene.add(mesh);
+
+    const key = new THREE.DirectionalLight(0xffffff, 1.6);
+    key.position.set(0.8, -0.9, 1.4);
+    scene.add(key);
+    const fill = new THREE.DirectionalLight(0x9dc6ff, 0.5);
+    fill.position.set(-1.0, 0.6, 0.5);
+    scene.add(fill);
+    scene.add(new THREE.AmbientLight(0xffffff, 0.35));
+
+    const dir = new THREE.Vector3(...item.camera).normalize();
+    const focus = sphere?.center ?? new THREE.Vector3();
+    camera.position.copy(focus).addScaledVector(dir, (sphere?.radius ?? 0.2) * (item.zoom ?? 4.4));
+    camera.lookAt(focus);
+
+    renderer.render(scene, camera);
+    const info = document.createElement('div');
+    info.style.cssText = 'position:absolute;right:12px;bottom:10px;color:#6b8299;font:12px/1.4 -apple-system,sans-serif';
+    info.textContent = `三角形 ${(geometry.index ? geometry.index.count : geometry.attributes.position.count) / 3}`;
+    figure.append(info);
+  }
+  window.__ready = true;
+</script>
+</body>
+</html>

@@ -1,29 +1,39 @@
 import type { Tool, ViewKind } from '../ModelViewport';
+import type { ModifyCommandId } from '../bim/modify';
+import { MODIFY_LABELS, MODIFY_SHORTCUTS } from '../bim/modify';
+import type { PrimitiveKind } from '../bim/primitives';
+import { PRIMITIVE_LABELS } from '../bim/primitives';
+import { IMPORT_ACCEPT, IMPORT_FORMATS } from '../import/catalog';
 
-export type RibbonTab = 'architecture' | 'structure' | 'modify' | 'view' | 'manage';
+export type RibbonTab = 'architecture' | 'solid' | 'structure' | 'modify' | 'view' | 'manage';
 
 interface RibbonProps {
   tab: RibbonTab;
   onTabChange: (tab: RibbonTab) => void;
   tool: Tool;
   onTool: (tool: Tool) => void;
+  onModify: (command: ModifyCommandId) => void;
+  onPrimitive: (kind: PrimitiveKind) => void;
   onBoolean: (operation: 'union' | 'subtract' | 'intersect') => void;
-  onDelete: () => void;
-  onMove: () => void;
-  onCopy: () => void;
-  onRotate: () => void;
-  onMirror: () => void;
-  onArray: () => void;
   onCopyToClipboard: () => void;
   onPaste: () => void;
+  activeModify: ModifyCommandId | null;
+  primitiveKind: PrimitiveKind | null;
   viewKind: ViewKind;
   onViewKind: (kind: ViewKind) => void;
   projection: 'perspective' | 'parallel';
   onProjection: (projection: 'perspective' | 'parallel') => void;
   onZoomAll: () => void;
   isImporting: boolean;
-  onImport: (file: File) => void;
+  onImport: (files: File[]) => void;
   onExport: () => void;
+  onExportIfc: () => void;
+  onOpenSchedule: () => void;
+  onOpenLayers: () => void;
+  onOpenMaterials: () => void;
+  onOpenParameters: () => void;
+  /** 打开模型库（预置造型：飞机 / 亭子 / 无人机…） */
+  onOpenLibrary: () => void;
   onNewProject: () => void;
   serverMode: boolean;
   readOnly: boolean;
@@ -38,61 +48,100 @@ interface RibbonProps {
 const TABS: Array<{ id: RibbonTab; label: string }> = [
   { id: 'architecture', label: '建筑' },
   { id: 'structure', label: '结构' },
+  { id: 'solid', label: '造型' },
   { id: 'modify', label: '修改' },
   { id: 'view', label: '视图' },
   { id: 'manage', label: '管理' },
 ];
 
 const TOOL_LABELS: Record<Tool, string> = {
-  select: '选择',
-  wall: '墙',
-  column: '柱',
-  slab: '楼板',
-  grid: '轴网',
+  select: '选择', wall: '墙', column: '柱', slab: '楼板', grid: '轴网', primitive: '体量',
 };
 
+const DRAW_SHORTCUT_BY_TOOL: Partial<Record<Tool, string>> = {
+  wall: 'WA', column: 'CL', slab: 'SB', grid: 'GR',
+};
+
+const SHORTCUT_BY_COMMAND: Record<string, string> = Object.fromEntries(
+  Object.entries(MODIFY_SHORTCUTS).map(([key, command]) => [command, key]),
+);
+
+const MODIFY_BUTTONS: Array<{ id: ModifyCommandId; glyph: string; label?: string }> = [
+  { id: 'move', glyph: '✥' },
+  { id: 'copy', glyph: '⧉' },
+  { id: 'rotate', glyph: '↻' },
+  { id: 'mirror-draw', glyph: '⇋', label: '镜像·绘制轴' },
+  { id: 'mirror-pick', glyph: '⇆', label: '镜像·拾取轴' },
+  { id: 'array-linear', glyph: '▦', label: '线性阵列' },
+  { id: 'array-radial', glyph: '◉', label: '环形阵列' },
+  { id: 'align', glyph: '⇤' },
+  { id: 'offset', glyph: '⇥' },
+  { id: 'scale', glyph: '⤢' },
+  { id: 'trim', glyph: '✂', label: '修剪/延伸' },
+  { id: 'split', glyph: '⌁', label: '拆分' },
+];
+
+const UTILITY_BUTTONS: Array<{ id: ModifyCommandId; glyph: string; label?: string }> = [
+  { id: 'measure', glyph: '📐', label: '测量' },
+  { id: 'pin', glyph: '🔒', label: '锁定' },
+  { id: 'unpin', glyph: '🔓', label: '解锁' },
+  { id: 'delete', glyph: '⌫', label: '删除' },
+];
+
+const PRIMITIVE_BUTTONS: Array<{ kind: PrimitiveKind; glyph: string }> = [
+  { kind: 'extrude', glyph: '▤' },
+  { kind: 'revolve', glyph: '◍' },
+  { kind: 'box', glyph: '▣' },
+  { kind: 'cylinder', glyph: '⬤' },
+  { kind: 'sphere', glyph: '●' },
+  { kind: 'pyramid', glyph: '▲' },
+  { kind: 'solid', glyph: '✦' },
+];
+
 export default function Ribbon({
-  tab,
-  onTabChange,
-  tool,
-  onTool,
-  onBoolean,
-  onDelete,
-  onMove,
-  onCopy,
-  onRotate,
-  onMirror,
-  onArray,
-  onCopyToClipboard,
-  onPaste,
-  viewKind,
-  onViewKind,
-  projection,
-  onProjection,
-  onZoomAll,
-  isImporting,
-  onImport,
-  onExport,
-  onNewProject,
-  serverMode,
-  readOnly,
-  onOpenVersions,
-  onOpenMembers,
-  onDeleteProject,
-  onOpenSettings,
-  isAdmin,
-  onOpenAdmin,
+  tab, onTabChange, tool, onTool, onModify, onPrimitive, onBoolean,
+  onCopyToClipboard, onPaste, activeModify, primitiveKind,
+  viewKind, onViewKind, projection, onProjection, onZoomAll,
+  isImporting, onImport, onExport, onExportIfc, onOpenSchedule, onOpenLayers, onOpenMaterials, onOpenParameters, onOpenLibrary, onNewProject,
+  serverMode, readOnly, onOpenVersions, onOpenMembers, onDeleteProject,
+  onOpenSettings, isAdmin, onOpenAdmin,
 }: RibbonProps) {
   const drawButton = (value: Tool, glyph: string, label: string, className = '') => (
     <button
       key={value}
       className={`tool-button ${className} ${tool === value ? 'active' : ''}`}
       onClick={() => onTool(tool === value ? 'select' : value)}
-      title={readOnly ? '当前角色为查看者，无法编辑' : `${label}（Esc 退出）`}
+      title={readOnly ? '当前角色为查看者，无法编辑' : `${label}（${DRAW_SHORTCUT_BY_TOOL[value] ?? '—'}）· Esc 退出`}
       disabled={readOnly}
     >
       <b>{glyph}</b>
       <span>{label}</span>
+    </button>
+  );
+
+  const modifyButton = (item: { id: ModifyCommandId; glyph: string; label?: string }) => (
+    <button
+      key={item.id}
+      className={`tool-button modify-command ${activeModify === item.id ? 'active' : ''}`}
+      disabled={readOnly && item.id !== 'measure'}
+      onClick={() => onModify(item.id)}
+      title={`${MODIFY_LABELS[item.id]}（${SHORTCUT_BY_COMMAND[item.id] ?? '—'}）· 先选构件，再在视口中取点`}
+    >
+      <b>{item.glyph}</b>
+      <span>{item.label ?? MODIFY_LABELS[item.id]}</span>
+    </button>
+  );
+
+  const primitiveButton = (item: { kind: PrimitiveKind; glyph: string }) => (
+    <button
+      key={item.kind}
+      className={`tool-button ${tool === 'primitive' && primitiveKind === item.kind ? 'active' : ''}`}
+      disabled={readOnly}
+      onClick={() => onPrimitive(item.kind)}
+      title={`${PRIMITIVE_LABELS[item.kind]}：视口两点放置，之后可在属性面板改参数`}
+    >
+      <b>{item.glyph}</b>
+      <span>{PRIMITIVE_LABELS[item.kind]}</span>
     </button>
   );
 
@@ -111,22 +160,45 @@ export default function Ribbon({
           </button>
         ))}
         <div className="ribbon-tab-spacer" />
-        <span className={`ribbon-tool-state ${tool !== 'select' ? 'armed' : ''}`}>
-          {tool === 'select' ? '选择模式' : `${TOOL_LABELS[tool]}工具 · 点击视口放置 / 按 Esc 退出`}
+        <span className={`ribbon-tool-state ${tool !== 'select' || activeModify ? 'armed' : ''}`}>
+          {activeModify
+            ? `${MODIFY_LABELS[activeModify]} 命令进行中 · 选项栏在下方 · Esc 逐级退出`
+            : tool === 'select' ? '选择模式（Revit 操作逻辑）' : `${TOOL_LABELS[tool]}工具 · 点击视口放置 / 按 Esc 退出`}
         </span>
       </div>
 
       <nav className="ribbon">
         {tab === 'architecture' && (
+          <div className="ribbon-group">
+            <div className="button-row">
+              {drawButton('wall', '▤', '墙')}
+              {drawButton('column', '▮', '柱')}
+              {drawButton('slab', '▬', '楼板')}
+              {drawButton('grid', '┼', '轴网')}
+            </div>
+            <span className="group-caption">绘制构件 <small>在当前标高上绘制</small></span>
+          </div>
+        )}
+
+        {tab === 'solid' && (
           <>
             <div className="ribbon-group">
+              <div className="button-row">{PRIMITIVE_BUTTONS.map(primitiveButton)}</div>
+              <span className="group-caption">体量 <small>拉伸 / 旋转 / 基本几何体 / 特征实体</small></span>
+            </div>
+            <div className="ribbon-divider" />
+            <div className="ribbon-group">
               <div className="button-row">
-                {drawButton('wall', '▤', '墙')}
-                {drawButton('column', '▮', '柱')}
-                {drawButton('slab', '▬', '楼板')}
-                {drawButton('grid', '┼', '轴网')}
+                <button
+                  className="tool-button"
+                  onClick={onOpenLibrary}
+                  title="模型库：亭子 / 飞机 / 无人机 / 齿轮 / 花瓶…（都是特征树数据）"
+                >
+                  <b>❒</b>
+                  <span>模型库</span>
+                </button>
               </div>
-              <span className="group-caption">绘制构件 <small>在当前标高上绘制</small></span>
+              <span className="group-caption">设计库 <small>预置造型 · 放下来还能改</small></span>
             </div>
           </>
         )}
@@ -134,14 +206,13 @@ export default function Ribbon({
         {tab === 'modify' && (
           <>
             <div className="ribbon-group">
-              <div className="button-row">
-                <button className="tool-button" disabled={readOnly} onClick={onMove} title="移动：ΔX / ΔY / ΔZ"><b>✥</b><span>移动</span></button>
-                <button className="tool-button" disabled={readOnly} onClick={onCopy} title="复制（偏移 1 m）"><b>⧉</b><span>复制</span></button>
-                <button className="tool-button" disabled={readOnly} onClick={onRotate} title="旋转：绕基点按角度旋转"><b>↻</b><span>旋转</span></button>
-                <button className="tool-button" disabled={readOnly} onClick={onMirror} title="镜像：关于水平/垂直直线"><b>⇋</b><span>镜像</span></button>
-                <button className="tool-button" disabled={readOnly} onClick={onArray} title="阵列：线性 / 环形"><b>▦</b><span>阵列</span></button>
-              </div>
-              <span className="group-caption">变换 <small>方向键微移 0.1 m</small></span>
+              <div className="button-row">{MODIFY_BUTTONS.map(modifyButton)}</div>
+              <span className="group-caption">修改 <small>选择 → 命令 → 视口取点 → 预览 → 完成</small></span>
+            </div>
+            <div className="ribbon-divider" />
+            <div className="ribbon-group">
+              <div className="button-row">{UTILITY_BUTTONS.map(modifyButton)}</div>
+              <span className="group-caption">工具与保护 <small>Pin 锁定后不可移动/删除</small></span>
             </div>
             <div className="ribbon-divider" />
             <div className="ribbon-group">
@@ -157,42 +228,20 @@ export default function Ribbon({
                 <button className="tool-button boolean-button" disabled={readOnly} onClick={() => onBoolean('union')}><b>⊕</b><span>并集</span></button>
                 <button className="tool-button boolean-button" disabled={readOnly} onClick={() => onBoolean('subtract')}><b>⊖</b><span>差集</span></button>
                 <button className="tool-button boolean-button" disabled={readOnly} onClick={() => onBoolean('intersect')}><b>◩</b><span>交集</span></button>
-                <button className="tool-button delete-button" disabled={readOnly} onClick={onDelete}><b>⌫</b><span>删除</span></button>
               </div>
-              <span className="group-caption">实体与删除 <small>布尔需选择 2 个</small></span>
-            </div>
-            <div className="ribbon-divider" />
-            <div className="ribbon-group">
-              <div className="button-row">
-                <button className="tool-button" disabled title="对齐（规划中）"><b>⇤</b><span>对齐</span></button>
-                <button className="tool-button" disabled title="偏移（规划中）"><b>⇥</b><span>偏移</span></button>
-                <button className="tool-button" disabled title="缩放（规划中）"><b>⤢</b><span>缩放</span></button>
-                <button className="tool-button" disabled title="修剪 / 延伸（规划中）"><b>✂</b><span>修剪</span></button>
-              </div>
-              <span className="group-caption">常用（规划中）</span>
+              <span className="group-caption">布尔 <small>需先选择 2 个构件</small></span>
             </div>
           </>
         )}
 
         {tab === 'structure' && (
-          <>
-            <div className="ribbon-group">
-              <div className="button-row">
-                {drawButton('column', '▮', '结构柱')}
-                {drawButton('slab', '▬', '结构板')}
-              </div>
-              <span className="group-caption">结构构件</span>
+          <div className="ribbon-group">
+            <div className="button-row">
+              {drawButton('column', '▮', '结构柱')}
+              {drawButton('slab', '▬', '结构板')}
             </div>
-            <div className="ribbon-divider" />
-            <div className="ribbon-group">
-              <div className="button-row">
-                <button className="tool-button" disabled><b>╫</b><span>梁</span></button>
-                <button className="tool-button" disabled><b>╱</b><span>支撑</span></button>
-                <button className="tool-button" disabled><b>◍</b><span>基础</span></button>
-              </div>
-              <span className="group-caption">规划中 <small>梁 / 支撑 / 基础</small></span>
-            </div>
-          </>
+            <span className="group-caption">结构构件</span>
+          </div>
         )}
 
         {tab === 'view' && (
@@ -201,7 +250,7 @@ export default function Ribbon({
               <div className="button-row">
                 <button className={`tool-button ${viewKind === '3d' ? 'active' : ''}`} onClick={() => onViewKind('3d')}><b>◈</b><span>三维视图</span></button>
                 <button className={`tool-button ${viewKind === 'plan' ? 'active' : ''}`} onClick={() => onViewKind('plan')}><b>▦</b><span>平面视图</span></button>
-                <button className="tool-button" onClick={onZoomAll}><b>⊞</b><span>缩放至全部</span></button>
+                <button className="tool-button" onClick={onZoomAll} title="缩放至全部（ZF）"><b>⊞</b><span>缩放至全部</span></button>
               </div>
               <span className="group-caption">视图</span>
             </div>
@@ -213,6 +262,15 @@ export default function Ribbon({
               </div>
               <span className="group-caption">投影方式</span>
             </div>
+            <div className="ribbon-divider" />
+            <div className="ribbon-group">
+              <div className="button-row">
+                <button className="tool-button" onClick={onOpenLayers} title="图层管理 / 可见性图形替换（快捷键 VV）"><b>▦</b><span>图层 (VV)</span></button>
+                <button className="tool-button" onClick={onOpenMaterials} title="材质浏览器（快捷键 MA）"><b>◐</b><span>材质</span></button>
+                <button className="tool-button" onClick={onOpenParameters} title="参数关联管理器（快捷键 GP）"><b>fx</b><span>参数 (GP)</span></button>
+              </div>
+              <span className="group-caption">图形 <small>图层可见性 / 类别替换 / 材质 / 参数关联</small></span>
+            </div>
           </>
         )}
 
@@ -221,23 +279,38 @@ export default function Ribbon({
             <div className="ribbon-group">
               <div className="button-row">
                 <button className="tool-button" onClick={onNewProject}><b>＋</b><span>新建项目</span></button>
-                <label className={`tool-button file-button ${isImporting ? 'importing' : ''}`}>
+                <label
+                  className={`tool-button file-button ${isImporting ? 'importing' : ''}`}
+                  title={`导入模型：${IMPORT_FORMATS.map((format) => format.label).join('、')}、STEP/STP（Ctrl/⌘ 可多选，.gltf 请连同 .bin 一起选）`}
+                >
                   <b>{isImporting ? '…' : '⇧'}</b>
-                  <span>{isImporting ? '正在导入' : '导入 STEP/OBJ'}</span>
+                  <span>{isImporting ? '正在导入' : '导入模型'}</span>
                   <input
                     type="file"
-                    accept=".obj,.step,.stp"
+                    multiple
+                    accept={`${IMPORT_ACCEPT},.step,.stp`}
                     disabled={isImporting}
                     onChange={(event) => {
-                      const file = event.target.files?.[0];
-                      if (file) onImport(file);
+                      const files = Array.from(event.target.files ?? []);
+                      if (files.length) onImport(files);
                       event.target.value = '';
                     }}
                   />
                 </label>
                 <button className="tool-button" onClick={onExport}><b>⇩</b><span>导出 OBJ</span></button>
+                <button className="tool-button" onClick={onExportIfc}><b>⇩</b><span>导出 IFC4</span></button>
+                <button className="tool-button" onClick={onOpenSchedule}><b>▤</b><span>构件明细表</span></button>
               </div>
               <span className="group-caption">项目 / 交换</span>
+            </div>
+            <div className="ribbon-divider" />
+            <div className="ribbon-group">
+              <div className="button-row">
+                <button className="tool-button" onClick={onOpenLayers} title="图层管理 / 可见性图形替换（VV）"><b>▦</b><span>图层管理</span></button>
+                <button className="tool-button" onClick={onOpenMaterials} title="材质浏览器（MA）"><b>◐</b><span>材质浏览器</span></button>
+                <button className="tool-button" onClick={onOpenParameters} title="参数关联管理器（GP）"><b>fx</b><span>参数关联</span></button>
+              </div>
+              <span className="group-caption">项目设置 <small>随项目保存并协作同步</small></span>
             </div>
             <div className="ribbon-divider" />
             <div className="ribbon-group">
@@ -266,19 +339,10 @@ export default function Ribbon({
             <div className="ribbon-divider" />
             <div className="ribbon-group">
               <div className="button-row">
-                <button
-                  className="tool-button"
-                  title="软件设置（显示与交互）/ 用户管理 / AI 设置"
-                  onClick={onOpenSettings}
-                ><b>⚙</b><span>设置</span></button>
-                <button
-                  className="tool-button"
-                  disabled={!isAdmin}
-                  title={isAdmin ? '在独立页面打开管理后台（仅系统管理员）' : '需要系统管理员'}
-                  onClick={onOpenAdmin}
-                ><b>🛡</b><span>管理后台</span></button>
+                <button className="tool-button" title="账户中心：个人资料 / 我的项目 / 软件设置" onClick={onOpenSettings}><b>⚙</b><span>账户与设置</span></button>
+                <button className="tool-button" disabled={!isAdmin} title={isAdmin ? '用户管理 / AI 设置 / 系统与审计（仅系统管理员）' : '需要系统管理员'} onClick={onOpenAdmin}><b>🛡</b><span>用户与系统</span></button>
               </div>
-              <span className="group-caption">系统 <small>用户 / AI</small></span>
+              <span className="group-caption">系统 <small>账号 / 权限 / AI</small></span>
             </div>
           </>
         )}

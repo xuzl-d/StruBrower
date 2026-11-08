@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import ModalShell from './ModalShell';
 
 export interface RotateDelta {
   angleDeg: number;
@@ -53,8 +54,7 @@ export function RotateDialog({
   };
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal-card move-card" onClick={(event) => event.stopPropagation()}>
+    <ModalShell cardClassName="modal-card move-card">
         <div className="modal-head">
           <div>
             <strong>旋转构件</strong>
@@ -79,8 +79,7 @@ export function RotateDialog({
             <button className="primary" onClick={apply}>应用</button>
           </div>
         </div>
-      </div>
-    </div>
+    </ModalShell>
   );
 }
 
@@ -105,8 +104,7 @@ export function MirrorDialog({
   };
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal-card move-card" onClick={(event) => event.stopPropagation()}>
+    <ModalShell cardClassName="modal-card move-card">
         <div className="modal-head">
           <div>
             <strong>镜像构件</strong>
@@ -138,8 +136,7 @@ export function MirrorDialog({
             <button className="primary" onClick={apply}>应用</button>
           </div>
         </div>
-      </div>
-    </div>
+    </ModalShell>
   );
 }
 
@@ -194,8 +191,7 @@ export function ArrayDialog({
   };
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal-card move-card" onClick={(event) => event.stopPropagation()}>
+    <ModalShell cardClassName="modal-card move-card">
         <div className="modal-head">
           <div>
             <strong>阵列</strong>
@@ -237,7 +233,6 @@ export function ArrayDialog({
             <button className="primary" onClick={apply}>应用</button>
           </div>
         </div>
-      </div>
-    </div>
+    </ModalShell>
   );
 }

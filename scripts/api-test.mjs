@@ -125,4 +125,24 @@ check('删除项目', r.status === 200);
 r = await call('GET', `/api/projects/${projectId}`, { token: tokenA });
 check('删除后 404', r.status === 404);
 
+console.log('6. 账户中心（个人资料 / 自助改密码）');
+r = await call('GET', '/api/me', { token: tokenA });
+check('me 返回 createdAt', r.status === 200 && typeof r.data.user.createdAt === 'string');
+r = await call('PATCH', '/api/me', { token: tokenA, body: { name: 'Alice Chen' } });
+check('改显示名称', r.status === 200 && r.data.user.name === 'Alice Chen');
+r = await call('PATCH', '/api/me', { token: tokenA, body: { name: '   ' } });
+check('空名称 400', r.status === 400);
+r = await call('POST', '/api/me/password', { token: tokenB, body: { currentPassword: 'wrong', newPassword: 'brandnew8' } });
+check('旧密码错误 400', r.status === 400);
+r = await call('POST', '/api/me/password', { token: tokenB, body: { currentPassword: 'secret123', newPassword: '123' } });
+check('新密码过短 400', r.status === 400);
+r = await call('POST', '/api/me/password', { token: tokenB, body: { currentPassword: 'secret123', newPassword: 'secret123' } });
+check('新旧密码相同 400', r.status === 400);
+r = await call('POST', '/api/me/password', { token: tokenB, body: { currentPassword: 'secret123', newPassword: 'brandnew8' } });
+check('自助改密码 200', r.status === 200, JSON.stringify(r.data));
+r = await call('POST', '/api/auth/login', { body: { email: emailB, password: 'secret123' } });
+check('旧密码登录 401', r.status === 401);
+r = await call('POST', '/api/auth/login', { body: { email: emailB, password: 'brandnew8' } });
+check('新密码登录 200', r.status === 200);
+
 console.log(`\n${passed} 项通过${process.exitCode ? '，存在失败' : '，全部通过'}`);

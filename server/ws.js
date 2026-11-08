@@ -414,9 +414,9 @@ export function attachCollabServer(httpServer, { store, secret, logger = console
 
   return {
     rooms,
-    /** AI / 版本恢复等服务端改动：向房间广播整份文档 */
-    broadcastDocument(projectId, rev, document) {
-      broadcast(projectId, { type: 'doc', rev, document, from: 'server' });
+    /** AI / 版本恢复等服务端改动：向房间广播整份文档；userId 用于让发起端识别自己的回声 */
+    broadcastDocument(projectId, rev, document, userId = '') {
+      broadcast(projectId, { type: 'doc', rev, document, from: 'server', userId });
     },
     stats() {
       return { rooms: rooms.size, clients: [...rooms.values()].reduce((sum, room) => sum + room.clients.size, 0) };

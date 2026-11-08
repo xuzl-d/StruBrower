@@ -1,3 +1,6 @@
+import { primitiveFields, primitiveTriangles, PRIMITIVE_LABELS } from './primitives';
+import { ensureDocumentLayers, effectiveColor, isElementVisible, materialOfElement } from './layers';
+import { ensureDocumentParameters } from './parameters';
 import { createProject } from './template';
 import type {
   BimElement,
@@ -72,13 +75,17 @@ export function polygonArea(points: Array<[number, number]>): number {
   return Math.abs(sum) / 2;
 }
 
-/** 构件材质颜色；参数化构件取类型材质，导入几何取自身颜色。 */
+/**
+ * 构件显示颜色：图元材质覆盖 > 类型材质 > 图层/类别颜色替换 > mesh 自带色。
+ * 由 layers.effectiveColor 统一计算，避免属性面板、视口、明细表出现不同颜色。
+ */
 export function elementColor(project: ProjectDocument, element: BimElement): string {
-  if (element.category === 'mesh') return element.color;
-  const type = typeById(project, element.typeId);
-  const materialId = type && 'materialId' in type ? type.materialId : undefined;
-  const material = project.materials.find((item) => item.id === materialId);
-  return material?.color ?? '#a3adb8';
+  return effectiveColor(project, element);
+}
+
+/** 构件最终材质（用于明细表与属性面板显示）。 */
+export function elementMaterial(project: ProjectDocument, element: BimElement): string {
+  return materialOfElement(project, element)?.name ?? (element.category === 'mesh' ? '自身颜色' : '未指定');
 }
 
 export interface MeasureRow {
@@ -110,6 +117,16 @@ export function elementMeasures(project: ProjectDocument, element: BimElement): 
       { label: '厚度', value: `${(type?.thickness ?? 0.15).toFixed(3)} m` },
     ];
   }
+  if (element.primitive) {
+    return [
+      { label: '体量类型', value: PRIMITIVE_LABELS[element.primitive.kind] },
+      ...primitiveFields(element.primitive).map((field) => ({
+        label: field.label,
+        value: `${field.value}${field.unit}`,
+      })),
+      { label: '三角面', value: String(primitiveTriangles(element.primitive)) },
+    ];
+  }
   return [
     { label: '顶点', value: element.positions.length / 3 > 0 ? String(element.positions.length / 3) : '0' },
     { label: '三角面', value: String(Math.floor(element.indices.length / 3)) },
@@ -118,8 +135,10 @@ export function elementMeasures(project: ProjectDocument, element: BimElement): 
 
 export function countTriangles(project: ProjectDocument): number {
   return project.elements.reduce((sum, element) => {
-    if (!element.visible) return sum;
-    if (element.category === 'mesh') return sum + Math.floor(element.indices.length / 3);
+    if (!isElementVisible(project, element)) return sum;
+    if (element.category === 'mesh') {
+      return sum + (element.primitive ? primitiveTriangles(element.primitive) : Math.floor(element.indices.length / 3));
+    }
     // 参数化构件按几何外形估算三角面：长方体 12 面、拉伸体按轮廓边数
     if (element.category === 'wall' || element.category === 'column') return sum + 12;
     return sum + Math.max(12, element.points.length * 2);
@@ -188,11 +207,14 @@ export function migrateDocument(raw: unknown): ProjectDocument {
   if (!isRecord(raw)) return createProject();
   if (raw.schemaVersion === 2 && Array.isArray(raw.levels) && Array.isArray(raw.types) && Array.isArray(raw.elements)) {
     const project = raw as unknown as ProjectDocument;
-    return {
+    return ensureDocumentParameters(ensureDocumentLayers({
       ...project,
       grids: Array.isArray(project.grids) ? project.grids : [],
       materials: Array.isArray(project.materials) ? project.materials : [],
-    };
+      layers: Array.isArray(project.layers) ? project.layers : undefined,
+      categoryOverrides: project.categoryOverrides ?? undefined,
+      parameters: Array.isArray(project.parameters) ? project.parameters : undefined,
+    }));
   }
   const legacy = raw as unknown as LegacyDocument;
   const project = createProject({ name: typeof legacy.name === 'string' ? legacy.name : '未命名项目' });
@@ -202,7 +224,7 @@ export function migrateDocument(raw: unknown): ProjectDocument {
   project.elements = (legacy.elements ?? [])
     .filter((element) => element && Array.isArray(element.positions))
     .map((element) => toMeshElement(element, levelId));
-  return project;
+  return ensureDocumentLayers(project);
 }
 
 export interface ProjectSummary {

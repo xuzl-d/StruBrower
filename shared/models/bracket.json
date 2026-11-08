@@ -1,0 +1,125 @@
+{
+  "id": "bracket",
+  "name": "L 型支架",
+  "summary": "底板 + 立板 + 4 个安装孔（布尔切除）；参数表 + 绑定表驱动，改宽 / 深 / 高整件重算",
+  "params": [
+    {
+      "key": "width",
+      "label": "宽",
+      "unit": "length",
+      "min": 0.04,
+      "max": 2,
+      "default": 0.16,
+      "step": 0.005
+    },
+    {
+      "key": "depth",
+      "label": "深",
+      "unit": "length",
+      "min": 0.02,
+      "max": 2,
+      "default": 0.1,
+      "step": 0.005
+    },
+    {
+      "key": "height",
+      "label": "高",
+      "unit": "length",
+      "min": 0.03,
+      "max": 2,
+      "default": 0.12,
+      "step": 0.005
+    },
+    {
+      "key": "thickness",
+      "label": "板厚",
+      "unit": "length",
+      "min": 0.004,
+      "max": 0.2,
+      "default": 0.01,
+      "step": 0.001
+    }
+  ],
+  "bindings": {
+    "f1.width": "width",
+    "f1.height": "thickness",
+    "f1.translate.2": "thickness / 2",
+    "f2.width": "width",
+    "f2.depth": "thickness",
+    "f2.height": "height",
+    "f2.translate.1": "depth / 2 - thickness / 2",
+    "f2.translate.2": "height / 2",
+    "f3.radius": "0.007",
+    "f3.count": "2",
+    "f3.step.0": "width - 0.044",
+    "f3.translate.0": "-(width / 2 - 0.022)",
+    "f3.translate.1": "-(depth / 2 - 0.022)",
+    "f3.translate.2": "thickness / 2",
+    "f4.radius": "0.007",
+    "f4.count": "2",
+    "f4.step.0": "width - 0.044",
+    "f4.translate.0": "-(width / 2 - 0.022)",
+    "f4.translate.1": "depth / 2 - 0.03",
+    "f4.translate.2": "thickness / 2"
+  },
+  "features": [
+    {
+      "id": "bracket-1",
+      "label": "底板",
+      "mode": "add",
+      "translate": [0, 0, 0.005],
+      "shape": {
+        "shape": "box",
+        "width": 0.16,
+        "depth": 0.1,
+        "height": 0.01
+      }
+    },
+    {
+      "id": "bracket-2",
+      "label": "立板",
+      "mode": "add",
+      "translate": [0, 0.045, 0.06],
+      "shape": {
+        "shape": "box",
+        "width": 0.16,
+        "depth": 0.01,
+        "height": 0.12
+      }
+    },
+    {
+      "id": "bracket-3",
+      "label": "安装孔",
+      "mode": "cut",
+      "translate": [-0.058, -0.028, 0.005],
+      "pattern": {
+        "type": "linear",
+        "count": 2,
+        "step": [0.116, 0, 0]
+      },
+      "shape": {
+        "shape": "cylinder",
+        "radius": 0.007,
+        "height": 0.03,
+        "segments": 16
+      }
+    },
+    {
+      "id": "bracket-4",
+      "label": "安装孔",
+      "mode": "cut",
+      "translate": [-0.058, 0.02, 0.005],
+      "pattern": {
+        "type": "linear",
+        "count": 2,
+        "step": [0.116, 0, 0]
+      },
+      "shape": {
+        "shape": "cylinder",
+        "radius": 0.007,
+        "height": 0.03,
+        "segments": 16
+      }
+    }
+  ]
+}

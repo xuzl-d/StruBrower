@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>曲面修饰：倒圆 / 抽壳 / 偏移</title>
+<style>
+  :root {
+    --ink: #16202b; --ink-2: #4a5866; --ink-3: #7b8896;
+    --line: #e3e8ee; --bg: #f7f9fb; --card: #fff;
+    --ok: #1f7a4d; --warn: #b26a00; --accent: #2f5d8a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.65 -apple-system, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 48px 28px 80px; }
+  header h1 { font-size: 27px; margin: 0 0 6px; letter-spacing: -0.4px; }
+  header p { margin: 0; color: var(--ink-2); }
+  .meta { color: var(--ink-3); font-size: 13px; margin-top: 10px; }
+  h2 { font-size: 17px; margin: 44px 0 14px; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
+  h3 { font-size: 14px; margin: 22px 0 8px; color: var(--ink-2); }
+  .verdict { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-top: 26px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; }
+  .card .tag { font-size: 12px; font-weight: 600; letter-spacing: .4px; color: var(--ink-3); }
+  .card strong { display: block; font-size: 19px; margin: 4px 0 6px; }
+  .card p { margin: 0; color: var(--ink-2); font-size: 13.5px; }
+  figure { margin: 0; }
+  figure img { width: 100%; display: block; border-radius: 10px; border: 1px solid var(--line); background: #fff; }
+  figcaption { font-size: 12.5px; color: var(--ink-3); margin-top: 8px; }
+  .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; align-items: start; }
+  table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 13.5px; }
+  th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--ink-3); font-weight: 600; font-size: 12.5px; letter-spacing: .3px; }
+  td.num { font-variant-numeric: tabular-nums; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; background: #eef2f6; border-radius: 4px; padding: 1px 5px; }
+  pre { background: #16202b; color: #e7edf3; padding: 14px 16px; border-radius: 10px; overflow-x: auto; font-size: 12.5px; line-height: 1.6; }
+  pre code { background: none; padding: 0; color: inherit; }
+  ul { margin: 8px 0 0; padding-left: 20px; color: var(--ink-2); }
+  li { margin: 5px 0; }
+  .note { background: #fff8e8; border: 1px solid #f0e0bd; border-radius: 10px; padding: 14px 18px; color: #6b4d12; font-size: 13.5px; margin-top: 16px; }
+  .ok { color: var(--ok); font-weight: 600; }
+  .foot { margin-top: 48px; color: var(--ink-3); font-size: 12.5px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>三个曲面修饰：倒圆 / 抽壳 / 偏移</h1>
+    <p>补掉造型内核最后三处"看得见"的缺口：棱边圆角、薄壁壳体、面偏移，外加把阵列单特征上限从 64 提到 192。</p>
+    <div class="meta">
+      实现：<code>src/bim/solid.ts</code>（求值）· <code>server/ai/solid.js</code>（校验）· 复现命令 <code>npm run modifiers</code>
+    </div>
+  </header>
+
+  <div class="verdict">
+    <div class="card">
+      <div class="tag">倒圆</div>
+      <strong>内缩 r + 滚球</strong>
+      <p>盒体走专用构造器（真 R 圆角），其它凸体用「内缩 r，再用半径 r 的球滚一遍」——即 <code>P ⊕ 球(r)</code>，外形尺寸不变。</p>
+    </div>
+    <div class="card">
+      <div class="tag">抽壳</div>
+      <strong>真壁厚</strong>
+      <p>实体减内缩实体；开放面把内腔沿该方向再补一刀，内腔穿出、侧壁高度不变，杯口不会矮一截。</p>
+    </div>
+    <div class="card">
+      <div class="tag">偏移</div>
+      <strong>按面推，不按点缩</strong>
+      <p>每个顶点解「相邻各面都平移 d」的超定方程，棱角处是三面相交的精确解，曲面上退化成等距面。</p>
+    </div>
+  </div>
+
+  <h2>1 · 倒圆：同一批形状，有没有 fillet</h2>
+  <figure>
+    <img src="fillet.png" alt="倒圆对照" />
+    <figcaption>每格左侧是原件、右侧是同形状加 <code>fillet</code>。盒子 R0.09、圆柱 R0.07、六棱柱 R0.07；外形尺寸一分没变，只是 12 条棱被削圆。</figcaption>
+  </figure>
+
+  <pre><code>{ "shape": "box", "width": 0.8, "depth": 0.55, "height": 0.45, "fillet": 0.09 }
+{ "shape": "cylinder", "radius": 0.3, "height": 0.5, "fillet": { "radius": 0.07, "segments": 24 } }</code></pre>
+
+  <table>
+    <thead><tr><th style="width:22%">做法</th><th>为什么</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><b>box → 专用构造器</b></td>
+        <td>盒体有现成的 <code>buildRoundedBox</code>（平面 + 真正的 R 圆角、竖直方向切层），比滚球采样的面片干净得多。</td>
+      </tr>
+      <tr>
+        <td><b>其它凸体 → 内缩 + 滚球</b></td>
+        <td><code>P ⊕ 球(r) = conv(各顶点球)</code>：把内缩后的每个顶点撒一圈球面点取凸包，得到的就是精确的滚球倒圆。平面棱角变成 R 圆柱面，三棱交汇的角变成球面。</td>
+      </tr>
+      <tr>
+        <td><b>非凸体 → 原样跳过</b></td>
+        <td>上面那个恒等式只在凸体上成立。非凸几何滚一遍会变成它自己的凸包，把孔、凹槽全填掉——所以内核宁可不动，也不近似。</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>2 · 抽壳：杯、管壳与壁厚</h2>
+  <figure>
+    <img src="shell.png" alt="抽壳" />
+    <figcaption>左：抽壳杯（<code>thickness 0.07</code>、<code>open "z+"</code>），前方被切掉一块露出剖面——壁厚均匀、内外棱都继承圆角。右：两端开口的管壳（<code>open: ["z+","z-"]</code>）。下图俯视看开口与内壁。</figcaption>
+  </figure>
+
+  <pre><code>{ "shape": "box", "width": 0.86, "depth": 0.86, "height": 0.72,
+  "fillet": 0.06, "shell": { "thickness": 0.07, "open": "z+" } }</code></pre>
+
+  <p>开放面的处理值得记一笔：直觉做法是"切掉顶上一层"，但那样会连侧壁一起削掉一截，杯口就矮了一个壁厚。
+  这里改成把内腔沿开口方向再平移一个壁厚补切一刀——内腔正好穿出顶面，其余五面的壁厚仍是 <code>t</code>。
+  封口壳与开口壳的体积差刚好是那一层顶壁（2.168 → 1.844 m³，壁厚 0.1、边长 2）。</p>
+
+  <h2>3 · 偏移：把面推出去 / 收回来</h2>
+  <figure>
+    <img src="offset.png" alt="偏移" />
+    <figcaption>同一块 <code>0.7×0.7×0.5</code> 的盒子：左 <code>offset +0.07</code>、中不动、右 <code>-0.07</code>。注意棱边仍然是尖的——偏移不是倒圆，它只把面平移。</figcaption>
+  </figure>
+
+  <p>偏移不能用"顶点沿法向走 d"来实现：盒子的角上三条棱法向不同，沿平均法向走 d 会让每个面只推出
+  <code>d/√3</code>（差 42%）。正确做法是让顶点同时满足"相邻各面都平移了 d"，这是一个超定线性方程组，
+  用最小二乘解（加一点正则项防曲面处退化）：</p>
+
+  <pre><code>M = Σ nᵢnᵢᵀ + λI ,  b = d·Σ nᵢ ,  Δ = M⁻¹b</code></pre>
+
+  <p>平面棱角上正好三面相交 → 精确解；圆柱、放样这类曲面上相邻面近乎平行，解退化成沿法向偏移，
+  而法向偏移就是曲面的等距面——两种情形都落在同一个公式里。</p>
+
+  <h2>4 · 阵列：一排 90 个孔写在同一个特征里</h2>
+  <figure>
+    <img src="array.png" alt="90 孔阵列" />
+    <figcaption><code>pattern: { type:'linear', count: 90, step: [0.05,0,0] }</code>：一块板上 90 个圆孔，特征树里仍然只有 2 个特征。原上限 64，一排舷窗得拆成 4 个特征。</figcaption>
+  </figure>
+
+  <div class="note">
+    <b>代价要说清楚。</b>实例数是乘在几何上的：90 个窗切在一块板上，求值约 1.0 秒（其余步骤不变）。
+    阵列上限提到 192 是为了"写得下"，日常仍建议 ≤ 32；真要一排 90 个，把 <code>segments</code> 降到 12–14 能省一半。
+  </div>
+
+  <h2>5 · 边界与代价</h2>
+  <table>
+    <thead><tr><th style="width:26%">场景</th><th style="width:20%">结果</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td>盒 / 圆柱 / 六棱柱倒圆</td><td class="num">160 → 2,288 面</td><td>三个形状合计，21 ms；圆角是新增几何，这是必然的代价</td></tr>
+      <tr><td>抽壳杯 + 管壳</td><td class="num">17,834 面 · 232 ms</td><td>倒圆后的曲面再抽壳，CSG 会把两侧面都加密；曲面件建议先抽壳再考虑倒圆</td></tr>
+      <tr><td>机身放样（22 站）抽壳 0.02</td><td class="num">1,532 → 5,501 面 · 88 ms</td><td>薄壳蒙皮，说明偏移/抽壳对放样曲面同样成立</td></tr>
+      <tr><td>非凸件加 fillet</td><td class="num">面数不变</td><td>凸性判断 1–3 ms 后原样返回（不会毁形）</td></tr>
+      <tr><td>偏移 ±0.07</td><td class="num">0.3 ms</td><td>只改点坐标，不加面</td></tr>
+    </tbody>
+  </table>
+
+  <h2>6 · 仍然做不到的</h2>
+  <ul>
+    <li><b>变半径圆角 / 融合式翼梢</b>：滚球只能给等半径 R。要"根部 R20、梢部 R3"的过渡，需要 B-rep 级的曲面圆角。</li>
+    <li><b>布尔之后的倒角</b>：<code>fillet</code> 作用在特征自己的几何上，切除产生的新棱仍是尖的。要圆就把 <code>fillet</code> 写在切除之前。</li>
+    <li><b>2D 轮廓倒圆</b>：凹多边形 <code>prism</code> 的平面角仍需手写 <code>profile</code> 或换 <code>roundedBox</code>。</li>
+    <li><b>贴图材质</b>：只有独立平面的贴花，没有 UV 贴图与纹理，蒙皮分缝 / 铆钉排还做不出来。</li>
+  </ul>
+
+  <h2>7 · 改了哪些文件</h2>
+  <table>
+    <thead><tr><th style="width:32%">文件</th><th>改动</th></tr></thead>
+    <tbody>
+      <tr><td><code>src/bim/types.ts</code></td><td><code>SolidFeature</code> 增加 <code>fillet</code> / <code>shell</code> / <code>offset</code>；<code>patternCount</code> 注释同步到 192</td></tr>
+      <tr><td><code>src/bim/solid.ts</code></td><td>表面拓扑焊接、面平面最小二乘偏移、球面采样凸包、抽壳（含开放面）、修饰字段的 UI 编组与编辑</td></tr>
+      <tr><td><code>server/ai/solid.js</code></td><td>三个修饰的归一化与校验（数字 / 对象两种写法）、开口面白名单、<code>describeFeature</code> 里显示修饰</td></tr>
+      <tr><td><code>server/ai/provider.js</code></td><td>提示词新增「曲面修饰」段：何时用、写法、凸体限制、半径上限</td></tr>
+      <tr><td><code>shared/models/pavilion-hex.json</code></td><td>台基 / 台面 / 踏步 / 额枋 / 檐口板加 <code>fillet</code>（石活磨圆棱角）</td></tr>
+      <tr><td><code>scripts/solid-test.ts</code></td><td>新增 21 项断言：尺寸不变、体积减小、非凸跳过、抽壳体积、开口、双开口、叠加、90 实例、服务端归一化与拒绝</td></tr>
+    </tbody>
+  </table>
+
+  <p class="foot">
+    复现：<code>npm run modifiers</code>（出上面四张图）· <code>npm test</code>（造型 134 项断言）<br />
+    图由 <code>scripts/lib/mini-render.ts</code> 离屏软光栅渲染，几何走 <code>buildSolidGeometry</code>，与视口同源。
+  </p>
+</div>
+</body>
+</html>
