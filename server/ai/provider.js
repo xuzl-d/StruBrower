@@ -183,7 +183,7 @@ ${MODEL_CATALOG}
 
 特征 = { shape: '形状名', ...尺寸字段, label?, material?, mode?: 'add'|'cut'|'intersect', translate?:[x,y,z], rotate?:[rx,ry,rz](度), scale?, pattern?, fillet?, shell?, offset? }形状与尺寸字段（局部坐标，米；XY 以原点为中心，z=0 是高度方向的中心）：
 - box: width, depth, height                                  // 只用于需要硬棱的方块，真实零件少用
-- roundedBox: width, depth, height, radius                   // 圆角盒：外壳/机身/电池仓/手柄；radius ≤ min(width, depth)/2（只看平面尺寸，与 height 无关，薄板也允许大倒圆）
+- roundedBox: width, depth, height, radius                   // 圆角盒：外壳/机身/电池仓/手柄；radius 是平面轮廓圆角，≤ min(width, depth)/2，只受这两条平面边约束，height（板厚）不参与——厚度再薄也能用大圆角，但平面窄边窄就只能是更小的圆角
 - cylinder: radius, height, segments?
 - tube: radius(外半径), thickness(壁厚), height              // 空心管：机臂、支腿、导管、把手
 - capsule: radius, height(总高)                              // 胶囊：脚垫、握把、鼻锥
@@ -256,6 +256,7 @@ pattern = { type:'linear', count, step:[dx,dy,dz] } / { type:'circular', count, 
    手持件/电器/工具的外壳截面是扁的：height ≈ depth × 0.6–0.8。写 depth = height 会得到一根方棒。
 5. 圆角别贪大：roundedBox 的 radius 取 min(width, depth) 的 1/8–1/6，最多 1/3。
    radius 接近短边一半时整块会退化成胶囊/香肠（220×48×48 配 R18 就是一根香肠），这是「不像」的头号原因。
+   窄边只有十几毫米的薄件（镜片、面板、格栅条）radius 就是 1–3 mm，直接写小值，别为了「看着圆」硬撑到上限。
 6. 斜件（把手/支腿/手柄）先算再写：取根部点（必须在主体内部），轴向单位向量 u（向下后倾 20° 就是
    [-0.342, 0, -0.940]），中心 = 根部 + 0.5×长度×u，rotate 写 [0, 20, 0]。不要靠 translate 硬凑。
 7. 建模顺序：主轮廓 → 大特征（把手/盖/法兰/护罩）→ 过渡件 → 细节（孔/槽/筋/阵列）。先堆细节会显得散。

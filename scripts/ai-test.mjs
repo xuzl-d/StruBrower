@@ -372,6 +372,23 @@ const fatRadius = await api('POST', applyPath, {
 check('倒圆超过 min(width, depth)/2 时 400 并说明上限',
   fatRadius.status === 400 && String(fatRadius.data.error).includes('min(width, depth)/2'),
   fatRadius.data);
+// 报错要能让模型一次改对：给出建议值，且不能出现与上限矛盾的措辞（曾写「薄板可以取大倒圆」把模型带偏）
+const fatError = String(fatRadius.data.error ?? '');
+check('越界倒圆报错给出可直接照抄的建议值',
+  /建议 \d/.test(fatError) && !fatError.includes('薄板可以取大倒圆'),
+  fatError);
+const narrowRadius = await api('POST', applyPath, {
+  token,
+  body: {
+    ops: [{
+      op: 'addSolid',
+      features: [{ label: '窄条', shape: { shape: 'roundedBox', width: 0.0015, depth: 0.0012, height: 0.5, radius: 0.001 } }],
+    }],
+  },
+});
+check('平面窄到放不下最小圆角时提示改用 box（而不是死循环报区间）',
+  narrowRadius.status === 400 && String(narrowRadius.data.error).includes('无法倒圆'),
+  narrowRadius.data);
 
 console.log('审计');
 const audit = await api('GET', `/api/projects/${projectId}/audit`, { token });

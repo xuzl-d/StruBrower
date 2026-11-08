@@ -338,10 +338,20 @@ function normalizeShape(shape, label, depth, counter) {
       const width = size(shape.width, `${label}.width`);
       const depth = size(shape.depth, `${label}.depth`);
       const height = size(shape.height, `${label}.height`);
-      // radius 是「平面轮廓上的圆角半径」，只受宽/深约束。
-      // 之前按 min(width, depth, height)/2 限制，导致 5 mm 厚的顶盖只能有 2.5 mm 倒圆，
-      // 20 mm 圆角的薄板被直接拒掉——这是错的（薄板的圆角本来就大于板厚）。
+      // radius 是「平面轮廓上的圆角半径」，只受宽/深约束，与 height 无关：
+      // 5 mm 厚的顶盖可以放心用 20 mm 圆角，但 12 mm 窄的镜片最多只有 6 mm。
       const maxRadius = Math.min(width, depth) / 2;
+      const m = (value) => String(Math.round(value * 1e4) / 1e4);
+      // width/depth 太窄时连最小圆角都放不下：这里没有合法值，必须换形状或加大平面尺寸
+      if (maxRadius < MIN_SIZE) {
+        fail(
+          `${label} 无法倒圆：width ${m(width)} × depth ${m(depth)} 太窄，` +
+            `平面圆角上限 min(width, depth)/2 = ${m(maxRadius)}，小于最小半径 ${m(MIN_SIZE)}；` +
+            `请把 width、depth 都加到 ≥ ${m(MIN_SIZE * 2)}，或改用 box`,
+        );
+      }
+      // 建议值取上限的 1/3（即 min(width, depth) 的 1/6），和提示词里的推荐区间一致
+      const suggestRadius = Math.min(maxRadius, Math.max(MIN_SIZE, Math.round(maxRadius * 333) / 1000));
       return {
         shape: 'roundedBox',
         width,
@@ -350,7 +360,11 @@ function normalizeShape(shape, label, depth, counter) {
         radius: num(shape.radius, `${label}.radius`, {
           min: MIN_SIZE,
           max: maxRadius,
-          hint: `倒圆半径不能超过 min(width, depth)/2（当前 width ${width}、depth ${depth}），与 height 无关，薄板可以取大倒圆`,
+          hint:
+            `倒圆半径是平面轮廓（width×depth）的圆角，只受最窄的那条平面边限制：` +
+            `上限 = min(width, depth)/2 = ${m(maxRadius)}（当前 width ${m(width)}、depth ${m(depth)}），height 不参与。` +
+            `请把 radius 改成不超过 ${m(maxRadius)}，建议 ${m(suggestRadius)}；` +
+            `如果确实需要更大的圆角，先把 depth 加到 radius×2 以上`,
         }),
         segments: segments(shape.segments, `${label}.segments`, 32),
       };
