@@ -2,6 +2,7 @@
 # StruBrowser 一键启动
 #   ./start.sh                开发模式：API(8787) + Web(5173)，自动打开浏览器
 #   ./start.sh prod           生产模式：构建后用单端口(8787)运行
+#   ./start.sh tunnel         一键暴露到公网（生产模式 + cloudflared 隧道）
 #   STRU_NO_OPEN=1 ./start.sh 不自动打开浏览器
 #   PORT=9000 WEB_PORT=9001 ./start.sh  自定义端口
 set -euo pipefail
@@ -187,6 +188,16 @@ cleanup() {
   info "已停止"
 }
 trap cleanup EXIT INT TERM
+
+# ---------- 隧道模式（交给 scripts/tunnel.sh：起服务 + 建隧道 + 打印公网地址） ----------
+
+if [ "$MODE" = "tunnel" ] || [ "$MODE" = "--tunnel" ]; then
+  shift || true
+  if [ $# -gt 0 ]; then
+    exec "$ROOT/scripts/tunnel.sh" "$@"
+  fi
+  exec "$ROOT/scripts/tunnel.sh"
+fi
 
 # ---------- 生产模式 ----------
 

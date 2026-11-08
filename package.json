@@ -14,6 +14,8 @@
     "reset-password": "node --experimental-sqlite scripts/reset-password.mjs",
     "setup:step": "node scripts/setup-step.mjs",
     "share": "bash scripts/share.sh cloudflared",
+    "tunnel": "bash scripts/tunnel.sh",
+    "tunnel:install": "bash scripts/tunnel.sh --install",
     "load-test": "node scripts/load-test.mjs",
     "aircraft": "esbuild scripts/aircraft-demo.ts --bundle --platform=node --format=esm --outfile=.tmp/aircraft.mjs --log-level=warning && node .tmp/aircraft.mjs",
     "pavilion": "esbuild scripts/pavilion-demo.ts --bundle --platform=node --format=esm --outfile=.tmp/pavilion.mjs --log-level=warning && node .tmp/pavilion.mjs",

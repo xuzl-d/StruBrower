@@ -9,9 +9,44 @@ HTTP API、WebSocket 协作、前端页面都走它。下面按「局域网 → 
 | --- | --- | --- |
 | 同事在同一局域网 | `./start.sh prod`，别人访问 `http://<你的内网IP>:8787` | 办公室内试用 |
 | 公网固定地址 | VPS + Docker，前置 Caddy/Nginx 做 HTTPS | 正式给外部用户 |
-| 临时给一个人看 | `cloudflared tunnel --url http://127.0.0.1:8787` | 演示、远程排障 |
+| 临时给外部用户看 | `./start.sh tunnel` | 演示、远程排障 |
 
 > 任何公网部署都建议 HTTPS（`https://`）。浏览器对剪贴板、全屏键盘锁等 API 有安全上下文要求。
+
+## 0.0 一条命令给外部访问
+
+```bash
+./start.sh tunnel          # 等价于 npm run tunnel
+```
+
+它按顺序做四件事，做完把公网链接打印出来（同时写进 `.logs/tunnel-url.txt` 并复制到剪贴板）：
+
+1. 检查本机 `8787` 上有没有 StruBrowser：没有就以**生产模式**启动（`dist/` 缺失或比 `src/` 旧会先 `npm run build`）；
+2. 检查隧道客户端：优先 `cloudflared`（PATH 或 `.tools/cloudflared`），也可以用 `ngrok`；
+3. 建隧道，从输出里解析出 `https://xxx.trycloudflare.com` 这种地址；
+4. 自检一次公网可达性，打印地址、账号数、安全提示。
+
+`Ctrl+C` 会把隧道和「由本脚本启动的服务」一起关掉；公网地址随即失效。
+
+```bash
+./start.sh tunnel ngrok                  # 换 ngrok（先 ngrok config add-authtoken）
+./start.sh tunnel --port 9000            # 换本机端口
+./start.sh tunnel --no-start             # 只建隧道，复用已在跑的服务
+./start.sh tunnel --build                # 强制重新构建前端
+./start.sh tunnel --keep                 # Ctrl+C 只关隧道，保留服务
+./start.sh tunnel --install              # 没装 cloudflared 时自动下载到 .tools/
+npm run tunnel:install                   # 同上
+```
+
+要点：
+
+- **不需要公网服务器、不需要公网 IP**，但你的电脑必须开机联网；临时地址每次重启都会变。
+- 已有账号时脚本会提示用 `STRU_ALLOW_REGISTER=0 ./start.sh tunnel` 关闭开放注册 ——
+  拿到链接的人就能打开页面，别把链接发到公开群里。
+- 若终端提示「未能自检」，多半是本机 DNS / 代理拦截了对 `*.trycloudflare.com` 的访问，
+  地址本身通常是好的，用手机流量或让外部同事直接打开验证。
+- 上次被强杀（关终端、断电）留下过服务时，脚本会读 `.logs/tunnel-server.pid` 先把这份旧进程收掉再启动；
+  你自己 `./start.sh prod` 起的服务不写这个文件，不会被误杀。
 
 ## 0.1 一定要自己买“公网服务器”吗？
 
@@ -29,8 +64,14 @@ HTTP API、WebSocket 协作、前端页面都走它。下面按「局域网 → 
 ### 方式 A：隧道（最快，不用买服务器）
 
 ```bash
-./start.sh prod                 # 先以生产模式跑起来（单端口 8787）
-./scripts/share.sh cloudflared  # 或 npm run share；没装会提示 brew install cloudflared
+./start.sh tunnel               # 一键：起生产服务 + 建隧道 + 打印公网地址
+```
+
+不想用一键脚本时，也可以分两步手动来：
+
+```bash
+./start.sh prod                          # 先以生产模式跑起来（单端口 8787）
+./scripts/share.sh cloudflared           # 只建隧道；没装会提示 brew install cloudflared
 ```
 
 终端会打印形如 `https://xxxx.trycloudflare.com` 的地址，直接发给外部用户。

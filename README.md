@@ -97,6 +97,7 @@
 ```bash
 ./start.sh                  # 开发模式：API 8787 + Web 5173，自动打开浏览器
 ./start.sh prod             # 生产模式：构建后用单端口 8787 运行
+./start.sh tunnel           # 一键给外部访问：生产模式 + 公网隧道，打印可分享链接
 STRU_NO_OPEN=1 ./start.sh   # 不自动打开浏览器
 PORT=9000 WEB_PORT=9001 ./start.sh   # 自定义端口
 ```
@@ -442,8 +443,9 @@ server/convert/   STEP → 带面颜色网格的 Python/OCP 转换器 + 测试�
 src/components/AiPanel.tsx  AI 对话面板
 server/ai/        AI 网关（BIM 指令、上下文摘要、Mock/OpenAI provider）
 docs/AI.md        AI 能力边界、指令表、provider 配置与测试
-start.sh          一键启动脚本（开发/生产/端口/自动开浏览器）
+start.sh          一键启动脚本（开发/生产/隧道/端口/自动开浏览器）
 start.command     macOS 双击启动入口
+scripts/tunnel.sh 一键隧道：起生产服务 + cloudflared/ngrok + 打印公网地址
 scripts/dev.mjs   同时启动 API 与 Vite
 docs/ARCHITECTURE.md   目标架构、接口/数据模型、M1–M6 路线图与运行配置
 diagnostics/           STEP 颜色丢失问题的定位报告与复现脚本
