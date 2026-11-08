@@ -92,7 +92,7 @@
 
 ## 一键启动
 
-要求 Node.js ≥ 22.5（使用内置 `node:sqlite`）。**macOS 可在 Finder 里双击 `start.command`**，或在终端运行：
+要求 Node.js ≥ 22.5（使用内置 `node:sqlite`）。**macOS 可在 Finder 里双击 `start.command`（本地开发）或 `启动隧道.command`（给外部访问）**，或在终端运行：
 
 ```bash
 ./start.sh                  # 开发模式：API 8787 + Web 5173，自动打开浏览器
@@ -444,7 +444,8 @@ src/components/AiPanel.tsx  AI 对话面板
 server/ai/        AI 网关（BIM 指令、上下文摘要、Mock/OpenAI provider）
 docs/AI.md        AI 能力边界、指令表、provider 配置与测试
 start.sh          一键启动脚本（开发/生产/隧道/端口/自动开浏览器）
-start.command     macOS 双击启动入口
+start.command     macOS 双击启动入口（本地开发）
+启动隧道.command   macOS 双击启动入口（公网隧道，自动开浏览器打开公网地址）
 scripts/tunnel.sh 一键隧道：起生产服务 + cloudflared/ngrok + 打印公网地址
 scripts/dev.mjs   同时启动 API 与 Vite
 docs/ARCHITECTURE.md   目标架构、接口/数据模型、M1–M6 路线图与运行配置

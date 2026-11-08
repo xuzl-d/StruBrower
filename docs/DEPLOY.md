@@ -19,6 +19,10 @@ HTTP API、WebSocket 协作、前端页面都走它。下面按「局域网 → 
 ./start.sh tunnel          # 等价于 npm run tunnel
 ```
 
+**macOS 不想敲命令**：在 Finder 里双击项目根目录的 **`启动隧道.command`**，效果等同
+`./start.sh tunnel --open` —— 它会自己开终端、起服务、建隧道，拿到地址后用默认浏览器打开，
+并把地址复制到剪贴板。关窗口或 `Ctrl+C` 会一并停掉隧道和本地服务。
+
 它按顺序做四件事，做完把公网链接打印出来（同时写进 `.logs/tunnel-url.txt` 并复制到剪贴板）：
 
 1. 检查本机 `8787` 上有没有 StruBrowser：没有就以**生产模式**启动（`dist/` 缺失或比 `src/` 旧会先 `npm run build`）；
@@ -34,7 +38,8 @@ HTTP API、WebSocket 协作、前端页面都走它。下面按「局域网 → 
 ./start.sh tunnel --no-start             # 只建隧道，复用已在跑的服务
 ./start.sh tunnel --build                # 强制重新构建前端
 ./start.sh tunnel --keep                 # Ctrl+C 只关隧道，保留服务
-./start.sh tunnel --install              # 没装 cloudflared 时自动下载到 .tools/
+./start.sh tunnel --install              # 没装 cloudflared 时自动下载到 .tools/（已装则跳过）
+./start.sh tunnel --open                 # 拿到地址后用默认浏览器打开（双击入口默认带）
 npm run tunnel:install                   # 同上
 ```
 

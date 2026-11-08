@@ -8,8 +8,9 @@
 #   ./scripts/tunnel.sh --build         强制重新构建前端
 #   ./scripts/tunnel.sh --install       下载 cloudflared 到 .tools/（无需 brew）
 #   ./scripts/tunnel.sh --keep          退出时保留本脚本启动的服务
+#   ./scripts/tunnel.sh --open          拿到地址后用默认浏览器打开
 #
-# 也可以：./start.sh tunnel  或  npm run tunnel
+# 也可以双击项目根目录的「启动隧道.command」，或：./start.sh tunnel / npm run tunnel
 #
 # 隧道只是把 Cloudflare / ngrok 的边缘节点当作中转，流量仍然回到这台电脑：
 # 关机、休眠、断网都会让公网地址失效；临时地址每次重启都会变。
@@ -24,6 +25,7 @@ AUTO_START=1
 FORCE_BUILD=0
 DO_INSTALL=0
 KEEP_SERVER=0
+OPEN_BROWSER=0
 LOG_DIR="$ROOT/.logs"
 TUNNEL_LOG="$LOG_DIR/tunnel.log"
 URL_FILE="$LOG_DIR/tunnel-url.txt"
@@ -42,8 +44,9 @@ usage() {
   --port <n>     本机端口（默认 8787，也可用环境变量 PORT）
   --no-start     不复用/不启动本地服务，只建隧道
   --build        强制 npm run build 后再起服务
-  --install      下载 cloudflared 到 .tools/（macOS/Linux，无需 brew）
+  --install      下载 cloudflared 到 .tools/（macOS/Linux，无需 brew；已装则跳过）
   --keep         Ctrl+C 时保留由本脚本启动的服务端
+  --open         拿到地址后用默认浏览器打开
   -h, --help     显示本帮助
 
 示例：
@@ -62,6 +65,7 @@ while [ $# -gt 0 ]; do
     --build) FORCE_BUILD=1 ;;
     --install) DO_INSTALL=1 ;;
     --keep) KEEP_SERVER=1 ;;
+    --open) OPEN_BROWSER=1 ;;
     -h|--help) usage; exit 0 ;;
     *) usage; fail "未知参数：$1" ;;
   esac
@@ -121,7 +125,11 @@ find_cloudflared() {
 }
 
 if [ "$DO_INSTALL" = "1" ]; then
-  install_cloudflared
+  if [ -n "$(find_cloudflared)" ]; then
+    info "cloudflared 已就绪（$(find_cloudflared)），跳过下载"
+  else
+    install_cloudflared
+  fi
   echo
 fi
 
@@ -211,7 +219,7 @@ TUNNEL_PID=""
 OWN_PID_FILE="$LOG_DIR/tunnel-server.pid"
 
 cleanup() {
-  trap - EXIT INT TERM
+  trap - EXIT INT TERM HUP
   echo
   # 先删地址文件，后面即使卡住也不会留下「看起来还能用」的旧链接
   rm -f "$URL_FILE"
@@ -245,7 +253,7 @@ cleanup() {
     info "已退出，公网地址已失效"
   fi
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT INT TERM HUP
 
 # ---------- 隧道客户端检查（先查，避免白构建） ----------
 
@@ -434,6 +442,15 @@ for _ in 1 2 3; do
   fi
   sleep 1.5
 done
+
+# 自检之后再开浏览器：边缘节点刚建好时直接打开容易白屏
+if [ "$OPEN_BROWSER" = "1" ]; then
+  if command -v open >/dev/null 2>&1; then
+    open "$PUBLIC_URL" >/dev/null 2>&1 || true
+  elif command -v xdg-open >/dev/null 2>&1; then
+    xdg-open "$PUBLIC_URL" >/dev/null 2>&1 || true
+  fi
+fi
 
 printf '\n'
 printf '  \033[1;32m公网地址  %s\033[0m\n' "$PUBLIC_URL"
