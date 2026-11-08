@@ -528,6 +528,9 @@ export default function AiPanel({
   const [compacting, setCompacting] = useState(false);
   /** 主模型能不能读图：能的话每次应用后自动附一张视口截图做视觉自检 */
   const canSeeImages = Boolean(status?.canSeeImages || status?.vision?.enabled);
+  /** 同上，但给异步流程用：await 之后拿到的 state 是旧的，读 ref 才是刚刷新的结论 */
+  const canSeeRef = useRef(canSeeImages);
+  canSeeRef.current = canSeeImages;
   const [showView, setShowView] = useState(true);
   /** 自动应用：AI 改完立刻写进模型，才能自己转视角核对（关掉就只给建议，用户手动应用） */
   const [autoApply, setAutoApply] = useState(() => readUiBool(AUTO_APPLY_KEY, true));
@@ -722,17 +725,32 @@ export default function AiPanel({
     resizeRef.current = null;
   };
 
-  const loadStatus = async () => {
+  const loadStatus = async (): Promise<AiStatus | null> => {
     try {
       const next = await aiApi.status();
       setStatus(next);
       setStatusError('');
+      return next;
     } catch (caught) {
       const message = caught instanceof ApiError ? caught.message : '读取 AI 状态失败';
       setStatusError(/HTTP 500|HTTP 404|无法连接服务端/.test(message)
         ? `${message}`
         : message);
+      return null;
     }
+  };
+
+  /**
+   * 真的要用「读图」之前再确认一次能力。
+   * status 只在面板挂载时读一次，而能力会变：管理员换了模型、勾了独立视觉模型、
+   * 服务端升级后不再误判——页面开着不动就还是旧结论，于是明明能看图却跳过巡检。
+   */
+  const confirmCanSee = async (): Promise<boolean> => {
+    if (canSeeRef.current) return true;
+    const next = await loadStatus();
+    const canSee = Boolean(next?.canSeeImages || next?.vision?.enabled);
+    canSeeRef.current = canSee;
+    return canSee;
   };
 
   useEffect(() => {
@@ -1122,11 +1140,11 @@ export default function AiPanel({
   const inspectViews = async (views?: AiInspectView[], label = ''): Promise<AgentShot[]> => {
     const list = Array.isArray(views) ? views.slice(0, MAX_IMAGES) : [];
     if (!list.length || !viewport) return [];
-    if (!canSeeImages) {
+    if (!(await confirmCanSee())) {
       setMessages((current) => [...current, {
         id: newId(),
         role: 'system',
-        text: 'AI 想先看一眼当前模型，但当前模型不能读图。已跳过视角巡检；'
+        text: 'AI 想先看一眼当前模型，但当前模型不能读图（刚重新确认过）。已跳过视角巡检；'
           + '需要它自己转着看，请在「用户与系统 → AI 设置」启用独立视觉模型（或换一个多模态主模型）。',
       }]);
       return [];
@@ -1233,9 +1251,11 @@ export default function AiPanel({
 
     // 现截当前视口一起发过去：模型能看着自己刚做出来的东西判断「像不像」再改。
     // 项目里一个构件都没有就没什么好看的：直接跳过，省掉一次截图（也省掉气泡里一张黑图）。
+    // 截图前再确认一次读图能力：面板挂了一整天，能力可能早就被改过（换模型 / 开视觉模型）。
+    const canSee = await confirmCanSee();
     const hasGeometry = Array.isArray(currentDocument?.elements) && currentDocument.elements.length > 0;
     let shot: string | null = null;
-    if (showView && canSeeImages && hasGeometry) {
+    if (showView && canSee && hasGeometry) {
       try {
         const raw = viewport?.capture() ?? null;
         const shrunk = raw ? await shrinkDataUrl(raw, 1024, 0.72) : null;
