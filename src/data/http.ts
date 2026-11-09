@@ -844,7 +844,19 @@ export function createAiApi(baseUrl = '') {
           lastError = error;
           // 用户点了「停止」：哪怕这一下失败的形态是「流被截断」，也不能自动重来
           if (options.signal?.aborted) throw new ApiError(0, '已停止生成');
-          if (!shouldRetryStream(error, attempt, options.signal)) throw error;
+          if (!shouldRetryStream(error, attempt, options.signal)) {
+            // 次数用尽：告诉用户这是「已经自己重试过」的结果，别让他以为是第一次就挂
+            if (attempt >= STREAM_ATTEMPTS
+              && error instanceof ApiError
+              && /没有收到结果|流式响应中断/.test(error.message)) {
+              throw new ApiError(
+                error.status,
+                `${error.message}（已自动重试 ${STREAM_ATTEMPTS - 1} 次）：网络或隧道不稳定，稍等再发一次；`
+                + '服务端日志在 .logs/server.log',
+              );
+            }
+            throw error;
+          }
           const delayMs = STREAM_RETRY_DELAYS[attempt - 1] ?? STREAM_RETRY_DELAYS[STREAM_RETRY_DELAYS.length - 1];
           options.onEvent?.({
             type: 'retry',

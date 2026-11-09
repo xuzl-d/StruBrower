@@ -92,6 +92,7 @@ try {
 }
 check('连续中断共尝试 3 次', calls.length === 3, calls.length);
 check('最终报错仍是「没有收到结果」', /没有收到结果/.test(giveUp), giveUp);
+check('最终报错说明已经自动重试过', /已自动重试 2 次/.test(giveUp), giveUp);
 
 /* ---------- 3. 4xx 不重试 ---------- */
 console.log('不该重试的情况');
