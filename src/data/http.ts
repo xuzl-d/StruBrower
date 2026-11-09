@@ -49,6 +49,69 @@ export class ConflictError extends Error {
   }
 }
 
+/* ---------- 流式请求的自动重试 ---------- */
+
+/** 一次发送最多试 3 次（首轮 + 2 次重试）；间隔递增，别把网关打穿 */
+const STREAM_ATTEMPTS = 3;
+const STREAM_RETRY_DELAYS = [700, 1800];
+
+function makeRequestId(): string {
+  try {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+  } catch {
+    /* 非安全上下文（http 访问）没有 randomUUID */
+  }
+  return `r-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+/** 中断原因压成一句人话，塞进「正在自动重试」的进度文案 */
+function describeStreamFailure(error: unknown): string {
+  const text = error instanceof Error ? error.message : '连接中断';
+  if (/没有收到结果/.test(text)) return '响应流提前结束';
+  if (/无法连接服务端/.test(text)) return '连不上服务端';
+  if (/超时|timeout/i.test(text)) return '等待超时';
+  const code = text.match(/HTTP\s*(\d{3})/i);
+  if (code) return `HTTP ${code[1]}`;
+  return text.length > 40 ? `${text.slice(0, 40)}…` : text;
+}
+
+/**
+ * 值不值得自动重试：
+ * - 用户点了停止 → 绝不重试；
+ * - 连不上 / 流被截断 / 429 / 5xx（网关抖动、上游过载）→ 重试；
+ * - 400 / 401 / 403 / 404 / 413 这类改配置或改输入才能解决的 → 直接抛给用户。
+ */
+function shouldRetryStream(error: unknown, attempt: number, signal?: AbortSignal): boolean {
+  if (attempt >= STREAM_ATTEMPTS) return false;
+  if (signal?.aborted) return false;
+  if (!(error instanceof ApiError)) return true;
+  const message = error.message;
+  if (error.status === 0) return !/已停止生成/.test(message);
+  if (error.status === 429) return true;
+  if (error.status >= 500) {
+    const code = Number(message.match(/\b(?:HTTP\s*)?(429|5\d\d)\b/)?.[1] ?? 0);
+    return code === 429 || code >= 500
+      || /中断|断开|超时|timeout|ECONN|socket|network|fetch|空响应|没有收到|过载|限流/i.test(message);
+  }
+  return false;
+}
+
+/** 可被「停止」打断的等待 */
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) { resolve(); return; }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
 interface RequestOptions {
   method?: string;
   body?: unknown;
@@ -473,12 +536,16 @@ export type AiPlanEvent =
   | { type: 'content'; delta: string }
   | { type: 'tool'; name: string }
   | { type: 'plan'; chars: number }
+  /** 连接中断后自动重试：前端据此清掉上一轮的半截草稿，别把两次输出拼在一起 */
+  | { type: 'retry'; attempt: number; total: number; delayMs: number; reason: string }
   | { type: 'result'; reply: string; ops: Array<Record<string, unknown>>; inspect?: AiInspectView[]; done?: boolean; summary: Record<string, number>; provider: string; model: string; mock: boolean; ms?: number; events?: number; repaired?: number; warning?: string; vision?: AiVisionInfo | null; context?: AiContextUsage | null; conversationId?: string | null; messageId?: string | null; userMessageId?: string | null }
   | { type: 'error'; message: string };
 
 export interface AiPlanStreamOptions {
   onEvent?: (event: AiPlanEvent) => void;
   signal?: AbortSignal;
+  /** 同一次发送的幂等键：自动重试时复用，服务端据此不再重复插一条用户消息 */
+  requestId?: string;
 }
 
 export interface AiApplyResult {
@@ -575,10 +642,18 @@ export function createAiApi(baseUrl = '') {
     history: Array<{ role: string; content: string }>,
     images: string[] = [],
     session?: SessionRef,
+    requestId?: string,
   ) =>
     request<AiPlan>(baseUrl, `/api/projects/${projectId}/ai/plan`, {
       method: 'POST',
-      body: { message, selectedIds, history, ...(images.length ? { images } : {}), ...sessionBody(session) },
+      body: {
+        message,
+        selectedIds,
+        history,
+        ...(images.length ? { images } : {}),
+        ...(requestId ? { requestId } : {}),
+        ...sessionBody(session),
+      },
     });
 
   const api = {
@@ -634,6 +709,10 @@ export function createAiApi(baseUrl = '') {
      * 这里按事件回调，最终返回与 plan 同构的结果。
      * images 是 dataURL 数组（服务端会先让视觉模型读图再建模）。
      * 服务端版本过旧（404）时自动退回一次性请求。
+     *
+     * 连接层中断（隧道/反代掐断长连接、网关抖动、流没收到 result 就结束）会自动重试：
+     * 同一次发送复用 requestId，服务端不会重复插一条用户消息；重试前推一个 retry 事件，
+     * 前端据此清掉上一轮的半截草稿。
      */
     async planStream(
       projectId: string,
@@ -644,107 +723,141 @@ export function createAiApi(baseUrl = '') {
       images: string[] = [],
       session?: SessionRef,
     ): Promise<AiPlan> {
-      const headers: Record<string, string> = {
-        'Content-Type': 'application/json',
-        Accept: 'text/event-stream',
-      };
-      const token = getAuthToken();
-      if (token) headers.Authorization = `Bearer ${token}`;
+      const requestId = options.requestId ?? makeRequestId();
 
-      let response: Response;
-      try {
-        response = await fetch(baseUrl + `/api/projects/${projectId}/ai/plan/stream`, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({ message, selectedIds, history, ...(images.length ? { images } : {}), ...sessionBody(session) }),
-          signal: options.signal,
-        });
-      } catch (error) {
-        if ((error as Error)?.name === 'AbortError') throw new ApiError(0, '已停止生成');
-        const detail = error instanceof Error ? error.message : '网络错误';
-        throw new ApiError(0, `无法连接服务端（${detail}）：API 可能未启动或已断开，运行 ./start.sh restart 后重试`);
-      }
+      const attemptOnce = async (): Promise<AiPlan> => {
+        const headers: Record<string, string> = {
+          'Content-Type': 'application/json',
+          Accept: 'text/event-stream',
+        };
+        const token = getAuthToken();
+        if (token) headers.Authorization = `Bearer ${token}`;
 
-      const contentType = response.headers.get('content-type') ?? '';
-      // 旧服务端没有这个路由 / 不支持 SSE：退回一次性请求
-      if (response.status === 404 || response.status === 405 || !/text\/event-stream/i.test(contentType)) {
-        if (!response.ok) {
-          let data: { error?: string } | null = null;
-          try { data = await response.json(); } catch { data = null; }
-          throw new ApiError(response.status, data?.error ?? `请求失败（HTTP ${response.status}）`);
-        }
-        const fallback = await planOnce(projectId, message, selectedIds, history, images, session);
-        options.onEvent?.({ type: 'result', ...fallback });
-        return fallback;
-      }
-      if (!response.body) throw new ApiError(502, '服务端没有返回流式响应体');
-
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-      let result: AiPlan | null = null;
-      let failure = '';
-
-      const handlePayload = (raw: string) => {
-        let event: AiPlanEvent;
+        let response: Response;
         try {
-          event = JSON.parse(raw) as AiPlanEvent;
-        } catch {
-          return;
+          response = await fetch(baseUrl + `/api/projects/${projectId}/ai/plan/stream`, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({
+              message,
+              selectedIds,
+              history,
+              ...(images.length ? { images } : {}),
+              requestId,
+              ...sessionBody(session),
+            }),
+            signal: options.signal,
+          });
+        } catch (error) {
+          if ((error as Error)?.name === 'AbortError') throw new ApiError(0, '已停止生成');
+          const detail = error instanceof Error ? error.message : '网络错误';
+          throw new ApiError(0, `无法连接服务端（${detail}）：API 可能未启动或已断开，运行 ./start.sh restart 后重试`);
         }
-        if (event.type === 'result') {
-          result = {
-            reply: event.reply ?? '',
-            ops: Array.isArray(event.ops) ? event.ops : [],
-            inspect: Array.isArray(event.inspect) ? event.inspect : [],
-            done: event.done === true,
-            summary: event.summary ?? {},
-            provider: event.provider ?? '',
-            model: event.model ?? '',
-            mock: Boolean(event.mock),
-            ms: event.ms,
-            repaired: event.repaired ?? 0,
-            warning: event.warning || undefined,
-            vision: event.vision ?? null,
-            context: event.context ?? null,
-            conversationId: event.conversationId ?? null,
-            messageId: event.messageId ?? null,
-            userMessageId: event.userMessageId ?? null,
-          };
-          options.onEvent?.(event);
-          return;
-        }
-        if (event.type === 'error') {
-          failure = event.message || 'AI 调用失败';
-          return;
-        }
-        options.onEvent?.(event);
-      };
 
-      try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          let index;
-          while ((index = buffer.indexOf('\n\n')) >= 0) {
-            const frame = buffer.slice(0, index);
-            buffer = buffer.slice(index + 2);
-            for (const line of frame.split('\n')) {
-              if (!line.startsWith('data:')) continue; // 注释 / 心跳
-              const payload = line.slice(5).trim();
-              if (payload) handlePayload(payload);
+        const contentType = response.headers.get('content-type') ?? '';
+        // 旧服务端没有这个路由 / 不支持 SSE：退回一次性请求
+        if (response.status === 404 || response.status === 405 || !/text\/event-stream/i.test(contentType)) {
+          if (!response.ok) {
+            let data: { error?: string } | null = null;
+            try { data = await response.json(); } catch { data = null; }
+            throw new ApiError(response.status, data?.error ?? `请求失败（HTTP ${response.status}）`);
+          }
+          const fallback = await planOnce(projectId, message, selectedIds, history, images, session, requestId);
+          options.onEvent?.({ type: 'result', ...fallback });
+          return fallback;
+        }
+        if (!response.body) throw new ApiError(502, '服务端没有返回流式响应体');
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let result: AiPlan | null = null;
+        let failure = '';
+
+        const handlePayload = (raw: string) => {
+          let event: AiPlanEvent;
+          try {
+            event = JSON.parse(raw) as AiPlanEvent;
+          } catch {
+            return;
+          }
+          if (event.type === 'result') {
+            result = {
+              reply: event.reply ?? '',
+              ops: Array.isArray(event.ops) ? event.ops : [],
+              inspect: Array.isArray(event.inspect) ? event.inspect : [],
+              done: event.done === true,
+              summary: event.summary ?? {},
+              provider: event.provider ?? '',
+              model: event.model ?? '',
+              mock: Boolean(event.mock),
+              ms: event.ms,
+              repaired: event.repaired ?? 0,
+              warning: event.warning || undefined,
+              vision: event.vision ?? null,
+              context: event.context ?? null,
+              conversationId: event.conversationId ?? null,
+              messageId: event.messageId ?? null,
+              userMessageId: event.userMessageId ?? null,
+            };
+            options.onEvent?.(event);
+            return;
+          }
+          if (event.type === 'error') {
+            failure = event.message || 'AI 调用失败';
+            return;
+          }
+          options.onEvent?.(event);
+        };
+
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            let index;
+            while ((index = buffer.indexOf('\n\n')) >= 0) {
+              const frame = buffer.slice(0, index);
+              buffer = buffer.slice(index + 2);
+              for (const line of frame.split('\n')) {
+                if (!line.startsWith('data:')) continue; // 注释 / 心跳
+                const payload = line.slice(5).trim();
+                if (payload) handlePayload(payload);
+              }
             }
           }
+        } catch (error) {
+          if ((error as Error)?.name === 'AbortError') throw new ApiError(0, '已停止生成');
+          throw new ApiError(0, error instanceof Error ? error.message : '流式响应中断');
         }
-      } catch (error) {
-        if ((error as Error)?.name === 'AbortError') throw new ApiError(0, '已停止生成');
-        throw new ApiError(0, error instanceof Error ? error.message : '流式响应中断');
-      }
 
-      if (failure) throw new ApiError(502, failure);
-      if (!result) throw new ApiError(502, 'AI 流式响应中断（没有收到结果），请重试');
-      return result;
+        if (failure) throw new ApiError(502, failure);
+        if (!result) throw new ApiError(502, 'AI 流式响应中断（没有收到结果），请重试');
+        return result;
+      };
+
+      let lastError: unknown = new ApiError(502, 'AI 流式响应中断（没有收到结果），请重试');
+      for (let attempt = 1; attempt <= STREAM_ATTEMPTS; attempt += 1) {
+        try {
+          return await attemptOnce();
+        } catch (error) {
+          lastError = error;
+          // 用户点了「停止」：哪怕这一下失败的形态是「流被截断」，也不能自动重来
+          if (options.signal?.aborted) throw new ApiError(0, '已停止生成');
+          if (!shouldRetryStream(error, attempt, options.signal)) throw error;
+          const delayMs = STREAM_RETRY_DELAYS[attempt - 1] ?? STREAM_RETRY_DELAYS[STREAM_RETRY_DELAYS.length - 1];
+          options.onEvent?.({
+            type: 'retry',
+            attempt: attempt + 1,
+            total: STREAM_ATTEMPTS,
+            delayMs,
+            reason: describeStreamFailure(error),
+          });
+          await sleep(delayMs, options.signal);
+          if (options.signal?.aborted) throw new ApiError(0, '已停止生成');
+        }
+      }
+      throw lastError;
     },
 
     async apply(projectId: string, ops: Array<Record<string, unknown>>, message: string) {

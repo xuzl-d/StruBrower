@@ -520,6 +520,11 @@ export function createStore(file) {
       return title;
     },
 
+    /** 删除一条消息（重试成功后清掉上一轮的错误气泡，seq 留空不影响后续追加） */
+    deleteMessage(conversationId, messageId) {
+      db.prepare('delete from ai_messages where id = ? and conversation_id = ?').run(messageId, conversationId);
+    },
+
     /** 补写消息的附加信息（例如「已应用到模型」、修正后的 ops） */
     updateMessagePayload(conversationId, messageId, patch) {
       const row = db.prepare('select payload from ai_messages where id = ? and conversation_id = ?')

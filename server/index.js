@@ -390,19 +390,37 @@ function parseThumbs(input) {
 }
 
 /**
+ * 一次「发送」的幂等键：前端在自动重试时复用同一个值。
+ * 服务端据此认出「这是同一条需求的第二次尝试」，不再重复插一条用户消息。
+ */
+function parseRequestId(body) {
+  return typeof body?.requestId === 'string' ? body.requestId.trim().slice(0, 96) : '';
+}
+
+/**
  * 打开会话上下文（多轮对话的落点）：
  * - 滚动摘要 → 长期记忆，替代更早的原文
  * - 摘要之后的消息 → 本次请求的 history
  * - 当前这句用户需求立刻落库，即使生成失败也留在历史里
  * conversationId 缺省时返回 null，调用方退回「前端自带 history」的旧行为。
  */
-function openConversation({ conversationId, projectId, userId, message, thumbs, shots = 0, internal = false }) {
+function openConversation({ conversationId, projectId, userId, message, thumbs, shots = 0, internal = false, requestId = '' }) {
   if (typeof conversationId !== 'string' || !conversationId) return null;
   const conversation = store.getConversation(conversationId, { withMessages: false });
   if (!conversation) throw new HttpError(404, '会话不存在');
   if (conversation.projectId !== projectId) throw new HttpError(400, '该会话不属于当前项目');
   requireProjectRole(conversation.projectId, userId, 'read');
-  const history = store.listMessages(conversationId, { afterSeq: conversation.summarySeq, limit: 60 })
+  const messages = store.listMessages(conversationId, { afterSeq: conversation.summarySeq, limit: 60 });
+  // 前端自动重试：同一 requestId 复用上一轮已经落库的那条用户消息，
+  // 否则重试两次历史里就会有两句一模一样的「车身不对」，还会被当成上下文再喂给模型。
+  const reused = requestId
+    ? messages.findLast((item) => item.role === 'user' && item.requestId === requestId) ?? null
+    : null;
+  // 重试时，上一轮失败留下的「生成中断」气泡既不该进上下文，也不该在聊天区留两条，标记出来删掉
+  const stale = reused
+    ? messages.filter((item) => item.seq > reused.seq && item.role === 'assistant' && item.error).map((item) => item.id)
+    : [];
+  const history = (reused ? messages.filter((item) => item.seq < reused.seq) : messages)
     .filter((item) => item.role === 'user' || item.role === 'assistant')
     .map((item) => {
       // 助手回复只存了自然语言，模型看不到自己上一轮到底改了什么，这里补一行指令标签
@@ -416,8 +434,9 @@ function openConversation({ conversationId, projectId, userId, message, thumbs, 
     ...(shots > 0 ? { shots: Math.min(thumbs.length, Math.trunc(shots)) } : {}),
     // 自检循环里前端代发的「[自检第 n 步] 图给你了」不算用户发言：仍进上下文，但不在聊天区显示
     ...(internal ? { internal: true } : {}),
+    ...(requestId ? { requestId } : {}),
   };
-  const saved = store.appendMessage({
+  const saved = reused ?? store.appendMessage({
     conversationId,
     role: 'user',
     content: message,
@@ -429,6 +448,8 @@ function openConversation({ conversationId, projectId, userId, message, thumbs, 
     history,
     userMessageId: saved.id,
     title: saved.title ?? conversation.title ?? null,
+    /** 需要清掉的上一轮失败气泡（重试时才有） */
+    stale,
   };
 }
 
@@ -452,6 +473,21 @@ function saveAssistantMessage(session, { reply, ops, summary, error, model, ms, 
       ...(context ? { context } : {}),
     },
   });
+}
+
+/**
+ * 重试时清掉上一轮失败留下的「生成中断」气泡。
+ * 不删的话：聊天区会并排两条一模一样的报错，历史还会把它们当上下文喂回模型。
+ */
+function dropStaleMessages(session) {
+  if (!session?.stale?.length) return;
+  for (const id of session.stale) {
+    try {
+      store.deleteMessage(session.id, id);
+    } catch {
+      /* 删不掉只是历史里多一条报错，不该影响这次生成 */
+    }
+  }
 }
 
 /**
@@ -1268,6 +1304,7 @@ async function handleApi(ctx) {
       thumbs: parseThumbs(body.imageThumbs),
       shots: Number(body.imageShots) || 0,
       internal: body.internal === true,
+      requestId: parseRequestId(body),
     });
     let result;
     let repaired = 0;
@@ -1292,9 +1329,11 @@ async function handleApi(ctx) {
       const detail = error instanceof Error ? error.message : 'AI 调用失败';
       // 失败也留痕：排查「非 JSON / 超时 / 网关错误」时不必再猜（审计表只记成功调用）
       console.warn(`[ai] plan 失败 ${Date.now() - planStarted}ms provider=${aiProvider.id} model=${aiConfig.model} baseUrl=${aiConfig.baseUrl} images=${images.length} :: ${detail.slice(0, 500)}`);
+      dropStaleMessages(session);
       saveAssistantMessage(session, { reply: `生成失败：${detail}`, error: true });
       throw new HttpError(502, detail);
     }
+    dropStaleMessages(session);
     const ops = Array.isArray(result.ops) ? result.ops : [];
     const inspect = Array.isArray(result.inspect) ? result.inspect : [];
     const summary = summarizeOps(ops);
@@ -1377,6 +1416,8 @@ async function handleApi(ctx) {
       thumbs: parseThumbs(body.imageThumbs),
       shots: Number(body.imageShots) || 0,
       internal: body.internal === true,
+      // 前端自动重试时复用同一个 requestId：不重复插用户消息，并清掉上一轮的失败气泡
+      requestId: parseRequestId(body),
     });
     const memory = session?.memory ?? '';
     const history = session ? session.history : Array.isArray(body.history) ? body.history : [];
@@ -1451,6 +1492,7 @@ async function handleApi(ctx) {
       const ops = Array.isArray(result.ops) ? result.ops : [];
       const inspect = Array.isArray(result.inspect) ? result.inspect : [];
       const summary = summarizeOps(ops);
+      dropStaleMessages(session);
       const saved = saveAssistantMessage(session, {
         reply: result.reply ?? '',
         ops,
@@ -1504,6 +1546,8 @@ async function handleApi(ctx) {
       if (!cancel.signal.aborted) {
         console.warn(`[ai] plan(stream) 失败 ${Date.now() - planStarted}ms provider=${aiProvider.id} model=${aiConfig.model} baseUrl=${aiConfig.baseUrl} images=${images.length} events=${events} :: ${detail.slice(0, 500)}`);
       }
+      // 这次是重试：上一轮的错误气泡先清掉，别越积越多
+      dropStaleMessages(session);
       saveAssistantMessage(session, { reply: `生成中断：${detail}`, error: true });
       stream.send({ type: 'error', message: detail });
     } finally {

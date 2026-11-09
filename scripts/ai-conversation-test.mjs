@@ -123,6 +123,37 @@ check('未知消息 404', (await api('PATCH', `/api/ai/conversations/${conversat
   token, body: { applied: true },
 })).status === 404);
 
+console.log('自动重试的幂等键');
+const retryConversation = (await api('POST', `/api/projects/${projectId}/ai/conversations`, {
+  token,
+  body: { title: '重试' },
+})).data.conversation;
+const retryBody = { message: '建一根 3 米高的柱', conversationId: retryConversation.id, requestId: `req-${stamp}` };
+const firstTry = await api('POST', planPath, { token, body: retryBody });
+const secondTry = await api('POST', planPath, { token, body: retryBody });
+const retryMessages = (await api('GET', `/api/ai/conversations/${retryConversation.id}`, { token }))
+  .data.conversation.messages;
+check('两次尝试都成功', firstTry.status === 200 && secondTry.status === 200, [firstTry.status, secondTry.status]);
+check('同一 requestId 只留一条用户消息',
+  retryMessages.filter((item) => item.role === 'user').length === 1,
+  retryMessages.map((item) => item.role).join(','));
+check('重试复用同一条用户消息 id',
+  firstTry.data?.userMessageId === secondTry.data?.userMessageId,
+  [firstTry.data?.userMessageId, secondTry.data?.userMessageId]);
+check('两次生成各留一条助手回复',
+  retryMessages.filter((item) => item.role === 'assistant').length === 2,
+  retryMessages.length);
+
+const freshRequest = await api('POST', planPath, {
+  token,
+  body: { ...retryBody, requestId: `req-other-${stamp}` },
+});
+const afterFresh = (await api('GET', `/api/ai/conversations/${retryConversation.id}`, { token }))
+  .data.conversation.messages;
+check('换 requestId 视为新需求',
+  freshRequest.status === 200 && afterFresh.filter((item) => item.role === 'user').length === 2,
+  afterFresh.length);
+
 console.log('重命名与删除');
 const renamed = await api('PATCH', `/api/ai/conversations/${conversationId}`, { token, body: { title: '房间与墙' } });
 check('重命名生效', renamed.data?.conversation?.title === '房间与墙', renamed.data);

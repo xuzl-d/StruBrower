@@ -1053,6 +1053,13 @@ export default function AiPanel({
           case 'plan':
             current.phase = `${label}正在生成特征树参数（已 ${event.chars} 字符）…`;
             break;
+          case 'retry':
+            // 上一次的思考 / 草稿是半截的，留着会和第二次拼在一起，直接清掉
+            current.reasoning = '';
+            current.content = '';
+            current.phase = `${label}${event.reason}，${(event.delayMs / 1000).toFixed(1)} 秒后自动重试`
+              + `（第 ${event.attempt}/${event.total} 次）…`;
+            break;
           default:
             return;
         }
