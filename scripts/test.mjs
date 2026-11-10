@@ -78,7 +78,7 @@ try {
   await run(process.execPath, ['scripts/step-convert-test.mjs']);
 
   fs.mkdirSync(path.join(root, '.tmp'), { recursive: true });
-  for (const name of ['ai-stream-retry-test', 'client-repo-test', 'diff-test', 'step-decode-test', 'import-test', 'box-select-test', 'bim-edit-test', 'settings-test', 'snap-test', 'modify-test', 'ifc-schedule-test', 'layer-material-test', 'parameter-test', 'history-test', 'coordinate-test', 'viewport-test', 'agent-loop-test', 'solid-test', 'template-test', 'parametric-test', 'constraint-test']) {
+  for (const name of ['ai-stream-retry-test', 'client-repo-test', 'diff-test', 'step-decode-test', 'import-test', 'box-select-test', 'bim-edit-test', 'settings-test', 'snap-test', 'modify-test', 'ifc-schedule-test', 'layer-material-test', 'parameter-test', 'history-test', 'coordinate-test', 'viewport-test', 'agent-loop-test', 'measure-test', 'solid-test', 'template-test', 'parametric-test', 'constraint-test']) {
     const bundle = path.join(root, '.tmp', `${name}.mjs`);
     await esbuild.build({
       entryPoints: [path.join(root, 'scripts', `${name}.ts`)],

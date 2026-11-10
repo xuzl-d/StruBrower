@@ -319,6 +319,18 @@ check('addFeature 追加切除特征', drilled.status === 200 && drilledFeatures
 
 const badShape = await api('POST', applyPath, { token, body: { ops: [{ op: 'addSolid', features: [{ shape: { shape: 'trapezoid' } }] }] } });
 check('未知形状 400', badShape.status === 400 && String(badShape.data.error).includes('不支持'), badShape.data);
+const contour = await api('POST', applyPath, {
+  token,
+  body: { ops: [{ op: 'addSolid', name: '通用曲面测试', features: [{ label: '外形', shape: { shape: 'loft', sections: [{ z: 0, ellipse: { rx: 1, ry: 0.3 } }, { z: 1, ellipse: { rx: 0.8, ry: 0.2 } }] }, translate: [0, 0, 1] }] }] },
+});
+const contourElement = contour.data.document?.elements?.find((item) => item.name === '通用曲面测试');
+check('创建通用放样曲面', contour.status === 200 && Boolean(contourElement), contour.data);
+const adjustContour = await api('POST', applyPath, { token, body: { ops: [{ op: 'setDimensions', target: '通用曲面测试', values: { 'f1.sections.0.ellipse.rx': 0.6, 'f1.translate.2': 1.2 } }] } });
+const adjustedElement = adjustContour.data.document?.elements?.find((item) => item.id === contourElement?.id);
+check('HTTP 接口按路径修改曲面', adjustContour.status === 200 && adjustedElement?.primitive?.features?.[0]?.shape?.sections?.[0]?.ellipse?.rx === 0.6 && adjustedElement.primitive.features[0].translate[2] === 1.2, adjustContour.data);
+const replaceContour = await api('POST', applyPath, { token, body: { ops: [{ op: 'replaceFeature', target: '通用曲面测试', feature: '外形', replacement: { shape: { shape: 'box', width: 1, depth: 0.6, height: 0.4 } } }] } });
+const replacedElement = replaceContour.data.document?.elements?.find((item) => item.id === contourElement?.id);
+check('HTTP 接口替换形状并保留身份', replaceContour.status === 200 && replacedElement?.primitive?.features?.[0]?.id === contourElement?.primitive?.features?.[0]?.id && replacedElement.primitive.features[0].shape.shape === 'box', replaceContour.data);
 const badCut = await api('POST', applyPath, { token, body: { ops: [{ op: 'addSolid', features: [{ mode: 'cut', shape: { shape: 'box', width: 1, depth: 1, height: 1 } }] }] } });
 check('首个特征不能是切除', badCut.status === 400, badCut.data);
 const badTarget = await api('POST', applyPath, { token, body: { ops: [{ op: 'editFeature', target: '墙 2', feature: 1, patch: { shape: { height: 1 } } }] } });

@@ -332,6 +332,7 @@ export interface AiSettingsView {
   provider: 'mock' | 'openai';
   baseUrl: string;
   model: string;
+  reasoningEffort: '' | 'low' | 'medium' | 'high';
   /** 独立视觉模型：默认关闭，主模型不支持读图时才会用到 */
   visionEnabled: boolean;
   visionModel: string;
@@ -354,6 +355,7 @@ export interface AiSettingsPayload {
   provider?: 'mock' | 'openai';
   baseUrl?: string;
   model?: string;
+  reasoningEffort?: '' | 'low' | 'medium' | 'high';
   visionEnabled?: boolean;
   visionModel?: string;
   visionBaseUrl?: string;
@@ -472,6 +474,12 @@ export interface AiInspectView {
   label: string;
 }
 
+/** AI 要求的几何测量（坐标为造型构件局部坐标），与 server/ai/measure.js 的 normalizeMeasure 输出一致 */
+export type AiMeasureRequest =
+  | { type: 'bounds'; target?: string; feature?: string | number }
+  | { type: 'surface'; target?: string; feature?: string | number; axis: 'x' | 'y' | 'z'; at: [number, number] }
+  | { type: 'gap'; target?: string; a: string | number; b: string | number };
+
 /** 上下文用量：服务端按 token 预算分配后的实际占用（前端显示「12.4k / 128k」并提示压缩） */
 export interface AiContextUsage {
   model?: string;
@@ -505,6 +513,8 @@ export interface AiPlan {
   ops: Array<Record<string, unknown>>;
   /** AI 想看的视角（最多 4 个）：可与 ops 同轮，前端先应用 ops 再切视角截图，自动再来一轮 */
   inspect?: AiInspectView[];
+  /** AI 要做的几何测量（最多 6 条），结果以文字回传给它 */
+  measure?: AiMeasureRequest[];
   /** AI 自评：已经满足用户需求，不用再改也不用再看图（自检闭环的收工信号） */
   done?: boolean;
   summary: Record<string, number>;
@@ -538,7 +548,7 @@ export type AiPlanEvent =
   | { type: 'plan'; chars: number }
   /** 连接中断后自动重试：前端据此清掉上一轮的半截草稿，别把两次输出拼在一起 */
   | { type: 'retry'; attempt: number; total: number; delayMs: number; reason: string }
-  | { type: 'result'; reply: string; ops: Array<Record<string, unknown>>; inspect?: AiInspectView[]; done?: boolean; summary: Record<string, number>; provider: string; model: string; mock: boolean; ms?: number; events?: number; repaired?: number; warning?: string; vision?: AiVisionInfo | null; context?: AiContextUsage | null; conversationId?: string | null; messageId?: string | null; userMessageId?: string | null }
+  | { type: 'result'; reply: string; ops: Array<Record<string, unknown>>; inspect?: AiInspectView[]; measure?: AiMeasureRequest[]; done?: boolean; summary: Record<string, number>; provider: string; model: string; mock: boolean; ms?: number; events?: number; repaired?: number; warning?: string; vision?: AiVisionInfo | null; context?: AiContextUsage | null; conversationId?: string | null; messageId?: string | null; userMessageId?: string | null }
   | { type: 'error'; message: string };
 
 export interface AiPlanStreamOptions {
@@ -597,6 +607,9 @@ export function createAdminApi(baseUrl = '') {
     },
     async aiSettings() {
       return request<AiSettingsView>(baseUrl, '/api/admin/settings/ai');
+    },
+    async aiModels() {
+      return request<{ models: Array<{ id: string; image: boolean | null }> }>(baseUrl, '/api/admin/settings/ai/models');
     },
     async saveAiSettings(payload: AiSettingsPayload) {
       return request<AiSettingsView>(baseUrl, '/api/admin/settings/ai', {
@@ -786,6 +799,7 @@ export function createAiApi(baseUrl = '') {
               reply: event.reply ?? '',
               ops: Array.isArray(event.ops) ? event.ops : [],
               inspect: Array.isArray(event.inspect) ? event.inspect : [],
+              measure: Array.isArray(event.measure) ? event.measure : [],
               done: event.done === true,
               summary: event.summary ?? {},
               provider: event.provider ?? '',

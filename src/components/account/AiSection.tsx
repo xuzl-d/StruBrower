@@ -12,6 +12,7 @@ export default function AiSection({ onToast }: AiSectionProps) {
   const [provider, setProvider] = useState<'mock' | 'openai'>('mock');
   const [baseUrl, setBaseUrl] = useState('');
   const [model, setModel] = useState('');
+  const [reasoningEffort, setReasoningEffort] = useState<AiSettingsView['reasoningEffort']>('');
   /** 独立视觉模型：默认不勾选，只有主模型不能读图时才用得上 */
   const [visionEnabled, setVisionEnabled] = useState(false);
   const [visionModel, setVisionModel] = useState('');
@@ -24,6 +25,32 @@ export default function AiSection({ onToast }: AiSectionProps) {
   const [testResult, setTestResult] = useState<{ ok: boolean; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [models, setModels] = useState<Array<{ id: string; image: boolean | null }>>([]);
+  const [modelsBaseUrl, setModelsBaseUrl] = useState('');
+  const [modelsLoading, setModelsLoading] = useState(false);
+  const [modelsError, setModelsError] = useState('');
+
+  const loadModels = async (settings: AiSettingsView) => {
+    if (settings.provider !== 'openai' || !settings.hasKey) {
+      setModels([]);
+      setModelsBaseUrl('');
+      setModelsError('');
+      return;
+    }
+    setModelsLoading(true);
+    setModelsError('');
+    try {
+      const result = await adminApi.aiModels();
+      setModels(result.models);
+      setModelsBaseUrl(settings.baseUrl.replace(/\/+$/, ''));
+    } catch (caught) {
+      setModels([]);
+      setModelsBaseUrl('');
+      setModelsError(caught instanceof ApiError ? caught.message : '获取模型列表失败');
+    } finally {
+      setModelsLoading(false);
+    }
+  };
 
   const load = async () => {
     try {
@@ -32,6 +59,7 @@ export default function AiSection({ onToast }: AiSectionProps) {
       setProvider(data.provider);
       setBaseUrl(data.baseUrl);
       setModel(data.model);
+      setReasoningEffort(data.reasoningEffort ?? '');
       setVisionEnabled(Boolean(data.visionEnabled));
       setVisionModel(data.visionModel ?? '');
       setVisionBaseUrl(data.visionBaseUrl ?? '');
@@ -40,6 +68,7 @@ export default function AiSection({ onToast }: AiSectionProps) {
       setApiKey('');
       setVisionApiKey('');
       setError('');
+      void loadModels(data);
     } catch (caught) {
       setError(caught instanceof ApiError ? caught.message : '读取 AI 设置失败');
     }
@@ -68,6 +97,7 @@ export default function AiSection({ onToast }: AiSectionProps) {
       provider,
       baseUrl: baseUrl.trim(),
       model: model.trim(),
+      reasoningEffort,
       visionEnabled,
       visionModel: visionEnabled ? visionModel.trim() : '',
       visionBaseUrl: visionEnabled ? visionBaseUrl.trim() : '',
@@ -80,6 +110,7 @@ export default function AiSection({ onToast }: AiSectionProps) {
     setApiKey('');
     setVisionApiKey('');
     onToast(result.ready ? 'AI 设置已保存' : '已保存，但还缺少 API key');
+    void loadModels(result);
   });
 
   const test = () => run(async () => {
@@ -143,16 +174,34 @@ export default function AiSection({ onToast }: AiSectionProps) {
             <em>来源：{sourceLabel('baseUrl')}</em>
           </label>
 
-          <label className="account-field">
-            <span>模型</span>
-            <input
-              value={model}
-              placeholder="deepseek-chat"
-              onChange={(event) => setModel(event.target.value)}
-              disabled={provider === 'mock'}
-            />
-            <em>来源：{sourceLabel('model')}</em>
-          </label>
+          <div className="account-field">
+            <label htmlFor="ai-model">模型</label>
+            <div className="account-field-inline">
+              <input
+                id="ai-model"
+                list="ai-model-list"
+                value={model}
+                placeholder="搜索或输入模型名称"
+                onChange={(event) => setModel(event.target.value)}
+                disabled={provider === 'mock'}
+              />
+              <datalist id="ai-model-list">
+                {provider === 'openai' && modelsBaseUrl === baseUrl.trim().replace(/\/+$/, '') && !apiKey.trim()
+                  ? models.map((item) => <option key={item.id} value={item.id}>{item.image === true ? '支持图片' : item.image === false ? '不支持图片' : ''}</option>)
+                  : null}
+              </datalist>
+              <button type="button" disabled={provider === 'mock' || modelsLoading || busy || !ai || baseUrl.trim().replace(/\/+$/, '') !== ai.baseUrl.replace(/\/+$/, '') || Boolean(apiKey.trim())} onClick={() => { if (ai) void loadModels(ai); }}>
+                {modelsLoading ? '获取中…' : '刷新列表'}
+              </button>
+            </div>
+            {provider === 'openai' && modelsBaseUrl === baseUrl.trim().replace(/\/+$/, '') && !apiKey.trim() && models.length > 0 ? (
+              <select aria-label="选择已获取的模型" value={model} onChange={(event) => setModel(event.target.value)}>
+                {!models.some((item) => item.id === model) ? <option value={model}>{model || '选择模型'}</option> : null}
+                {models.map((item) => <option key={item.id} value={item.id}>{item.id}{item.image === true ? '（支持图片）' : ''}</option>)}
+              </select>
+            ) : null}
+            <em>{modelsError || (modelsBaseUrl === baseUrl.trim().replace(/\/+$/, '') && !apiKey.trim() ? `已获取 ${models.length} 个模型，可搜索或手动输入` : '保存接口地址和 Key 后获取模型列表')}</em>
+          </div>
 
           <label className="account-field">
             <span>API Key</span>
@@ -165,6 +214,17 @@ export default function AiSection({ onToast }: AiSectionProps) {
               autoComplete="off"
             />
             <em>来源：{sourceLabel('apiKey')} · 加密存储，不会回传给浏览器</em>
+          </label>
+
+          <label className="account-field">
+            <span>思考强度</span>
+            <select value={reasoningEffort} onChange={(event) => setReasoningEffort(event.target.value as AiSettingsView['reasoningEffort'])} disabled={provider === 'mock'}>
+              <option value="">不指定</option>
+              <option value="low">低</option>
+              <option value="medium">中</option>
+              <option value="high">高</option>
+            </select>
+            <em>仅支持 reasoning_effort 的模型使用；思考可能增加耗时和费用。</em>
           </label>
 
           <div className="account-field account-field-wide">

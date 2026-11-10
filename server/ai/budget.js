@@ -135,6 +135,21 @@ function scaleSolid(element, maxFeatures) {
   };
 }
 
+function compactSolidShapes(element) {
+  if (!Array.isArray(element?.solid?.features)) return element;
+  return {
+    ...element,
+    solid: {
+      ...element.solid,
+      features: element.solid.features.map((feature) => {
+        if (!Object.hasOwn(feature, 'shapeData')) return feature;
+        const { shapeData: _shapeData, ...summary } = feature;
+        return { ...summary, shapeDataOmitted: true };
+      }),
+    },
+  };
+}
+
 /**
  * 结构化裁剪项目上下文：绝不切 JSON 字符串。
  * 保留骨架（项目/标高/类型/网格/统计），元素按「选中 → 造型 → 其它」优先级装填，
@@ -164,20 +179,25 @@ export function trimProjectContext(context, limitTokens = PROJECT_CONTEXT_TOKENS
 
   // ② 先试「特征降档 + 全部装下」
   for (const features of FEATURE_STEPS) {
-    const scaled = solids.map((element) => scaleSolid(element, features));
-    if (estimateTokens([...scaled, ...others]) <= budget) {
-      return {
-        context: { ...head, selected: selectedOut, elements: [...scaled, ...others] },
-        tokens: headTokens + selectedTokens + estimateTokens([...scaled, ...others]),
-        omitted: { elements: 0, features: 0 },
-        featureLimit: features,
-        selectedDegraded,
-      };
+    const full = solids.map((element) => scaleSolid(element, features));
+    const variants = [full, full.map(compactSolidShapes)];
+    for (const scaled of variants) {
+      if (estimateTokens([...scaled, ...others]) <= budget) {
+        const omittedFeatures = scaled.reduce((sum, element) => sum + Math.max(0, (element.solid.featureCount ?? element.solid.features.length) - element.solid.features.length), 0);
+        const omitted = { elements: 0, features: omittedFeatures };
+        return {
+          context: { ...head, selected: selectedOut, elements: [...scaled, ...others], ...(omittedFeatures ? { truncated: true, omitted: { ...omitted, note: '部分特征未列出，不能据此推断其不存在' } } : {}) },
+          tokens: headTokens + selectedTokens + estimateTokens([...scaled, ...others]),
+          omitted,
+          featureLimit: features,
+          selectedDegraded,
+        };
+      }
     }
   }
 
   // ③ 最小档还装不下：先砍「其它构件」，再砍造型实体（保留靠前的，AI 通常在建/改头一个）
-  const minimal = solids.map((element) => scaleSolid(element, FEATURE_STEPS.at(-1)));
+  const minimal = solids.map((element) => compactSolidShapes(scaleSolid(element, FEATURE_STEPS.at(-1))));
   let keptSolids = minimal;
   let keptOthers = others;
   let solidTokens = estimateTokens(keptSolids);
@@ -206,10 +226,9 @@ export function trimProjectContext(context, limitTokens = PROJECT_CONTEXT_TOKENS
   }
 
   const omittedElements = elements.length - keptSolids.length - keptOthers.length;
-  const omittedFeatures = solids.reduce((sum, element) => {
-    const total = Array.isArray(element?.solid?.features) ? element.solid.features.length : 0;
-    return sum + Math.max(0, total - FEATURE_STEPS.at(-1));
-  }, 0);
+  const totalFeatures = solids.reduce((sum, element) => sum + (element.solid.featureCount ?? element.solid.features.length), 0);
+  const keptFeatures = keptSolids.reduce((sum, element) => sum + element.solid.features.length, 0);
+  const omittedFeatures = Math.max(0, totalFeatures - keptFeatures);
 
   return {
     context: {

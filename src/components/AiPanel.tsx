@@ -5,6 +5,7 @@ import type { AiContextUsage, AiConversationSummary, AiInspectView, AiPlan, AiSt
 import type { ProjectDocument } from '../bim/types';
 import type { ViewLookRequest } from '../ModelViewport';
 import { MAX_AGENT_STEPS, runAgentLoop } from '../ai/agentLoop';
+import { runMeasure } from '../ai/measure';
 import type { AgentRound, AgentRun, AgentShot } from '../ai/agentLoop';
 
 /**
@@ -36,6 +37,7 @@ interface ChatMessage {
   id: string;
   role: 'user' | 'assistant' | 'system';
   text: string;
+  reasoning?: string;
   /** 用户这条消息附带的参考图（dataURL） */
   images?: string[];
   /** 用户附带的文本文件：正文已从 text 里抽出来折叠显示 */
@@ -302,6 +304,36 @@ const SUGGESTIONS = [
   '加一面 5 米长的墙',
 ];
 
+const COMMAND_GROUPS = [
+  {
+    label: '创建',
+    commands: [
+      { label: '房间', prompt: '建一个 6×4 米、层高 3 米的房间，包含墙和楼板。' },
+      { label: '墙体', prompt: '在当前标高添加一面 5 米长、3 米高、200 毫米厚的墙。' },
+      { label: '结构柱', prompt: '在当前标高添加一根 400×400 毫米、3 米高的柱。' },
+      { label: 'L 型支架', prompt: '做一个带 4 个安装孔的 L 型支架，尺寸和孔位按合理比例估算。' },
+    ],
+  },
+  {
+    label: '调整',
+    commands: [
+      { label: '移动', prompt: '把选中的构件沿 X 轴正方向移动 100 毫米，保持其他参数不变。' },
+      { label: '旋转', prompt: '把选中的构件绕竖直轴旋转 90 度，保持位置和尺寸不变。' },
+      { label: '修改颜色', prompt: '把选中的构件颜色改为深灰色，保持几何和位置不变。' },
+      { label: '尺寸联动', prompt: '检查选中构件的尺寸和现有约束，建议哪些尺寸适合联动，先不要修改模型。' },
+    ],
+  },
+  {
+    label: '检查',
+    commands: [
+      { label: '多视角检查', prompt: '从前视、右视和等轴测检查当前模型的轮廓、比例和连接；列出可见问题，先不要修改模型。' },
+      { label: '连接与穿模', prompt: '检查当前模型可见的零件连接、对齐和穿模问题；无法从视图确认的地方请明确说明，先不要修改模型。' },
+      { label: '模型摘要', prompt: '总结当前模型的主要构件、尺寸和材质，并指出信息不足之处，不要修改模型。' },
+      { label: '继续完善', prompt: '根据之前的需求和当前模型，继续完成尚未满足的部分；先检查已有构件，避免重复创建。' },
+    ],
+  },
+] as const;
+
 function newId(): string {
   return globalThis.crypto?.randomUUID?.() ?? `msg-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
@@ -501,7 +533,10 @@ export default function AiPanel({
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [attachError, setAttachError] = useState('');
   const [dropping, setDropping] = useState(false);
+  const [commandsOpen, setCommandsOpen] = useState(false);
+  const [commandGroup, setCommandGroup] = useState(0);
   const fileRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const [progress, setProgress] = useState<AiProgress | null>(null);
   const [now, setNow] = useState(0);
   const listRef = useRef<HTMLDivElement>(null);
@@ -1101,6 +1136,7 @@ export default function AiPanel({
       dbId: plan.messageId ?? undefined,
       role: 'assistant',
       text: plan.reply || '（模型没有给出说明）',
+      reasoning: progressRef.current?.reasoning || undefined,
       ops: plan.ops,
       summary: plan.summary,
       mock: plan.mock,
@@ -1109,7 +1145,7 @@ export default function AiPanel({
       warning: plan.warning,
       vision: plan.vision ?? null,
       step: step > 1 ? step : undefined,
-      done: plan.done,
+      done: Boolean(plan.done && !plan.ops?.length && !plan.inspect?.length && !plan.measure?.length),
     }]);
   };
 
@@ -1226,7 +1262,11 @@ export default function AiPanel({
     const tally = `${run.steps} 步、${run.applied} 次修改${run.shots ? `、${run.shots} 张截图` : ''}`;
     switch (run.reason) {
       case 'done':
-        return `✓ 自检完成（${tally}）：AI 看图核对后认为已满足需求。可在视口里自己再转一圈确认。`;
+        return run.shots
+          ? `✓ 自检完成（${tally}）：AI 看图核对后认为已满足需求。可在视口里自己再转一圈确认。`
+          : `本轮已结束（${tally}），未进行视觉复核。`;
+      case 'apply-failed':
+        return `修改未成功应用，AI 没有提供有效修正${run.error ? `：${run.error}` : '。'}`;
       case 'max-steps':
         return `已跑满 ${run.steps} 步还没收敛，先停在这里。回复「继续」可以接着改。`;
       case 'repeated':
@@ -1254,6 +1294,7 @@ export default function AiPanel({
       || (userFiles.length ? '请参考这几个附件里的内容，把模型建出来。' : '');
     if (!content || busy) return;
     setBusy(true);
+    setCommandsOpen(false);
     stopRef.current = false;
 
     // 现截当前视口一起发过去：模型能看着自己刚做出来的东西判断「像不像」再改。
@@ -1321,6 +1362,8 @@ export default function AiPanel({
 
       const run = await runAgentLoop(firstRound, {
         goal: content,
+        referenceImages: userImages,
+        referenceThumbs: userThumbs,
         plan: async (round) => {
           roundNo += 1;
           const label = roundNo > 1 ? `自检第 ${roundNo}/${MAX_AGENT_STEPS} 步 · ` : '';
@@ -1338,8 +1381,15 @@ export default function AiPanel({
         },
         inspect: (views) => inspectViews(views, `自检第 ${roundNo}/${MAX_AGENT_STEPS} 步 · `),
         stopped: () => stopRef.current,
+        measure: async (requests) => {
+          setPhase(`第 ${roundNo} 步：正在测量几何位置…`);
+          await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+          return runMeasure(docRef.current, requests);
+        },
         onStage: (stage) => {
-          if (stage.type === 'apply-failed') {
+          if (stage.type === 'measure') {
+            setPhase(`第 ${stage.step} 步：已完成 ${stage.count} 项测量，正在判断…`);
+          } else if (stage.type === 'apply-failed') {
             setPhase(`第 ${stage.step} 步：参数被服务端拒绝，让 AI 自己改…`);
           } else if (stage.type === 'inspect') {
             setPhase(`第 ${stage.step} 步：截到 ${stage.shots} 张图，正在判断…`);
@@ -1398,6 +1448,12 @@ export default function AiPanel({
     setMessages((current) => current.filter((message) => message.id !== id));
   };
 
+  const insertCommand = (command: string) => {
+    setInput((current) => current.trim() ? `${current.trimEnd()}\n${command}` : command);
+    setCommandsOpen(false);
+    inputRef.current?.focus();
+  };
+
   const statusText = !status
     ? '连接中…'
     : status.mock
@@ -1406,6 +1462,7 @@ export default function AiPanel({
         ? `模型 ${status.model}`
         : '未配置（设置 STRU_AI_API_KEY）';
   const currentConversation = conversations.find((item) => item.id === conversationId) ?? null;
+  const selectedNames = currentDocument.elements.filter((element) => selectedIds.includes(element.id)).map((element) => element.name);
   /** 上下文压力：65% 起提示、85% 起告警（这时候该点「压缩」了） */
   const usagePercent = usage && usage.window
     ? Math.min(100, Math.round((usage.tokens / usage.window) * 100))
@@ -1593,10 +1650,9 @@ export default function AiPanel({
           <div className="ai-empty">
             <div className="ai-empty-glyph">✦</div>
             <strong>用一句话描述你要的模型</strong>
-            <span>AI 直接生成结构化指令：建筑构件（墙/板/柱）或任意造型的特征树（拉伸 / 旋转 / 放样 / 扫掠 / 阵列 / 布尔）。确认后才会写入项目。</span>
             <div className="ai-suggestions">
               {SUGGESTIONS.map((suggestion) => (
-                <button key={suggestion} onClick={() => void send(suggestion)} disabled={busy}>
+                <button key={suggestion} onClick={() => insertCommand(suggestion)} disabled={busy}>
                   {suggestion}
                 </button>
               ))}
@@ -1634,6 +1690,12 @@ export default function AiPanel({
                 </div>
               ) : null}
               <p>{message.text}</p>
+              {message.reasoning ? (
+                <details className="ai-trace">
+                  <summary>思考过程 · {message.reasoning.length} 字</summary>
+                  <pre>{message.reasoning}</pre>
+                </details>
+              ) : null}
               {message.shot || message.shotNote ? (
                 <div className="ai-bubble-shot" title="发送时自动附上的当前视口截图：给模型看它自己刚做出来的东西，不算你的参考图">
                   {message.shot ? <img src={message.shot} alt="当前视图" /> : null}
@@ -1745,6 +1807,14 @@ export default function AiPanel({
 
       <form
         className={`ai-input ${dropping ? 'dropping' : ''}`}
+        onKeyDown={(event) => {
+          if (event.key === 'Escape' && commandsOpen) {
+            event.preventDefault();
+            event.stopPropagation();
+            setCommandsOpen(false);
+            inputRef.current?.focus();
+          }
+        }}
         onSubmit={(event) => {
           event.preventDefault();
           void send();
@@ -1764,6 +1834,28 @@ export default function AiPanel({
           void addFiles(Array.from(event.dataTransfer?.files ?? []));
         }}
       >
+        <div className="ai-compose-tools">
+          <button type="button" className="ai-commands-toggle" onClick={() => setCommandsOpen((open) => !open)} disabled={busy} aria-expanded={commandsOpen} aria-controls="ai-command-menu">
+            常用命令 <span aria-hidden>{commandsOpen ? '▴' : '▾'}</span>
+          </button>
+          <span className="ai-selection" title={selectedNames.length ? selectedNames.join('、') : '当前没有选中构件'}>
+            {selectedIds.length ? `已选 ${selectedIds.length} 个构件${selectedNames.length === 1 ? ` · ${selectedNames[0]}` : ''}` : '未选择构件'}
+          </span>
+          {commandsOpen ? (
+            <div className="ai-command-menu" id="ai-command-menu">
+              <div className="ai-command-groups" role="group" aria-label="命令分类">
+                {COMMAND_GROUPS.map((group, index) => (
+                  <button type="button" key={group.label} className={index === commandGroup ? 'active' : ''} aria-pressed={index === commandGroup} onClick={() => setCommandGroup(index)}>{group.label}</button>
+                ))}
+              </div>
+              <div className="ai-command-list">
+                {COMMAND_GROUPS[commandGroup].commands.map((command) => (
+                  <button type="button" key={command.label} title={command.prompt} onClick={() => insertCommand(command.prompt)}>{command.label}</button>
+                ))}
+              </div>
+            </div>
+          ) : null}
+        </div>
         {attachments.length || dropping ? (
           <div className="ai-attach-strip">
             {attachments.map((item) => (item.kind === 'image' ? (
@@ -1808,6 +1900,8 @@ export default function AiPanel({
             ＋
           </button>
           <textarea
+            ref={inputRef}
+            aria-label="AI 建模需求"
             value={input}
             rows={2}
             placeholder="描述需求，或粘贴 / 拖入图片、文本文件让 AI 照着建模"
@@ -1890,14 +1984,13 @@ export default function AiPanel({
           className="ai-inspect-btn"
           disabled={busy || !canSeeImages}
           title={canSeeImages
-            ? '让 AI 自己把视图转一圈（前视 / 右视 / 等轴测）看一遍，发现问题直接改，改完再换角度复核，直到它认为没问题'
+            ? '将多视角检查和修正命令填入输入框，确认后发送'
             : '需要能读图的模型'}
-          onClick={() => void send('把模型转一圈看看（前视、右视、等轴测），检查比例、朝向、零件是否对齐与穿模；'
+          onClick={() => insertCommand('把模型转一圈看看（前视、右视、等轴测），检查比例、朝向、零件是否对齐与穿模；'
             + '有问题自己改，改完再转视角复核，直到满足我的要求再停。')}
         >
           转一圈检查
         </button>
-        <span>AI 只输出结构化建模指令，服务端校验通过才落库；每次修改都是一个 rev，可 Ctrl/Cmd+Z 撤销。</span>
       </div>
       </aside>
     </>

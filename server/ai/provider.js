@@ -7,6 +7,7 @@
 import { LIBRARY_MODELS, modelHasParams, modelParamSpecs } from '../../shared/library.js';
 import { describeImages, resolveVision } from './vision.js';
 import { normalizeInspect } from './inspect.js';
+import { normalizeMeasure } from './measure.js';
 import {
   clipToTokens,
   estimateTokens,
@@ -15,6 +16,14 @@ import {
   planBudget,
   trimProjectContext,
 } from './budget.js';
+
+export function defaultReasoningEffort(model, baseUrl) {
+  try {
+    return model === 'gpt-6-astra' && new URL(baseUrl).hostname === 'cc.yjk.cn' ? 'high' : '';
+  } catch {
+    return '';
+  }
+}
 
 export function resolveAiConfig(env = process.env) {
   const provider = (env.STRU_AI_PROVIDER ?? 'mock').toLowerCase();
@@ -26,10 +35,12 @@ export function resolveAiConfig(env = process.env) {
   const contextTokens = Number(env.STRU_AI_CONTEXT_TOKENS ?? 0);
   // 独立视觉模型：默认不启用，必须由用户显式填写；地址与 Key 都独立于主模型
   const visionModel = env.STRU_AI_VISION_MODEL ?? '';
+  const effort = env.STRU_AI_REASONING_EFFORT;
   return {
     provider: provider === 'openai' ? 'openai' : 'mock',
     baseUrl,
     model,
+    reasoningEffort: ['low', 'medium', 'high'].includes(effort) ? effort : effort === '' ? '' : defaultReasoningEffort(model, baseUrl),
     apiKey,
     timeoutMs,
     contextTokens: Number.isFinite(contextTokens) && contextTokens > 0 ? contextTokens : 0,
@@ -71,10 +82,20 @@ const TOOL = {
             + '也允许 zoom 小于 1 退远看整体比例。',
           items: { type: 'object', additionalProperties: true },
         },
+        measure: {
+          type: 'array',
+          description: '几何测量请求（最多 6 条），前端先应用这一轮的 ops，再对当前特征树求值并把结果文字发回给你。可与 ops、inspect 同轮出现。'
+            + '坐标是造型构件的局部坐标（米，与特征 translate 同一坐标系）。三种写法：'
+            + '{ "type": "surface", "feature": "车身", "axis": "z", "at": [x, y] } 沿轴向穿过一点，返回与该特征表面的交点（axis=x 时 at=[y,z]，axis=y 时 at=[x,z]；feature 省略表示整个构件含布尔结果）；'
+            + '{ "type": "bounds", "feature": "车身" } 返回包围盒；'
+            + '{ "type": "gap", "a": "后视镜", "b": "车身" } 返回两个特征之间的最近距离和穿插估计。'
+            + 'target 可指定构件名或 id，只有一个造型构件时可省略。feature、a、b 可用特征名、id 或从 1 起的序号。',
+          items: { type: 'object', additionalProperties: true },
+        },
         done: {
           type: 'boolean',
           description: '你认为已经满足用户需求、不需要再改也不用再看图时设 true。'
-            + '设 true 时 ops 与 inspect 都要留空；第一次生成后不要立刻设 true，先看一组视角再判断。',
+            + '设 true 时 ops、inspect、measure 都要留空；第一次生成后不要立刻设 true，先看一组视角再判断。',
         },
       },
       required: ['reply', 'ops'],
@@ -110,8 +131,10 @@ const SYSTEM_PROMPT = `你是 StruBrowser 的建模助手（BIM + 参数化造�
 - addSolid { name?, level?, position?:[x,y], library:'pavilion-hex' }   // 从模型库取一整棵现成特征树，见【模型库】
 - addFeature { target, feature, index? }   // 给已有造型追加一个特征（加孔、加阵列、加肋）
 - editFeature { target, feature, patch:{ shape?, translate?, rotate?, pattern?, mode?, label?, material?, fillet?, shell?, offset? } }
+- replaceFeature { target, feature, replacement:{ shape:{shape:'loft',sections:[...]}, ... } } // 替换单个特征的形状，保留构件和特征 ID；已有约束或参数化模板不能直接替换
 - deleteFeature { target, feature }
 - setParams { target, params:{...} }        // 改参数化构件的尺寸，整组联动重建
+- setDimensions { target, values:{"f1.sections.0.ellipse.rx":0.5,"f1.translate.2":0.1} } // 批量修改现有静态特征树的尺寸路径，不重写整段截面；由公式驱动的尺寸不能直接改
 - setConstraints { target, dimensions?, formulas?, checks?, replace? }   // 给任意构件加自定义约束，见【自定义约束】
 - updateElement { target, name?, position?, rotation?, scale?, color?, visible? }  // 造型实体也可整体移动/旋转/缩放/改色
 target 用构件 id 或唯一名称；feature 用序号（从 1 开始）、id 或唯一名称。
@@ -248,7 +271,7 @@ pattern = { type:'linear', count, step:[dx,dy,dz] } / { type:'circular', count, 
 1. 一个产品 = 一个构件 = 一棵特征树：所有零件都放进**同一次** addSolid 的 features 里（后续微调用 addFeature 追到同一个 target）。
    绝对不要把机身、把手、夹头分别建成多个 addSolid —— 多个构件之间不做布尔合并，渲染出来是一堆漂浮散件，
    用户看到的就是「零件乱插在主体上」。
-2. 相邻零件必须真实重叠 ≥ 3 mm：合并靠体积相交，只靠面贴合会在接缝处露黑缝或看起来断开。
+2. 连接件要符合参考图：需要布尔合并或避免接缝时才略微重叠；轮子、间隙、玻璃等独立零件不必强行相交。
 3. 朝向与坐标：X = 长度（工作端朝 +X），Y = 宽度，Z = 高度（Z-up）。
    特征的 translate 是**几何中心**（不是底端/根部）；cylinder / tube / capsule / cone / prism / revolve 默认沿 Z 轴，
    要沿 X 轴写 rotate:[0,90,0]，要倾斜再绕 Y 轴加角度。
@@ -279,18 +302,25 @@ pattern = { type:'linear', count, step:[dx,dy,dz] } / { type:'circular', count, 
 握把 / 握套 / 防滑棱共用同一个 rotate 与轴向；每个零件都叠在主体上而不是悬空。
 
 【看图建模】（用户上传图片时）
-1. 图片会先由视觉模型读成「结构化规格」，附在需求后面（标题是【参考图片的视觉分析】）。
-   按规格里的零件清单建模：仍然是**一个产品一棵特征树**，规则同【整机构图】。
+1. 图片可能直接附在请求中，也可能先由视觉模型读成【参考图片的视觉分析】。按参考图和规格构建主要形状，不要把自检截图当目标。
+  先确定物体类别、主轴、视角、主轮廓、比例和关键轮廓转折；遮挡或看不清的部分标为估计，不要编造已核实的细节。
 2. 规格里的尺寸单位是 mm，写进特征时换算成米。只给了比例、没给绝对尺寸时，
-   以用户给的最大尺寸为准；用户也没给就按整机最长边 0.25–0.35 m 缩放。
+  以用户给的最大尺寸为准；没有尺寸时按已识别物体的常见尺度估算，无法判断尺度时使用方便建模的尺度并明确说明是假设。
 3. 材质照规格里的 material / color 写到对应特征上；规格给了自定义色就写 {color, roughness, metalness}，
    不要一律退回预设，否则照片里的配色会被抹平。
-4. 规格里 position 描述的关系要落成坐标：同轴 → 同一轴线；嵌入/插入 → 重叠 ≥ 3 mm；
-   「装在顶部/侧面」→ 用主体半高/半宽 + 自身半高/半宽定位。
+4. 规格里 position 描述的关系要落成坐标：同轴 → 同一轴线；嵌入/插入 → 按实际连接关系定位；
+  「装在顶部/侧面」→ 用主体半高/半宽 + 自身半高/半宽定位，独立零件保留应有间隙。
 5. 规格里 uncertain 的项按估算继续建，**不要停下来反问**；reply 里用一句话说明「哪些尺寸是按比例估的」。
 6. 规格里没有的零件不要凭空添加；看不清的细节直接省略（宁少勿编）。
 7. 用户只发了图、没写文字时，直接把图里的产品建出来，并在 reply 里报出识别到的产品名与主要零件。
 8. reply 开头用一句话说明「我从图上识别出的是什么」，让用户能立刻判断有没有看错。
+9. 先用放样、扫掠、旋转体或轮廓等表达连续外形，再安排关键零件、镂空和材质。优先修正整体轮廓和关键位置，最后补小细节；不要靠叠加方盒掩盖主轮廓错误。
+10. 先确定基准轴、整体包围范围、关键轮廓转折和零件连接关系；对有折线、凹槽或凸起的区域用自定义轮廓，必要时增加截面，保持相邻截面顺序一致。截面上限 24、每截面最多 192 点，不要为了省点数抹平关键变化。
+11. 部件应按参考图连接或留间隙：先根据形状尺寸、变换和父件表面估算安装位置，再用 measure 或局部视角检查悬浮、遮挡或穿出；没有测量结果时说明未验证，不能声称已测量。
+12. 每轮先比较差异、优先修正影响整体相似度最大的几项；形状类型错误可替换特征，尺寸或截面位置错误优先按路径修改。照片没显示的背面、内部结构和精确尺度仅可估计，不能称为已核实。
+13. 先判断主体：主体是决定主要轮廓、体积最大、被最多零件依附的部分；reply 开头写「主体=…（依据：…）」。桌子、框架这类没有单一曲面的物体，主体是结构骨架。
+14. 复杂物体先建低细节体块（主体 + 关键附属件，≤8 个特征），用 inspect 对照参考图确认主轮廓和比例后再细化；主体选错或比例不对时，在这一步改，不要带着错误细化。
+15. 附属件（灯、后视镜、把手、进气口等）摆位前，用 measure 的 surface 查询所依附主体在安装点的表面位置，摆好后用 gap 检查是否悬浮或穿插；measure 覆盖不到的部位按目视处理并说明未验证。
 
 【精细建模要求】（决定成品像不像真东西，务必遵守）
 1. 真实零件不是一个方块：壳体至少要有 外形 + 内腔/挖空 + 圆角 + 细节（孔/槽/筋/倒角）。单个 box 糊过去会被判定为粗糙。
@@ -299,7 +329,7 @@ pattern = { type:'linear', count, step:[dx,dy,dz] } / { type:'circular', count, 
 4. 对称件用 pattern：机臂、旋翼、螺栓孔用 circular 4 份；一排散热孔用 linear。
 5. 特征数量：简单零件 5–10 个，复杂产品（无人机/机器人/工具/家电）15–40 个；上限 96。
 6. 尺寸链自洽：孔小于所在实体，壁厚 ≥ 1.5 mm，倒圆半径取 min(宽, 深) 的 1/8–1/6（最多 1/3，否则整块变胶囊），
-   零件之间要真实重叠 3 mm 以上，而不是贴面或悬空。
+  零件的连接或间隙应符合参考图；不需要连接的独立部件不要强制重叠。
 7. 每个特征都写 material（见上面的材质章节）：同一台设备至少 3 种材质（外壳、金属结构件、橡胶/玻璃等），
    否则渲染出来是一团单色，用户会判定「没有实物感」。
 
@@ -319,8 +349,7 @@ pattern = { type:'linear', count, step:[dx,dy,dz] } / { type:'circular', count, 
 3. 尺寸一律米：用户说 30cm 写 0.3，M3 螺孔半径写 0.0015，300 厚墙写 0.3。
 4. 一次需求尽量一次给全特征树（≤96 个特征）；用户要局部微调时用 editFeature 改单个特征，不要重建整个实体。
 5. 造型实体的特征树是参数化的：用户说「机臂加长到 30cm」就 editFeature 改对应特征的 height，不要删除重建。
-6. 用户说「更精细 / 圆润一点 / 像真的」时：先给 fillet（比换形状省事，改一个数就行）、
-   薄壳件加 shell + open、需要加厚/让位用 offset，再加过渡（capsule/ellipsoid/hull）、加细节孔与阵列。
+6. 用户说「更精细 / 圆润一点 / 像真的」时：先对照参考图的轮廓、凹凸和接缝选择特征，只有确实需要圆角或薄壳时才用 fillet / shell；不要用一律倒圆掩盖错误轮廓。
 7. 一个产品只建一个造型构件：整机都在 addSolid 的 features 里，需要补零件用 addFeature 追到同一个 target；
    不要为了「分零件」而建多个 addSolid（那样它们不会合并成一个实体）。
 8. 判断成品像不像，先看三件事：主轮廓比例、关键件朝向、零件是否连成一体。三项错了，再多细节也救不回来。
@@ -333,6 +362,7 @@ pattern = { type:'linear', count, step:[dx,dy,dz] } / { type:'circular', count, 
 1. 你在一个多步循环里工作。每一轮可以给出三样东西中的任意几样：
    - ops：要执行的修改。**前端会立刻应用到模型**，不需要用户点确认；
    - inspect：要转过去截图的视角（最多 4 个）。顺序固定：先应用这一轮的 ops，再切视角截图，再把图发回给你；
+   - measure：要对当前特征树做的几何测量（最多 6 条），顺序同 inspect，结果以文字回传；
    - done：你认为已经满足用户需求了。
    所以「改完马上看结果」要写在**同一轮**里（ops + inspect），不要拆成两轮。
    视角写法：{ "view": "iso" | "front" | "back" | "left" | "right" | "top" | "bottom" }，
@@ -340,18 +370,21 @@ pattern = { type:'linear', count, step:[dx,dy,dz] } / { type:'circular', count, 
    默认选 [front, right, iso]；要看左右对称加 back/left，要看高矮与平面布局加 top。
    **要看细节就加 focus 与 zoom**：focus 填构件名（用上下文里出现过的名字）或 id，界面会把镜头只框住那个件；
    zoom 是取景倍数（1 = 整机框满，2 = 推进一倍，0.4~4，等比缩放）。
-   例如 [{ "view": "right" }, { "view": "iso", "focus": "夹头", "zoom": 2.5 }] = 一张整机右视 + 一张夹头特写。
+  优先用与参考图接近的自定义 azimuth / elevation 视角，再辅以能看清比例的正交视图；不要把视角造成的差异误判为几何错误。
+  例如 [{ "view": "right" }, { "view": "iso", "focus": "夹头", "zoom": 2.5 }] = 一张整机右视 + 一张夹头特写。
    什么时候该特写：怀疑两件没咬合 / 有穿模 / 螺纹或倒角没做出来 / 孔位偏了 / 薄壁厚度不对——整机图上看不出这些。
    不要四个视角全用来特写：至少留一张整机图核对整体比例。
 2. 判断标准是**用户的需求原话**，不是「看着还行」。看到图先核对四件事：主轮廓比例、关键件朝向、
    零件是否连成一体（有没有悬空、断开、穿模）、该有的件有没有缺。发现问题必须自己改：
-   用 editFeature / addFeature 精确修正，不要推倒重建（除非整体构图就错了）；改完再给 inspect 复核。
+  用 setDimensions / editFeature / addFeature 精确修正；基本形状错误时可用 replaceFeature 替换单个特征，改完再给 inspect 复核。
 3. **只有真的核对过才写 done: true**。第一次生成后不要马上 done——至少截一组视角看过再判断。
    例外：只是改尺寸、换材质、加孔、改名字这类从特征树就能确认的改动，可以改完直接 done。
 4. 不要问用户「要不要继续 / 这样行不行」。能自己判断的自己判断；确实缺关键信息（尺寸、用途、参照物）才停下来提问：
    此时 ops 与 inspect 都留空、done 为 false，reply 里问那一个问题。
 5. 同一组视角不要反复要：看过就改，改完再换角度复核。循环有步数上限，用户也随时可能中止，
    所以每一步都要有实质进展（改了东西、或看了新的角度），reply 里说清「从哪个视角看出什么问题、改了什么」。
+6. inspect 只提供视口截图。距离、表面位置和包围盒只能来自 measure 的返回文字；measure 是对当前特征树求值后采样计算的，不是拓扑精确的碰撞检测，也不提供外观相似度评分。没有 measure 结果的部位只能说「目视检查」或「尚未验证」，不可声称已经测量过。
+7. 同样的测量不要重复要；测量发现悬浮或穿插就先修（用 setDimensions 改 translate 等路径）再复测。
 
 【通用规则】
 0. 每条指令都必须带 op 字段，值就是上面列出的指令名（例如 { "op": "addSolid", "features": [...] }）；不要写成 action / type / kind。
@@ -359,8 +392,7 @@ pattern = { type:'linear', count, step:[dx,dy,dz] } / { type:'circular', count, 
 2. 默认墙/柱高度到上一层标高；没有上一层时用 height: 3。
 3. 不要发明不存在的构件名称；修改/删除前先在上下文中确认目标（elements 里带 solid 的条目列出了该造型每个特征的序号、id、形状与材质）。
 4. 需求含糊时，reply 里提一个简短的问题，ops 返回空数组。但如果消息里带着【服务端校验反馈】（说明你的上一条指令被拒绝），不要反问、不要只解释——直接按提示把字段改到范围内，重新输出完整指令。
-5. 坐标要合理：建筑构件之间避免重叠；造型零件之间要重叠 3 mm 以上（布尔合并需要体积相交），
-   但不要重叠到把相邻零件整个吞掉。前面【整机构图】的朝向与比例规则必须遵守。
+5. 坐标要合理：建筑构件之间避免不必要的重叠；造型零件按真实连接和间隙布置，不要把相邻零件整个吞掉。
 6. 不要编造单位换算：用户没说单位时按米理解，明显是毫米级的小零件（螺丝、手机壳）按常识折算成米。
 7. 指令会在服务端 dry-run 校验：报错信息里会指出「哪个特征的哪个字段、允许范围是多少、为什么」，照着改就是。`;
 
@@ -373,6 +405,7 @@ function parseToolArguments(message) {
         reply: typeof parsed.reply === 'string' ? parsed.reply : '',
         ops: Array.isArray(parsed.ops) ? parsed.ops : [],
         inspect: normalizeInspect(parsed.inspect),
+        measure: normalizeMeasure(parsed.measure),
         done: parsed.done === true,
       };
     } catch {
@@ -388,23 +421,24 @@ function parseToolArguments(message) {
           reply: typeof parsed.reply === 'string' ? parsed.reply : '',
           ops: Array.isArray(parsed.ops) ? parsed.ops : [],
           inspect: normalizeInspect(parsed.inspect),
+          measure: normalizeMeasure(parsed.measure),
           done: parsed.done === true,
         };
       } catch {
         // 忽略
       }
     }
-    return { reply: message.content, ops: [], inspect: [], done: false };
+    return { reply: message.content, ops: [], inspect: [], measure: [], done: false };
   }
   return null;
 }
 
 /** 纯 JSON 兜底提示：thinking 模式或部分模型不接受 tools / tool_choice 时改用 */
 const JSON_ONLY_PROMPT = `本次不再使用工具调用。请只输出一个 JSON 对象，不要输出 Markdown 代码块或任何解释文字：
-{"reply": "给用户的简短中文说明；信息不足时在这里提问", "ops": [ ... 建模指令 ... ], "inspect": [ ... 想看的视角 ... ], "done": false}
+{"reply": "给用户的简短中文说明；信息不足时在这里提问", "ops": [ ... 建模指令 ... ], "inspect": [ ... 想看的视角 ... ], "measure": [ ... 几何测量请求 ... ], "done": false}
 不需要修改模型时 ops 返回空数组；指令格式与规则同前面的说明。
 想看模型就把 inspect 写成 [{ "view": "front" }, { "view": "right" }, { "view": "iso" }]（最多 4 个），
-可以和 ops 同轮出现（先应用修改再截图）。确认已满足需求时 done 为 true、ops 与 inspect 都留空。`;
+可以和 ops 同轮出现（先应用修改再截图）。需要几何测量时写 measure，格式同前面的说明。确认已满足需求时 done 为 true、ops、inspect、measure 都留空。`;
 
 /** 判断 400 是否属于「不支持工具调用 / 强制 tool_choice」这一类可降级错误 */
 const TOOL_REJECT_PATTERN = /tool_choice|tool choice|thinking mode|thinking 模式|does not support (this )?tool|tools? (is |are )?not supported|unsupported.*tools?/i;
@@ -927,7 +961,7 @@ function createOpenAiProvider(config) {
         model: config.model,
         contextTokens: config.contextTokens,
       });
-      const base = { model: config.model, messages, temperature: 0.2 };
+      const base = { model: config.model, messages, temperature: 0.2, ...(config.reasoningEffort ? { reasoning_effort: config.reasoningEffort } : {}) };
       const vision = prepared.vision;
 
       // 首选工具调用，但**不强制** tool_choice：thinking 模型（qwen3 / GLM 等）会直接 400
@@ -956,6 +990,7 @@ function createOpenAiProvider(config) {
           const data = await requestCompletion(config, {
             model: config.model,
             messages: [...messages, { role: 'system', content: JSON_ONLY_PROMPT }],
+            ...(config.reasoningEffort ? { reasoning_effort: config.reasoningEffort } : {}),
           });
           const parsed = parseToolArguments(data?.choices?.[0]?.message);
           if (parsed) return rejectBlindReply({ ...parsed, model: config.model, degraded: true, vision, context: usage }, vision);
@@ -996,7 +1031,7 @@ function createOpenAiProvider(config) {
         model: config.model,
         contextTokens: config.contextTokens,
       });
-      const base = { model: config.model, messages, temperature: 0.2 };
+      const base = { model: config.model, messages, temperature: 0.2, ...(config.reasoningEffort ? { reasoning_effort: config.reasoningEffort } : {}) };
       const vision = prepared.vision;
 
       emit({ type: 'status', text: `已连接 ${config.model}，等待模型响应…` });
@@ -1023,6 +1058,7 @@ function createOpenAiProvider(config) {
           const data = await streamCompletion(config, {
             model: config.model,
             messages: [...messages, { role: 'system', content: JSON_ONLY_PROMPT }],
+            ...(config.reasoningEffort ? { reasoning_effort: config.reasoningEffort } : {}),
           }, emit, { signal });
           const parsed = data ? parseToolArguments(data.choices?.[0]?.message) : null;
           if (parsed) return rejectBlindReply({ ...parsed, model: config.model, degraded: true, vision, context: usage }, vision);

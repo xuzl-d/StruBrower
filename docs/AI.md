@@ -14,6 +14,8 @@ Revit 类系统的价值在于**参数化、可编辑、可算量**。所以 LLM
 
 ## 交互流程
 
+AI 助手输入区的「常用命令」按创建、调整、检查分类，可在对话过程中随时使用。点击命令只会追加到输入框，不会自动发送或覆盖已有草稿；调整类命令可先在视口或项目浏览器中选择目标，输入区会显示当前选择。「转一圈检查」同样先填入输入框，确认后发送。
+
 ```
 用户在 AI 面板输入 → POST /api/projects/:id/ai/plan/stream（只读，SSE）
   → 服务端把项目摘要 + 需求发给模型 → 模型流式返回思考过程 + 工具调用参数
@@ -45,6 +47,12 @@ thinking 模型一次请求要几十秒到几分钟，一次性请求会让界�
 | `retry` | 连接中断后自动重试：`{ attempt, total, delayMs, reason }`，前端据此清掉上一轮半截草稿 |
 | `result` | 成功：`{ reply, ops, inspect, summary, ms, repaired, warning, vision }` |
 | `error` | 失败：可读的错误信息 |
+
+管理员可在 AI 设置选择思考强度（不指定 / 低 / 中 / 高），对应主模型请求的 `reasoning_effort`；不指定时不发送该参数。`cc.yjk.cn` 上的 `gpt-6-astra` 在未显式配置时默认使用高强度，其他组合默认不指定。也可通过环境变量 `STRU_AI_REASONING_EFFORT` 设置 `low`、`medium`、`high` 或空值，数据库设置优先。非支持此参数的模型应选择「不指定」；启用可能增加耗时和费用。
+
+AI 设置会读取已保存网关的 `/models` 列表，支持下拉选择、搜索或手动输入；刷新按钮重新请求网关。修改接口地址或 Key 后需先保存才能获取新列表。模型列表仅管理员可读取，API Key 不返回给浏览器；网关不提供列表时仍可手动填写模型名。
+
+模型实际返回的思考内容会在当前面板中按轮次保留，可展开查看；每轮最多保留末尾 6000 字，不写入服务器历史，刷新或重新载入会话后不保留。没有返回思考内容时不会显示该区域。
 
 实现要点：
 
@@ -111,23 +119,23 @@ AI 面板支持**上传 / 粘贴 / 拖入图片**（最多 4 张，单张 4 MB�
 2. **建模模型**拿着这份规格 + 系统提示词的【看图建模】规则 → 一棵特征树的 `addSolid`。
 
 规格里的尺寸是毫米，建模侧统一换算成米；`parts[].position` 描述的关系（同轴 / 嵌入 / 装在侧面）
-由模型落成坐标，规则与【整机构图】一致：一个产品一棵特征树、零件重叠 ≥ 3 mm。
+由模型落成坐标；是否需要连接或留间隙由参考物的结构决定。
 
 ### 用哪个模型读图
 
-不做任何自动挑选，规则只有四种情况：
+不按模型名自动挑选，规则如下：
 
 | 情况 | 行为 |
 | --- | --- |
 | 主模型支持图片（网关 `/models` 的 `input_modalities` 含 `image`） | **内联直传**：图片直接进建模请求，一次调用，保真度最高 |
-| 无法判断：网关没有 `/models`、清单里没有这个模型名，或**清单条目里根本没有模态字段** | 先按能读图试一次；若模型回「无法查看图片」，直接报错并提示去启用视觉模型 |
+| 无法判断：网关没有 `/models`、清单里没有这个模型名，或**清单条目里根本没有模态字段** | 已配置并启用独立视觉模型时使用它；否则先按能读图试一次，若模型回「无法查看图片」，报错提示配置视觉模型 |
 | 主模型明确不支持图片（条目里声明了 `input_modalities: ["text"]` 之类） | 用**独立视觉模型**（AI 设置里勾选后填写的那个），读图产出规格文本，再交给主模型建模 |
 | 主模型不支持、且没启用独立视觉模型 | 报错：`主模型「X」不支持图片输入…请在 AI 设置勾选「独立视觉模型」` |
 
 > 「无从判断」和「明确不支持」必须分开：cc.yjk.cn 这类网关的 `/models` 只回
 > `id / object / created / owned_by / type / display_name`，一个字都不提模态。
 > 早先把它当成「不支持」，导致本来能读图的 `gpt-6-astra` 被误判成纯文本、
-> 传图直接报「主模型不支持图片输入」。现在这种条目返回 `null`（不知道），按能读图试。
+> 传图直接报「主模型不支持图片输入」。现在这种条目返回 `null`（不知道），优先使用已启用的独立视觉模型，否则按能读图试。
 
 独立视觉模型完全由用户配置，**默认不启用**：
 
@@ -148,6 +156,7 @@ AI 面板支持**上传 / 粘贴 / 拖入图片**（最多 4 张，单张 4 MB�
       "detail": "杯口 R3 倒圆" }
   ],
   "details": ["手柄为 3/4 圆弧，截面椭圆"],
+  "comparison": ["当前模型手柄偏短，应加长"],
   "uncertain": ["壁厚按 4mm 估"]
 }
 ```
@@ -209,6 +218,10 @@ AI 面板支持**上传 / 粘贴 / 拖入图片**（最多 4 张，单张 4 MB�
 现在做成闭环：**AI 改完立刻落地，然后自己把视图转过去截图核对，发现问题自己修，直到它认为满足需求才停**。
 用户随时可以点「停止」掐断。
 
+看图建模的自检轮会再次附上原始参考图，并将当前模型截图排在其后，供模型对照；独立视觉模型会把可见差异和修改方向传给建模模型。每轮最多四张图，若参考图和截图超过上限，优先保留前三张参考图并至少留一张截图。第一轮成功建模但没有请求巡检时也会自动补拍；应用失败不会被 `done` 当作完成。参考图仅在本次闭环内保留，不作为历史原图持久化。
+
+通用处理顺序是：识别目标与参考视角，标记尺度和遮挡的不确定性；先定主轴、轮廓转折和关键部件关系，再选择可表达凹凸的轮廓或曲面；逐轮比较整体比例、零件位置、连接与细节，优先修正影响最大的差异。修改之后应重新截图核对。截图只是目视依据，当前 `inspect` 不提供射线测量、碰撞检测或客观相似度评分，不能把估计当成实测。
+
 ```
 需求 ──▶ 模型给 ops / inspect / done
           │
@@ -266,7 +279,7 @@ const run = await runAgentLoop(firstRound, {
   inspect: (views) => inspectViews(views),   // 转视角 + 截图
   stopped: () => stopRef.current,            // 用户点了停止
 });
-// run.reason: done | stopped | max-steps | no-action | inspect-failed | repeated
+// run.reason: done | stopped | max-steps | no-action | inspect-failed | apply-failed | repeated
 ```
 
 | 结束原因 | 含义 |
@@ -276,12 +289,13 @@ const run = await runAgentLoop(firstRound, {
 | `max-steps` | 跑满 5 步还没收敛（避免无限烧 token） |
 | `no-action` | 它没给 ops 也没给 inspect —— 在提问或只给建议，交回用户 |
 | `inspect-failed` | 想看却一张也没截到（空场景 / 视口没渲染完） |
+| `apply-failed` | 指令应用失败，后续没有给出有效修改；结果包含错误信息 |
 | `repeated` | 反复要同一组视角却什么都不改，判定为打转 |
 
 三个防跑偏的护栏：
 
-1. **步数上限 5**（`MAX_AGENT_STEPS`）：`≥ 3` 步时提示词会写「这是最后一步，请给出能交差的最终状态」。
-2. **打转检测**：连续两轮 `inspect` 指纹相同且没有 ops → `repeated`。指纹会把 `400°` 和 `40°` 认成同一个方向。
+1. **步数上限 5**（`MAX_AGENT_STEPS`）：最后一步要求说明未完成或未验证的内容；最后一次修改尚未复核时不会以 `done` 结束。
+2. **打转检测**：连续两轮 `inspect` 指纹相同且没有 ops → `repeated`。指纹归一化方向，并区分不同聚焦对象和缩放倍数。
 3. **应用被拒就自己改**：`/ai/apply` 的 4xx（尺寸越界等）不中断闭环，错误原文回灌给模型，让它按提示改，
    最多重试 2 次；仍是同样的问题才停。
 
@@ -300,6 +314,24 @@ const run = await runAgentLoop(firstRound, {
 - **历史干净**：闭环代发的「`[自检第 2/5 步]` …」在落库时标 `internal: true`——
   它照样进上下文（模型看得到自己看过什么），但打开历史会话时不显示成用户说的话。
 - **撤销基线**：闭环会连续 apply，闭包里的 `currentDocument` 会过期，撤销用的是 `docRef`（每轮更新）。
+
+### 成本
+
+### 几何测量（`measure`）与建模工作流
+
+截图只能让模型「目视」，悬浮、穿插、凹凸高度靠看不准。每轮除 `ops` / `inspect` 外，模型还可以给 `measure`（最多 6 条），
+前端在应用 ops 之后对当前特征树求值，把结果以**文字**回灌（`src/ai/measure.ts`，请求规范化在 `server/ai/measure.js`）：
+
+| type | 字段 | 返回 |
+| --- | --- | --- |
+| `bounds` | `target?` `feature?` | 包围盒与尺寸 |
+| `surface` | `target?` `feature?` `axis?` `at:[a,b]` | 射线沿轴穿过该点命中的表面坐标与法线（axis=z 时 at=[x,y]） |
+| `gap` | `target?` `a` `b` | 两个特征的最近距离与有间隙 / 接触 / 穿插判断 |
+
+- 坐标是造型构件局部坐标（米），与特征 `translate` 同一坐标系，结果可直接写回 `setDimensions`。
+- 量的是各特征**自身形状**（未做布尔），整个构件则含布尔结果；结果是采样估算，不是拓扑精确的碰撞检测，也没有外观相似度评分。
+- 只测量不改也算有效动作；同样的测量重复要会按 `repeated` 打转处理。测量发现悬浮 / 穿插应先修再复测。
+- 提示词里的建模顺序：先假设主体曲面并用大块体量建立整体轮廓与比例 → 再按参考图挂附属件 → 用 measure 核对附属件位置 → 最后细化。
 
 ### 成本
 
@@ -442,6 +474,8 @@ renderSheet(geometry, materials, [
 | `setTypeProperty` | `type`, `thickness?`, `width?`, `depth?`, `name?` | 修改类型（影响该类型全部实例） |
 | `addSolid` | `library?`（模型 id）或 `features`，`params?`, `position?`, `rotation?`, `scale?`, `color?` | 任意造型（见「任意造型」一节）；`library` 取模型库里的特征树 |
 | `setParams` | `target`, `params` | 改带参数模型的参数，整组联动重建（当前只有 `bracket`） |
+| `setDimensions` | `target`, `values` | 按现有尺寸路径批量修改静态特征树 |
+| `replaceFeature` | `target`, `feature`, `replacement` | 替换一个静态特征的基本形状 |
 | `setConstraints` | `target`, `dimensions?`, `formulas?`, `checks?`, `replace?` | 给任意构件写自定义约束（见「通用约束」一节） |
 | `deleteElement` | `target` | 删除构件 |
 
@@ -480,6 +514,8 @@ renderSheet(geometry, materials, [
 | `addSolid` | `name?`, `level?`, `position?`, `baseOffset?`, `rotation?`, `scale?`, `color?`, `features[]` 或 `library` + `params?` | 用一棵特征树建造型实体（首个特征必须是 `add`）；给 `library` 则直接取模型库里的文档，见「模型库」一节 |
 | `addFeature` | `target`, `feature`, `index?` | 追加一个特征：打孔、加阵列、加肋 |
 | `editFeature` | `target`, `feature`, `patch` | 改某个特征的尺寸 / 位置 / 旋转 / 阵列 / 合并方式 / 材质 |
+| `setDimensions` | `target`, `values` | 按路径修改已有尺寸，如放样截面的椭圆半径或位置 |
+| `replaceFeature` | `target`, `feature`, `replacement` | 替换特征形状，保留构件和特征 ID |
 | `deleteFeature` | `target`, `feature` | 删除某个特征（基础特征不可删） |
 | `updateElement` | `target`, `position?`, `rotation?`, `scale?`, `color?`, … | 造型实体同样可整体移动 / 旋转 / 缩放 / 改色 |
 | `addDecal` | `name?`, `text?` 或 `image?`, `width`, `height`, `position`, `normal?`, `color?`, `background?`, `font?` | 贴花（涂装文字 / logo），见「贴花」一节 |
@@ -487,6 +523,19 @@ renderSheet(geometry, materials, [
 
 `target` 用构件 id 或唯一名称；`feature` 用**从 1 开始的序号**、特征 id 或唯一名称。
 `position` 是 `[x, y]`（写 `[x, y, z]` 时 z 当作相对标高的抬升）；`rotation` 单位是**度**。
+
+例如：
+
+```json
+[
+  { "op": "setDimensions", "target": "外壳", "values": { "f1.sections.0.ellipse.rx": 0.7, "f1.translate.2": 0.3 } },
+  { "op": "replaceFeature", "target": "外壳", "feature": "主体", "replacement": { "shape": { "shape": "box", "width": 1, "depth": 0.6, "height": 0.4 } } }
+]
+```
+
+`setDimensions` 只能修改已存在且可寻址的尺寸，最多 48 项；公式驱动的尺寸需改源参数或公式。`replaceFeature` 必须提供完整的新形状，保留未指定的特征变换和材质；参数化模板、带约束或公式的构件不能直接替换，也不能移除被其他特征引用的屋面。两者都会重新校验特征树。
+
+视觉输入仍由语言模型转换为参数化几何，并非图片到网格或 B-rep 的专用三维重建。单张图的遮挡面、精确尺度和自由曲面不能可靠推断；重要项目应补充多视图和尺寸，或导入经过验证的三维模型。
 
 ### 特征写法
 

@@ -1,4 +1,6 @@
 /** 系统管理测试：用户管理、AI 设置（含加密/掩码）、权限与保护规则。 */
+import http from 'node:http';
+
 const BASE = process.env.BASE ?? 'http://127.0.0.1:8787';
 
 let passed = 0;
@@ -116,10 +118,26 @@ check('key 以掩码返回', saved.data.keyHint === '****test' && !JSON.stringif
 check('配置来源标记为数据库', saved.data.source.apiKey === 'db', saved.data.source);
 check('非法 provider 400', (await api('PUT', '/api/admin/settings/ai', { token: admin.token, body: { provider: 'nope' } })).status === 400);
 check('非法 baseUrl 400', (await api('PUT', '/api/admin/settings/ai', { token: admin.token, body: { baseUrl: 'not-a-url' } })).status === 400);
+check('思考强度可保存', (await api('PUT', '/api/admin/settings/ai', { token: admin.token, body: { reasoningEffort: 'high' } })).data.reasoningEffort === 'high');
+check('思考强度读取一致', (await api('GET', '/api/admin/settings/ai', { token: admin.token })).data.reasoningEffort === 'high');
+check('非法思考强度 400', (await api('PUT', '/api/admin/settings/ai', { token: admin.token, body: { reasoningEffort: 'invalid' } })).status === 400);
+check('可关闭思考强度参数', (await api('PUT', '/api/admin/settings/ai', { token: admin.token, body: { reasoningEffort: '' } })).data.reasoningEffort === '');
 
 const tested = await api('POST', '/api/admin/settings/ai/test', { token: admin.token });
 check('测试连接返回结构化结果', tested.status === 200 && typeof tested.data.ok === 'boolean', tested.data);
 check('不可达地址测试失败', tested.data.ok === false, tested.data);
+
+const gateway = http.createServer((request, response) => {
+  response.writeHead(200, { 'Content-Type': 'application/json' });
+  response.end(JSON.stringify({ data: [{ id: 'model-a', input_modalities: ['text', 'image'] }, { id: 'model-b' }] }));
+});
+await new Promise((resolve) => gateway.listen(0, '127.0.0.1', resolve));
+await api('PUT', '/api/admin/settings/ai', { token: admin.token, body: { baseUrl: `http://127.0.0.1:${gateway.address().port}/v1` } });
+const models = await api('GET', '/api/admin/settings/ai/models', { token: admin.token });
+check('管理员可获取已保存网关的模型列表', models.status === 200 && models.data.models.length === 2 && models.data.models[0].id === 'model-a' && models.data.models[0].image === true, models.data);
+check('模型列表不返回密钥', !JSON.stringify(models.data).includes('sk-secret-test'));
+check('普通用户不能获取模型列表', (await api('GET', '/api/admin/settings/ai/models', { token: user.token })).status === 403);
+await new Promise((resolve) => gateway.close(resolve));
 
 const cleared = await api('PUT', '/api/admin/settings/ai', { token: admin.token, body: { clearKey: true } });
 check('清除 key 后未就绪', cleared.data.hasKey === false && cleared.data.ready === false, cleared.data);

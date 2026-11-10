@@ -22,6 +22,7 @@ export type {
   AiConversation,
   AiConversationSummary,
   AiInspectView,
+  AiMeasureRequest,
   AiPlan,
   AiPlanEvent,
   AiPlanStreamOptions,

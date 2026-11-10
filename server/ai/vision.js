@@ -151,13 +151,14 @@ export async function quickMainSupportsImages(config, timeoutMs = 1500) {
 
 /**
  * 决定这次请求的读图方式：
- * - 主模型支持（或无法判断）：内联直传，不额外调用
+ * - 主模型支持：内联直传；无法判断时优先用已配置的视觉模型，否则尝试内联
  * - 主模型不支持且用户启用了独立视觉模型：用用户填的模型 + 自己的地址/Key
  * - 否则报错，明确告诉用户去哪儿配，**不做任何自动挑选**
  */
 export async function resolveVision(config) {
   const main = await mainSupportsImages(config);
-  if (main !== false) {
+  const vision = config.vision ?? {};
+  if (main === true || (main === null && !(vision.enabled && vision.model))) {
     return {
       model: config.model,
       baseUrl: config.baseUrl,
@@ -167,7 +168,6 @@ export async function resolveVision(config) {
     };
   }
 
-  const vision = config.vision ?? {};
   if (!vision.enabled || !vision.model) {
     throw new Error(
       `主模型「${config.model}」不支持图片输入。`
@@ -193,19 +193,22 @@ const VISION_SYSTEM = `你是资深工业设计师 + 机械制图读图员。用
 
 要求：
 1. 只描述看得见的东西，看不清就留空并在 uncertain 里说明，不要编造细节。
-2. 尺寸用毫米。用户给了尺寸就以用户为准；有标注就按标注；否则先按比例估算整体包围盒，
-   再用各部件的像素占比推算其余尺寸（宁可给整数，也不要写「大约 1.2 倍」这种相对值）。
+2. 尺寸用毫米。用户给了尺寸就以用户为准；有标注就按标注；否则按可见比例和物体常见尺度估算，明确哪些是估计。单张透视图的像素比例不是精确三维尺寸，不要把推测写成实测。
 3. 零件要拆开列：一个零件 = 一个可以独立建模的形状。相邻零件要能看出是怎么连的（同轴、贴合、嵌入）。
 4. shape 只能从这几个里选：${SHAPES}。
 5. 材质尽量从这些预设里选：aluminum / steel / carbon / plastic / plasticDark / rubber / glass / copper / brass / gold / paintWhite / paintOrange / ceramic / wood；
    不合适再用自定义色，color 写 #rrggbb，同时给出 roughness / metalness（0–1）。
 6. 显著特征（孔、槽、棱、倒角、阵列数量、分模线）写进 details，这些是让模型“像”的关键。
-7. 多张图是同一物体的不同视角时，合并成一份规格，不要重复列零件。
+7. 按用户消息中的编号和说明区分目标参考图与当前模型截图。目标规格只依据参考图；截图只是待检查的结果，不能当作目标。
+8. 同时有参考图和模型截图时，在 comparison 中列出可见差异，优先比较整体轮廓、比例、部件数量与位置、颜色和明显细节，并提出具体修改方向。不要把看不见的部分当作已核实。
+9. 只有模型截图时，描述当前模型供建模模型检查，不要假装有参考图。多张参考图确实是同一物体的不同视角时才合并规格。
+10. 记录可见视角、主轮廓的转折与凹凸、重要零件的相对位置与连接关系；按整体轮廓、比例、关键部件、细节的顺序提供建模信息，遮挡部分放进 uncertain。
 
 只输出一个 JSON 对象，不要任何解释文字，结构：
 {
   "object": "物体名称，例如 充电式电动螺丝刀",
   "orientation": "轴朝向与摆放，例如 长轴沿 X，握把朝 -Z 后倾",
+  "viewpoint": "参考图的可见视角，例如前侧三分之四视角",
   "bbox_mm": { "length": 220, "width": 62, "height": 190 },
   "parts": [
     {
@@ -220,6 +223,8 @@ const VISION_SYSTEM = `你是资深工业设计师 + 机械制图读图员。用
     }
   ],
   "details": ["夹头为三瓣分体，120° 均布"],
+  "silhouette": ["外壳上缘从前向后逐渐隆起，侧面有内凹过渡"],
+  "comparison": ["当前模型握把比参考图短，应加长并向后倾斜"],
   "uncertain": ["握把长度只能按比例估，误差约 ±15%"]
 }`;
 
@@ -260,6 +265,7 @@ export function formatAnalysis(spec, { model = '', images = 1 } = {}) {
   lines.push(`【参考图片的视觉分析】${model ? `（由 ${model} 读取 ${images} 张图）` : ''}`);
   if (spec.object) lines.push(`物体：${spec.object}`);
   if (spec.orientation) lines.push(`朝向与轴向：${spec.orientation}`);
+  if (typeof spec.viewpoint === 'string' && spec.viewpoint.trim()) lines.push(`参考图视角：${spec.viewpoint.trim().slice(0, 300)}`);
   const box = [num(bbox.length), num(bbox.width), num(bbox.height)];
   if (box.every((item) => item !== null)) lines.push(`整体包围盒（mm）：长 ${box[0]} × 宽 ${box[1]} × 高 ${box[2]}`);
 
@@ -282,6 +288,10 @@ export function formatAnalysis(spec, { model = '', images = 1 } = {}) {
 
   const details = Array.isArray(spec.details) ? spec.details.filter(Boolean) : [];
   if (details.length) lines.push(`显著细节：${details.join('；')}`);
+  const silhouette = Array.isArray(spec.silhouette) ? spec.silhouette.filter((item) => typeof item === 'string' && item.trim()).slice(0, 12) : [];
+  if (silhouette.length) lines.push(`主轮廓与表面变化：${silhouette.map((item) => item.trim().slice(0, 300)).join('；')}`);
+  const comparison = Array.isArray(spec.comparison) ? spec.comparison.filter(Boolean) : [];
+  if (comparison.length) lines.push(`参考图与当前模型的可见差异及修改方向：${comparison.join('；')}`);
   const uncertain = Array.isArray(spec.uncertain) ? spec.uncertain.filter(Boolean) : [];
   if (uncertain.length) lines.push(`图上不确定的地方（可以按比例估，不要因此停下）：${uncertain.join('；')}`);
   return lines.join('\n');
@@ -296,7 +306,7 @@ export async function describeImages(config, images, { message = '', signal = nu
   const timeoutMs = Math.min(config.timeoutMs ?? 120000, 150000);
   const instruction = [
     message.trim() ? `用户的建模需求：${message.trim()}` : '用户只上传了图片，请按图片建模。',
-    `共 ${images.length} 张图${images.length > 1 ? '（同一物体的不同视角）' : ''}。`,
+    `共 ${images.length} 张图，顺序与用户消息中的图片编号一致；按消息说明区分参考图和模型截图。`,
     '请输出结构化规格 JSON。',
   ].join('\n');
 

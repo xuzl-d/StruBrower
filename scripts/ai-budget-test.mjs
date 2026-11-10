@@ -12,6 +12,8 @@ import {
   HISTORY_ITEM_TOKENS,
 } from '../server/ai/budget.js';
 import { buildPrompt } from '../server/ai/provider.js';
+import { buildProjectContext } from '../server/ai/context.js';
+import { applyOps } from '../server/ai/ops.js';
 
 let passed = 0;
 let failed = 0;
@@ -26,6 +28,49 @@ function check(name, ok, detail) {
 }
 
 console.log('token 估算');
+{
+  const shape = { shape: 'loft', sections: [{ z: 0, ellipse: { rx: 1, ry: 0.4 } }, { z: 1, ellipse: { rx: 0.8, ry: 0.3 } }] };
+  const feature = { id: 'f1', label: '外壳', shape, translate: [1, 2, 3], rotate: [0, 90, 0], scale: [1, 2, 1], fillet: 0.01, pattern: { type: 'linear', count: 2, step: [3, 0, 0] } };
+  const context = buildProjectContext({ name: 'test', levels: [], types: [], grids: [], elements: [{ id: 'e1', name: '模型', category: 'mesh', offset: [2, 3, 4], rotation: Math.PI / 2, scale: 2, primitive: { kind: 'solid', features: [feature] } }] }, ['e1']);
+  const summary = context.selected[0].solid.features[0];
+  check('特征上下文保留曲面截面及空间变换', JSON.stringify(summary.shapeData) === JSON.stringify(shape) && JSON.stringify(summary.translate) === '[1,2,3]' && JSON.stringify(summary.rotate) === '[0,90,0]' && JSON.stringify(summary.scale) === '[1,2,1]', summary);
+  check('特征上下文保留完整阵列参数', JSON.stringify(summary.patternData) === JSON.stringify(feature.pattern), summary);
+  check('上下文保留构件整体变换和曲面修饰', context.selected[0].baseOffset === 4 && context.selected[0].rotationDegrees === 90 && context.selected[0].scale === 2 && summary.fillet === 0.01, context.selected[0]);
+  const prompt = buildPrompt({ message: '调整外壳', context, history: [], model: 'test' });
+  check('可编辑参数进入建模提示词', JSON.stringify(prompt.messages).includes('shapeData') && JSON.stringify(prompt.messages).includes('translate'), prompt.usage);
+  const document = { levels: [], grids: [], types: [], materials: [], elements: [{ id: 'e1', name: '模型', category: 'mesh', primitive: { kind: 'solid', features: [feature] } }] };
+  const changed = applyOps(document, [{ op: 'setDimensions', target: '模型', values: { 'f1.sections.0.ellipse.rx': 0.7, 'f1.translate.2': 4 } }]);
+  const updated = changed.document.elements[0].primitive.features[0];
+  check('按路径批量修改截面和位置', updated.shape.sections[0].ellipse.rx === 0.7 && updated.translate[2] === 4 && updated.shape.sections[1].ellipse.rx === 0.8, updated);
+  check('修改不改变原始模型', feature.shape.sections[0].ellipse.rx === 1 && feature.translate[2] === 3);
+  for (const [name, values] of [['不存在的路径', { 'f1.sections.9.ellipse.rx': 0.7 }], ['超出范围', { 'f1.sections.0.ellipse.rx': -1 }], ['非法数组索引', { 'f1.sections.__proto__.rx': 1 }]]) {
+    let rejected = false;
+    try { applyOps(document, [{ op: 'setDimensions', target: '模型', values }]); } catch { rejected = true; }
+    check(`拒绝${name}`, rejected);
+  }
+  const drivenDocument = { ...document, elements: [{ ...document.elements[0], formulas: { 'f1.sections.0.ellipse.rx': '1' } }] };
+  let drivenRejected = false;
+  try { applyOps(drivenDocument, [{ op: 'setDimensions', target: '模型', values: { 'f1.sections.0.ellipse.rx': 0.7 } }]); } catch { drivenRejected = true; }
+  check('拒绝直接修改公式驱动的尺寸', drivenRejected);
+  const replacement = { shape: { shape: 'box', width: 1, depth: 0.6, height: 0.4 } };
+  const replaced = applyOps(document, [{ op: 'replaceFeature', target: '模型', feature: '外壳', replacement }]);
+  const replacedElement = replaced.document.elements[0];
+  check('替换基础形状并保留构件和特征 ID', replacedElement.id === 'e1' && replacedElement.primitive.features[0].id === 'f1' && replacedElement.primitive.features[0].shape.shape === 'box', replacedElement);
+  check('替换保留原有位置和旋转', JSON.stringify(replacedElement.primitive.features[0].translate) === '[1,2,3]' && JSON.stringify(replacedElement.primitive.features[0].rotate) === '[0,90,0]');
+  let constrainedRejected = false;
+  try { applyOps(drivenDocument, [{ op: 'replaceFeature', target: '模型', feature: 1, replacement }]); } catch { constrainedRejected = true; }
+  check('有约束时拒绝替换避免引用失效', constrainedRejected);
+  let firstCutRejected = false;
+  try { applyOps(document, [{ op: 'replaceFeature', target: '模型', feature: 1, replacement: { ...replacement, mode: 'cut' } }]); } catch { firstCutRejected = true; }
+  check('基础特征不能替换为切除', firstCutRejected);
+  const roofDocument = { ...document, elements: [{ ...document.elements[0], primitive: { kind: 'solid', features: [
+    { id: 'roof', label: '屋面', shape: { shape: 'tiles' } },
+    { id: 'edge', shape: { shape: 'sweep', onRoof: { surface: 'roof' } } },
+  ] } }] };
+  let dependencyRejected = false;
+  try { applyOps(roofDocument, [{ op: 'replaceFeature', target: '模型', feature: '屋面', replacement }]); } catch (error) { dependencyRejected = String(error.message).includes('引用的屋面'); }
+  check('替换时保护其他特征的屋面引用', dependencyRejected);
+}
 {
   check('空输入是 0', estimateTokens('') === 0 && estimateTokens(null) === 0 && estimateTokens(undefined) === 0);
   const cn = estimateTokens('脚手架塔吊');
@@ -131,6 +176,17 @@ console.log('项目上下文结构化裁剪');
   check('装得下就原样保留', kept.omitted.elements === 0 && kept.omitted.features === 0);
   check('特征不降档', kept.featureLimit === 48);
   check('骨架字段完整', kept.context.levels.length === 1 && kept.context.coordinateSystem === 'Z-up');
+
+  const partial = makeContext(1, 60);
+  partial.selected = [];
+  const partialResult = trimProjectContext(partial, 12_000);
+  check('特征降档时准确报告省略数量', partialResult.omitted.features === 12 && partialResult.context.omitted?.features === 12, partialResult.omitted);
+
+  const detailed = makeContext(1, 12);
+  detailed.selected = [];
+  detailed.elements[0].solid.features.forEach((feature) => { feature.shapeData = { shape: 'loft', data: 'x'.repeat(2400) }; });
+  const compact = trimProjectContext(detailed, 3000);
+  check('预算不足时优先省略详细几何，保留特征清单', compact.context.elements[0]?.solid.features.length === 12 && compact.context.elements[0]?.solid.features.every((feature) => feature.shapeDataOmitted === true), compact.omitted);
 
   const big = makeContext(120, 48);
   const trimmed = trimProjectContext(big, 6000);

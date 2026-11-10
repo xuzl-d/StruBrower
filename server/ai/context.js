@@ -41,8 +41,16 @@ function solidSummary(element, maxFeatures = 48) {
       id: feature.id,
       label: feature.label ?? null,
       shape: describeShape(feature.shape),
+      ...(feature.shape && JSON.stringify(feature.shape).length <= 2500 ? { shapeData: feature.shape } : { shapeDataOmitted: true }),
+      ...(feature.translate ? { translate: feature.translate } : {}),
+      ...(feature.rotate ? { rotate: feature.rotate } : {}),
+      ...(feature.scale !== undefined ? { scale: feature.scale } : {}),
+      ...(feature.fillet !== undefined ? { fillet: feature.fillet } : {}),
+      ...(feature.shell !== undefined ? { shell: feature.shell } : {}),
+      ...(feature.offset !== undefined ? { offset: feature.offset } : {}),
       ...(feature.mode && feature.mode !== 'add' ? { mode: feature.mode } : {}),
       ...(feature.pattern ? { pattern: `${feature.pattern.type}×${feature.pattern.count}` } : {}),
+      ...(feature.pattern ? { patternData: feature.pattern } : {}),
       // 材质也要进上下文：模型才能「把机身改成红色」而不重建整个实体
       ...(feature.material
         ? {
@@ -85,6 +93,9 @@ export function buildProjectContext(document, selectedIds = []) {
       return {
         ...base,
         position: Array.isArray(element.offset) ? element.offset.slice(0, 2) : null,
+        ...(Array.isArray(element.offset) && element.offset.length > 2 ? { baseOffset: element.offset[2] } : {}),
+        ...(typeof element.rotation === 'number' ? { rotationDegrees: element.rotation * 180 / Math.PI } : {}),
+        ...(typeof element.scale === 'number' ? { scale: element.scale } : {}),
         solid: solidSummary(element),
       };
     }

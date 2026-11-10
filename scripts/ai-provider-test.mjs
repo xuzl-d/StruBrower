@@ -1,9 +1,10 @@
 /** AI provider 适配测试：用本地桩服务模拟 OpenAI 兼容接口，验证工具调用解析与错误处理。 */
 import http from 'node:http';
-import { createProvider, resolveAiConfig } from '../server/ai/provider.js';
+import { createProvider, defaultReasoningEffort, resolveAiConfig } from '../server/ai/provider.js';
 import { dryRun, planWithRepair } from '../server/ai/repair.js';
 import { normalizeImages } from '../server/ai/vision.js';
 import { MAX_INSPECT_VIEWS, normalizeInspect } from '../server/ai/inspect.js';
+import { MAX_MEASURE_REQUESTS, normalizeMeasure } from '../server/ai/measure.js';
 
 let passed = 0;
 let failed = 0;
@@ -20,6 +21,8 @@ function check(name, ok, detail) {
 const requested = [];
 let flakyHits = 0;
 let repairHits = 0;
+check('实测模型和网关默认高思考强度', defaultReasoningEffort('gpt-6-astra', 'https://cc.yjk.cn/v1') === 'high');
+check('其他网关不默认开启思考强度', defaultReasoningEffort('gpt-6-astra', 'https://example.com/v1') === '');
 
 /** 造一个 2mm 级薄板 + 大倒圆的 addSolid（正常需求，但很容易写出越界参数） */
 function plateOp(radius) {
@@ -152,11 +155,14 @@ const server = http.createServer((req, res) => {
             message: {
               content: '```json\n' + JSON.stringify({
                 object: '陶瓷马克杯',
+                viewpoint: '前侧视角',
                 bbox_mm: { length: 90, width: 90, height: 105 },
                 parts: [
                   { name: '杯体', shape: 'tube', size_mm: { radius: 45, height: 105, thickness: 4 }, material: 'ceramic' },
                   { name: '手柄', shape: 'sweep', material: 'ceramic' },
                 ],
+                comparison: ['当前模型手柄偏短，应加长'],
+                silhouette: ['杯体上窄下宽'],
                 uncertain: ['壁厚按 4mm 估'],
               }) + '\n```',
             },
@@ -258,6 +264,23 @@ check('解析 tool_calls', plan.reply === '好的，建一面墙' && plan.ops.le
 check('携带 Bearer key', requested[0]?.auth === 'Bearer sk-test', requested[0]?.auth);
 check('请求体包含 tools', JSON.parse(requested[0].body).tools?.[0]?.function?.name === 'apply_bim_ops');
 check('不强制 tool_choice（thinking 模型会 400）', !('tool_choice' in JSON.parse(requested[0].body)), Object.keys(JSON.parse(requested[0].body)));
+const systemPrompt = JSON.parse(requested[0].body).messages[0].content;
+check('建模提示包含轮廓和连接优先级', systemPrompt.includes('关键轮廓转折') && systemPrompt.includes('局部视角检查悬浮'));
+check('没有测量结果时不得声称已测量', systemPrompt.includes('不可声称已经测量过'));
+{
+  const list = normalizeMeasure([
+    { type: 'bounds', feature: 3 },
+    { type: 'surface', at: [0.1, '0.2'], axis: 'X', target: '车身' },
+    { type: 'surface', at: [0.1] },
+    { type: 'gap', a: '车灯', b: '车身' },
+    { type: 'gap', a: '车灯' },
+    { type: 'bogus' },
+    null,
+  ]);
+  check('measure 规范化丢弃非法项', list.length === 3, list);
+  check('surface 轴小写、坐标转数字', list[1]?.axis === 'x' && list[1]?.at[1] === 0.2 && list[1]?.target === '车身', list[1]);
+  check('measure 数量有上限', normalizeMeasure(Array.from({ length: 20 }, () => ({ type: 'bounds' }))).length === MAX_MEASURE_REQUESTS);
+}
 
 console.log('兜底与错误');
 const contentProvider = createProvider({ provider: 'openai', baseUrl: `${baseUrl}/content`, model: 'm', apiKey: 'sk-test', timeoutMs: 5000, ready: true });
@@ -284,6 +307,13 @@ check('第一次尝试带 tools', Array.isArray(attempts[0]?.tools) && attempts[
 check('降级请求不带 tools', !('tools' in (attempts[1] ?? {})), attempts[1] && Object.keys(attempts[1]));
 check('降级请求去掉 temperature', !('temperature' in (attempts[1] ?? {})), attempts[1] && Object.keys(attempts[1]));
 check('降级请求附加 JSON 指令', String(attempts[1]?.messages?.at(-1)?.content ?? '').includes('严格') || String(attempts[1]?.messages?.at(-1)?.content ?? '').includes('JSON'));
+const thinkingEffort = createProvider({ provider: 'openai', baseUrl: `${baseUrl}/thinking`, model: 'm', apiKey: 'sk-test', timeoutMs: 5000, ready: true, reasoningEffort: 'high' });
+const nonStreamEffortBase = requested.length;
+await thinkingEffort.plan({ message: '加一根柱', context: {} });
+check('非流式请求及降级保留思考强度', requested.slice(nonStreamEffortBase).length === 2 && requested.slice(nonStreamEffortBase).every((item) => JSON.parse(item.body).reasoning_effort === 'high'));
+const streamEffortBase = requested.length;
+await thinkingEffort.planStream({ message: '加一根柱', context: {}, onEvent: () => {} });
+check('流式请求及降级保留思考强度', requested.slice(streamEffortBase).length === 2 && requested.slice(streamEffortBase).every((item) => JSON.parse(item.body).reasoning_effort === 'high'));
 
 console.log('认证错误不重试');
 const unauthorizedBase = requested.length;
@@ -344,6 +374,11 @@ check('请求 Accept: text/event-stream', requested[streamBase].requestHeaders?.
 check('流式解析出 tool_calls', streamed.reply === '造好了' && streamed.ops[0]?.op === 'addWall', streamed);
 const reasoning = streamEvents.filter((event) => event.type === 'reasoning').map((event) => event.delta).join('');
 check('思考过程逐块回调', reasoning === '先确定轴距 62cm，机臂 45° 布置。', reasoning);
+const reasoningBase = requested.length;
+const reasoningProvider = createProvider({ provider: 'openai', baseUrl: `${baseUrl}/stream`, model: 'm', apiKey: 'sk-test', timeoutMs: 5000, ready: true, reasoningEffort: 'high' });
+await reasoningProvider.planStream({ message: '建一面墙', context: {}, onEvent: () => {} });
+check('指定思考强度时流式请求传递 reasoning_effort', JSON.parse(requested[reasoningBase].body).reasoning_effort === 'high');
+check('未指定思考强度时不添加参数', !('reasoning_effort' in JSON.parse(requested[streamBase].body)));
 check('回调工具调用事件', streamEvents.some((event) => event.type === 'tool' && event.name === 'apply_bim_ops'), streamEvents.map((event) => event.type).join(','));
 check('回调参数生成进度', streamEvents.some((event) => event.type === 'plan' && event.chars > 0), streamEvents.filter((event) => event.type === 'plan').length);
 
@@ -416,8 +451,11 @@ check('流式通道推送读图事件', visionEvents.some((event) => event.type 
 const visionCall = requested.slice(visionBase).find((item) => item.url === '/vision/chat/completions' && !JSON.parse(item.body).tools);
 check('读图请求用的是视觉模型的独立 Key', visionCall?.auth === 'Bearer sk-vision', visionCall?.auth);
 check('读图请求带 image_url', JSON.stringify(JSON.parse(visionCall?.body ?? '{}')).includes('image_url'));
+check('视觉提示区分参考图和模型截图', JSON.parse(visionCall?.body ?? '{}').messages?.[0]?.content.includes('截图只是待检查的结果'));
 const planningCall = requested.slice(visionBase).filter((item) => item.url === '/vision/chat/completions' && JSON.parse(item.body).tools).at(-1);
 check('建模请求里带上了视觉规格', String(JSON.parse(planningCall?.body ?? '{}').messages?.at(-1)?.content).includes('【参考图片的视觉分析】'));
+check('建模请求包含视觉差异与修改方向', String(JSON.parse(planningCall?.body ?? '{}').messages?.at(-1)?.content).includes('当前模型手柄偏短，应加长'));
+check('建模请求包含视角与轮廓信息', String(JSON.parse(planningCall?.body ?? '{}').messages?.at(-1)?.content).includes('前侧视角') && String(JSON.parse(planningCall?.body ?? '{}').messages?.at(-1)?.content).includes('杯体上窄下宽'));
 check('建模请求不再重复带图片（已转成文字）', !JSON.stringify(JSON.parse(planningCall?.body ?? '{}').messages).includes('image_url'));
 check('建模请求仍用主模型与主 Key', JSON.parse(planningCall?.body ?? '{}').model === 'text-model' && planningCall?.auth === 'Bearer sk-main');
 
@@ -443,6 +481,13 @@ const blindPlan = await blindProvider.plan({ message: '照这张图建模', cont
 check('网关不报模态时不误判成纯文本', blindPlan.vision?.inline === true, blindPlan.vision);
 check('网关不报模态时图片内联直传', JSON.stringify(JSON.parse(requested[requested.length - 1].body).messages).includes('image_url'));
 check('网关不报模态时只发 1 次请求', requested.slice(blindBase).filter((item) => item.url.endsWith('/chat/completions')).length === 1);
+
+const unknownWithVision = createProvider({
+  provider: 'openai', baseUrl: `${baseUrl}/blind`, model: 'mystery-model', apiKey: 'sk-test', timeoutMs: 5000, ready: true,
+  vision: { enabled: true, model: 'vision-model', baseUrl: `${baseUrl}/vision`, apiKey: 'sk-vision' },
+});
+const unknownVisionPlan = await unknownWithVision.plan({ message: '照图建模', context: {}, images: imageList });
+check('模态未知且配置了独立视觉模型时使用视觉模型', unknownVisionPlan.vision?.inline === false && unknownVisionPlan.vision?.model === 'vision-model', unknownVisionPlan.vision);
 
 console.log('生成阶段的预校验与自动修正');const repairDoc = {
   schemaVersion: 2,

@@ -1007,6 +1007,17 @@ button { color: inherit; }
   border-left: 1px solid #2f3f55;
   box-shadow: -18px 0 40px #0006;
 }
+@media (max-width: 600px) {
+  .ai-panel, .ai-panel.docked, .ai-panel.floating, .ai-panel.anchored {
+    top: 8px !important;
+    right: 8px !important;
+    bottom: 8px !important;
+    left: 8px !important;
+    width: auto !important;
+    min-width: 0;
+    height: auto !important;
+  }
+}
 .ai-head-drag { flex: 1; min-width: 0; cursor: grab; touch-action: none; }
 .ai-panel.dragging .ai-head-drag { cursor: grabbing; }
 .ai-head-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 6px; }
@@ -1294,8 +1305,18 @@ button { color: inherit; }
 }
 .ai-warning button:hover:not(:disabled) { background: #5c4e2a; }
 .ai-warning button:disabled { opacity: 0.5; cursor: default; }
-.ai-input { display: flex; flex-direction: column; gap: 8px; padding: 10px 14px 6px; border-top: 1px solid #27364a; }
+.ai-input { position: relative; display: flex; flex-direction: column; gap: 8px; padding: 10px 14px 6px; border-top: 1px solid #27364a; }
 .ai-input.dropping { background: #17273a; box-shadow: inset 0 0 0 1px #4a7fc1; }
+.ai-compose-tools { display: flex; min-width: 0; align-items: center; gap: 8px; }
+.ai-input .ai-commands-toggle { width: auto; padding: 3px 8px; border-color: #334b61; background: #192936; color: #bfd3e4; font-size: calc(12px * var(--ui-font-scale, 1)); white-space: nowrap; }
+.ai-selection { min-width: 0; overflow: hidden; color: #8da6b6; font-size: calc(12px * var(--ui-font-scale, 1)); text-overflow: ellipsis; white-space: nowrap; }
+.ai-command-menu { position: absolute; z-index: 4; right: 14px; bottom: calc(100% - 4px); left: 14px; max-height: min(280px, 42vh); overflow: auto; padding: 8px; border: 1px solid #405971; border-radius: 6px; background: #192635; box-shadow: 0 12px 30px #0009; }
+.ai-command-groups { display: flex; gap: 4px; padding-bottom: 7px; border-bottom: 1px solid #34485a; }
+.ai-input .ai-command-groups button { width: auto; flex: 1; padding: 5px 8px; border-color: transparent; background: transparent; color: #a7bbc9; font-size: calc(12px * var(--ui-font-scale, 1)); }
+.ai-input .ai-command-groups button.active { border-color: #466c7b; background: #28444a; color: #e5f5ec; }
+.ai-command-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px; padding-top: 7px; }
+.ai-input .ai-command-list button { width: 100%; min-width: 0; padding: 7px 9px; border-color: #33485a; background: #202f3b; color: #d3e2e8; font-size: calc(13px * var(--ui-font-scale, 1)); text-align: left; }
+.ai-input .ai-command-list button:hover { border-color: #6a988f; background: #284248; }
 .ai-input-row { display: flex; gap: 8px; align-items: stretch; }
 .ai-input textarea {
   flex: 1;
@@ -2713,6 +2734,7 @@ textarea.manager-input { height: auto; min-height: 52px; padding: 6px 7px; resiz
 .account-check span { color: #c6d4e6; font-size: calc(13.5px * var(--ui-font-scale, 1)); }
 .account-field { display: flex; flex-direction: column; gap: 5px; }
 .account-field > span { color: #93a4ba; font-size: calc(12.8px * var(--ui-font-scale, 1)); }
+.account-field > label { color: #93a4ba; font-size: calc(12.8px * var(--ui-font-scale, 1)); }
 .account-field > em { color: #6f8096; font-size: calc(12px * var(--ui-font-scale, 1)); font-style: normal; }
 .account-field > em.ok { color: #7fd1a1; }
 .account-field > em.bad { color: #f0a5a5; }
@@ -2938,6 +2960,19 @@ textarea.manager-input { height: auto; min-height: 52px; padding: 6px 7px; resiz
   .account-nav { width: 208px; flex-basis: 208px; }
   .account-identity-text span { display: none; }
   .account-esc { display: none; }
+}
+@media (max-width: 600px) {
+  .account-page { width: 100vw; }
+  .account-shell { flex-direction: column; }
+  .account-nav { width: 100%; flex: 0 0 auto; flex-direction: row; align-items: center; padding: 6px 10px; border-right: 0; border-bottom: 1px solid #1b2637; }
+  .account-brand, .account-identity, .account-nav-title { display: none; }
+  .account-nav-list { flex-direction: row; overflow-x: auto; padding: 0; }
+  .account-nav-item { width: auto; flex: 0 0 auto; white-space: nowrap; }
+  .account-nav-foot { padding: 0 0 0 6px; border: 0; }
+  .account-pagebar { padding: 0 12px; }
+  .account-body { padding: 14px 12px 32px; }
+  .account-cards, .account-card, .account-form, .account-field { min-width: 0; }
+  .account-page select { max-width: 100%; }
 }
 
 /* ---------- 任意造型 · 特征树编辑器 ---------- */

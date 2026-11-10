@@ -95,6 +95,27 @@ function scripted(decisions: AgentDecision[]) {
 
 // ── 4. 用户随时终止：停止检查在每轮开始与截图之后 ────────────────
 {
+  const references = ['reference-1', 'reference-2', 'reference-3', 'reference-4'];
+  const { plan, calls } = scripted([
+    { ops: [{ op: 'addSolid' }], inspect: [front, right] },
+    { done: true },
+  ]);
+  await runAgentLoop(first, {
+    goal: '照图建模',
+    referenceImages: references,
+    referenceThumbs: references.map((reference) => `thumb:${reference}`),
+    plan,
+    apply: async () => ({ note: '已应用' }),
+    inspect: async () => [shot('前视'), shot('右视')],
+    stopped: () => false,
+  });
+  check('自检保留参考图并给截图留出位置', calls[1]?.images.join('|') === 'reference-1|reference-2|reference-3|data:image/jpeg;base64,前视', calls[1]);
+  check('自检区分参考图与截图并标明顺序', calls[1]?.text.includes('前 3 张是用户原始参考图') && calls[1]?.text.includes('4. 前视'), calls[1]?.text);
+  check('自检缩略图与截图数量一致', calls[1]?.thumbs.length === 4 && calls[1]?.shots === 1, calls[1]);
+}
+
+// ── 4. 用户随时终止：停止检查在每轮开始与截图之后 ────────────────
+{
   let stopped = false;
   const { plan, calls } = scripted([
     { reply: '改一下', ops: [{ op: 'addSolid' }], inspect: [front] },
@@ -195,6 +216,70 @@ function scripted(decisions: AgentDecision[]) {
 
 // ── 8. 一直改不动：不无限重试 ─────────────────────────────────
 {
+  const { plan } = scripted([
+    { ops: [{ op: 'addSolid' }] },
+    { reply: '完成', done: true },
+  ]);
+  const run = await runAgentLoop(first, {
+    goal: first.text,
+    plan,
+    apply: async () => { throw new Error('参数无效'); },
+    inspect: async () => [],
+    stopped: () => false,
+  });
+  check('失败后未修复直接宣称完成不能算成功', run.reason === 'apply-failed' && run.applied === 0 && run.error === '参数无效', run);
+}
+
+// ── 8. 一直改不动：不无限重试 ─────────────────────────────────
+{
+  const { plan, calls } = scripted([
+    { ops: [{ op: 'addSolid' }], done: true },
+    { ops: [{ op: 'addSolid' }], done: true },
+  ]);
+  let attempts = 0;
+  const run = await runAgentLoop(first, {
+    goal: first.text,
+    plan,
+    apply: async () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error('参数无效');
+      return { note: '已应用' };
+    },
+    inspect: async () => [],
+    stopped: () => false,
+  });
+  check('应用失败时不能因 done 提前结束', run.reason === 'done' && attempts === 2 && calls[1]?.text.includes('参数无效'), run);
+}
+
+{
+  const { plan, calls } = scripted([
+    { ops: [{ op: 'addSolid' }] },
+    { done: true },
+  ]);
+  const run = await runAgentLoop(first, {
+    goal: '照图建模',
+    referenceImages: ['reference'],
+    referenceThumbs: ['thumb:reference'],
+    plan,
+    apply: async () => ({ note: '已应用' }),
+    inspect: async () => [shot('前视')],
+    stopped: () => false,
+  });
+  check('看图建模未主动检查时自动复核', run.reason === 'done' && calls[1]?.images.join('|') === 'reference|data:image/jpeg;base64,前视', run);
+  const noLook = await runAgentLoop(first, {
+    goal: '照图建模',
+    referenceImages: ['reference'],
+    ensureFirstLook: false,
+    plan: async () => ({ ops: [{ op: 'addSolid' }] }),
+    apply: async () => ({ note: '已应用' }),
+    inspect: async () => [],
+    stopped: () => false,
+  });
+  check('关闭自动复核时不误报完成', noLook.reason === 'no-action', noLook);
+}
+
+// ── 8. 一直改不动：不无限重试 ─────────────────────────────────
+{
   let step = 0;
   const run = await runAgentLoop(first, {
     goal: first.text,
@@ -238,6 +323,37 @@ function scripted(decisions: AgentDecision[]) {
 
 // ── 11. 阶段回调：前端进度文案靠它 ────────────────────────────
 {
+  const { plan, calls } = scripted([
+    { ops: [{ op: 'addSolid' }], inspect: [front] },
+    { ops: [{ op: 'editFeature' }], done: true },
+    { done: true },
+  ]);
+  const run = await runAgentLoop(first, {
+    goal: '照图建模',
+    referenceImages: ['reference'],
+    referenceThumbs: ['thumb:reference'],
+    plan,
+    apply: async () => ({ note: '已应用' }),
+    inspect: async () => [shot('前视')],
+    stopped: () => false,
+  });
+  check('已有截图后又修改并宣称完成，仍需复核最后一次修改', run.reason === 'done' && calls.length === 3 && calls[2]?.images[0] === 'reference', run);
+}
+
+{
+  const run = await runAgentLoop(first, {
+    goal: '照图建模',
+    plan: async () => ({ ops: [{ op: 'addSolid' }], done: true }),
+    apply: async () => ({ note: '已应用' }),
+    inspect: async () => [shot('前视')],
+    stopped: () => false,
+    maxSteps: 1,
+  });
+  check('最后一步修改后未复核不能误报完成', run.reason === 'max-steps', run);
+}
+
+// ── 11. 阶段回调：前端进度文案靠它 ────────────────────────────
+{
   const stages: string[] = [];
   await runAgentLoop(first, {
     goal: first.text,
@@ -258,8 +374,13 @@ function scripted(decisions: AgentDecision[]) {
   check('列出视角序号与名字', text.includes('1. 前视') && text.includes('2. 右视'));
   check('复述原始需求', text.includes('做一个 20cm 的螺丝刀'));
   check('要求自己判断而不是反问', text.includes('不要反问用户'));
+  check('优先处理轮廓、比例与连接', text.includes('整体轮廓、比例与位置、连接与间隙'));
+  check('没有测量结果不得声称测量', text.includes('不要声称已经测量'));
+  const withMeasure = stepPrompt({ step: 2, maxSteps: 5, goal: 'x', shots: [], measureText: '[几何测量结果] 示例' });
+  check('测量结果文字被带进提示', withMeasure.includes('[几何测量结果] 示例'), withMeasure);
   const last = stepPrompt({ step: 5, maxSteps: 5, goal: 'x', shots: [] });
   check('最后一步给出收敛提示', last.includes('最后一步'), last);
+  check('最后一步不得假装完成', last.includes('明确说明未完成'));
   check('没有附图时不写视角段', !last.includes('按下面的顺序附在'), last);
 
   const long = '需'.repeat(900);
@@ -273,6 +394,9 @@ function scripted(decisions: AgentDecision[]) {
   check('预设视角指纹一致', viewSignature([front, right]) === viewSignature([{ view: 'front', label: 'x' }, { view: 'right', label: 'y' }]));
   check('角度写法归一', viewSignature([{ azimuth: 400, elevation: 20, label: 'a' }]) === '40/20', viewSignature([{ azimuth: 400, elevation: 20, label: 'a' }]));
   check('不同视角指纹不同', viewSignature([front]) !== viewSignature([right]));
+  check('同角度不同聚焦对象不是重复视角', viewSignature([{ ...front, focus: '车灯' }]) !== viewSignature([{ ...front, focus: '后视镜' }]));
+  check('同角度不同缩放不是重复视角', viewSignature([{ ...front, zoom: 2 }]) !== viewSignature([front]));
+  check('默认缩放与省略缩放一致', viewSignature([{ ...front, zoom: 1 }]) === viewSignature([front]));
 }
 
 // ── 14. 第一轮改完就自称完成：先补拍一眼再放行 ─────────────────
@@ -316,6 +440,58 @@ function scripted(decisions: AgentDecision[]) {
     stopped: () => false,
   });
   check('没改东西的 done 不补拍', answer.reason === 'done' && inspected === 0, { answer, inspected });
+}
+// ── 15. measure：只测量也是有效动作，结果文字回灌给模型 ──────────
+{
+  const requests = [{ type: 'bounds' as const }];
+  const { plan, calls } = scripted([
+    { reply: '先量一下', measure: requests },
+    { reply: '量过了，没问题', done: true },
+  ]);
+  let measured = 0;
+  const run = await runAgentLoop(first, {
+    goal: first.text,
+    plan,
+    apply: async () => ({ note: '' }),
+    inspect: async () => [],
+    measure: async () => { measured += 1; return '[几何测量结果] 1. 包围盒'; },
+    stopped: () => false,
+  });
+  check('只测量不算 no-action', run.reason === 'done' && run.steps === 2 && measured === 1, run);
+  check('测量文字进入下一轮', Boolean(calls[1]?.text.includes('[几何测量结果]')), calls[1]?.text);
+
+  const same = await runAgentLoop(first, {
+    goal: first.text,
+    plan: async () => ({ reply: '再量', measure: requests }),
+    apply: async () => ({ note: '' }),
+    inspect: async () => [],
+    measure: async () => 'x',
+    stopped: () => false,
+  });
+  check('反复同样测量判定为打转', same.reason === 'repeated', same);
+
+  const ignored = await runAgentLoop(first, {
+    goal: first.text,
+    plan: async () => ({ reply: '量', measure: requests }),
+    apply: async () => ({ note: '' }),
+    inspect: async () => [],
+    stopped: () => false,
+  });
+  check('没有 measure 依赖时忽略测量请求', ignored.reason === 'no-action', ignored);
+
+  const mixed = scripted([
+    { reply: '改+量', ops: [{ op: 'editFeature' }], measure: requests, done: true },
+    { reply: '确认', done: true },
+  ]);
+  const mixedRun = await runAgentLoop(first, {
+    goal: first.text,
+    plan: mixed.plan,
+    apply: async () => ({ note: 'ok' }),
+    inspect: async () => [],
+    measure: async () => '量结果',
+    stopped: () => false,
+  });
+  check('done 与 measure 同轮：先量完再收工', mixedRun.reason === 'done' && mixedRun.steps === 2, mixedRun);
 }
 
 console.log(failed === 0 ? '\n自检闭环测试全部通过' : `\n自检闭环测试失败：${failed} 项`);

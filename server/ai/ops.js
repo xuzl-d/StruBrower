@@ -3,7 +3,8 @@ import { OpsError } from './errors.js';
 import { describeFeature, normalizeFeature, normalizeFeatures, patchFeature } from './solid.js';
 import { buildModelFeatures, libraryModelIds, modelDocument, modelHasParams } from '../../shared/library.js';
 import { buildParametricFeatures, coerceParams } from '../../shared/parametric.js';
-import { rebaseConstraints } from '../../shared/constraints.js';
+import { planConstraints, rebaseConstraints } from '../../shared/constraints.js';
+import { listDimensions, writeDimension } from '../../shared/dimensions.js';
 import { applyConstraintPatch } from './constraints.js';
 export { OpsError };
 
@@ -23,9 +24,11 @@ const OPS = new Set([
   'addSolid',
   'addDecal',
   'setParams',
+  'setDimensions',
   'setConstraints',
   'addFeature',
   'editFeature',
+  'replaceFeature',
   'deleteFeature',
   'updateElement',
   'setTypeProperty',
@@ -278,6 +281,22 @@ function countFeatures(features) {
   );
 }
 
+function roofIds(features, ids = new Set()) {
+  for (const feature of features ?? []) {
+    if (feature?.shape?.shape === 'tiles' && feature.id) ids.add(feature.id);
+    if (feature?.shape?.shape === 'group') roofIds(feature.shape.features, ids);
+  }
+  return ids;
+}
+
+function referencedRoofIds(features, ids = new Set()) {
+  for (const feature of features ?? []) {
+    if (feature?.shape?.onRoof?.surface) ids.add(feature.shape.onRoof.surface);
+    if (feature?.shape?.shape === 'group') referencedRoofIds(feature.shape.features, ids);
+  }
+  return ids;
+}
+
 function hexColor(value, label) {
   if (value === undefined || value === null) return undefined;
   const text = String(value).trim();
@@ -500,6 +519,33 @@ export function applyOps(document, ops) {
 
       /* ---------- 约束：给任意构件起名 + 写驱动式 / 校验式 ---------- */
 
+      case 'setDimensions': {
+        const element = resolveSolid(next, op.target);
+        assertStaticSolid(element, '改尺寸');
+        if (!op.values || typeof op.values !== 'object' || Array.isArray(op.values) || !Object.keys(op.values).length) {
+          throw new OpsError('setDimensions 需要非空 values，例如 { "f1.sections.0.ellipse.rx": 0.5 }');
+        }
+        const entries = Object.entries(op.values);
+        if (entries.length > 48) throw new OpsError('setDimensions 一次最多修改 48 个尺寸');
+        const specs = new Map(listDimensions(element).map((spec) => [spec.path, spec]));
+        const driven = planConstraints(element).bindingByPath;
+        let updated = element;
+        for (const [path, value] of entries) {
+          const spec = specs.get(path);
+          if (!spec || !path.startsWith('f')) throw new OpsError(`尺寸路径「${path}」不存在或不可修改`);
+          if (driven.has(path)) throw new OpsError(`尺寸「${path}」由公式驱动，请修改源参数或公式`);
+          if (typeof value !== 'number' || !Number.isFinite(value) || value < spec.min || value > spec.max || (spec.integer && !Number.isInteger(value))) {
+            throw new OpsError(`尺寸「${path}」必须是 ${spec.min} ~ ${spec.max} 之间的${spec.integer ? '整数' : '数字'}`);
+          }
+          updated = writeDimension(updated, path, value);
+        }
+        const features = normalizeFeatures(updated.primitive.features, 'features');
+        const index = next.elements.findIndex((item) => item.id === element.id);
+        next.elements[index] = { ...updated, primitive: { ...updated.primitive, features } };
+        applied.push(`调整「${element.name}」的 ${entries.length} 个尺寸`);
+        break;
+      }
+
       case 'setConstraints': {
         const element = resolveSolid(next, op.target);
         const index = next.elements.findIndex((item) => item.id === element.id);
@@ -608,6 +654,32 @@ export function applyOps(document, ops) {
         features[target] = patchFeature(features[target], patch, `特征 ${target + 1}`);
         next.elements[index] = { ...element, primitive: { ...element.primitive, features } };
         applied.push(`修改「${element.name}」的特征 ${target + 1}（${features[target].label ?? features[target].shape?.shape}）`);
+        break;
+      }
+
+      case 'replaceFeature': {
+        const element = resolveSolid(next, op.target);
+        assertStaticSolid(element, '替换特征');
+        if (Object.keys(element.formulas ?? {}).length || element.constraints?.dimensions?.length || element.constraints?.checks?.length) {
+          throw new OpsError('构件含尺寸约束或公式，替换特征可能使引用失效；请先检查并移除相关约束');
+        }
+        if (!op.replacement || typeof op.replacement !== 'object' || Array.isArray(op.replacement) || !op.replacement.shape) {
+          throw new OpsError('replaceFeature 需要包含 shape 的 replacement');
+        }
+        const index = next.elements.findIndex((item) => item.id === element.id);
+        const features = [...element.primitive.features];
+        const target = resolveFeatureIndex(features, op.feature);
+        const previousRoofs = roofIds([features[target]]);
+        features[target] = normalizeFeature({ ...features[target], ...op.replacement, id: features[target].id }, `特征 ${target + 1}`);
+        if (target === 0 && features[target].mode !== 'add') throw new OpsError('第一个特征必须是 add');
+        const remainingRoofs = roofIds(features);
+        const references = referencedRoofIds(features);
+        if ([...previousRoofs].some((id) => !remainingRoofs.has(id) && references.has(id))) {
+          throw new OpsError('该特征包含被其他特征引用的屋面，替换会破坏依赖，请先调整关联特征');
+        }
+        const normalized = normalizeFeatures(features, 'features');
+        next.elements[index] = { ...element, primitive: { ...element.primitive, features: normalized } };
+        applied.push(`替换「${element.name}」的特征 ${target + 1}（${normalized[target].label ?? normalized[target].shape?.shape}）`);
         break;
       }
 
@@ -720,9 +792,11 @@ export function summarizeOps(ops) {
       addSolid: '造型',
       addDecal: '贴花',
       setParams: '改参数',
+      setDimensions: '改尺寸',
       setConstraints: '设约束',
       addFeature: '加特征',
       editFeature: '改特征',
+      replaceFeature: '换特征',
       deleteFeature: '删特征',
       updateElement: '修改构件',
       setTypeProperty: '修改类型',

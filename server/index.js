@@ -21,9 +21,9 @@ import { applyOps, OpsError, summarizeOps } from './ai/ops.js';
 import { buildProjectContext } from './ai/context.js';
 import { describeOpsBrief, compactConversation, maybeSummarize } from './ai/memory.js';
 import { contextWindowOf, describeUsage, estimateTokens } from './ai/budget.js';
-import { createProvider, resolveAiConfig } from './ai/provider.js';
+import { createProvider, defaultReasoningEffort, resolveAiConfig } from './ai/provider.js';
 import { planWithRepair } from './ai/repair.js';
-import { ImageInputError, normalizeImages, quickMainSupportsImages } from './ai/vision.js';
+import { ImageInputError, listModels, normalizeImages, quickMainSupportsImages } from './ai/vision.js';
 import { applyAttachments, describeAttachments, parseAttachments } from './ai/attachments.js';
 import { createSecretBox } from './crypto.js';
 import { createRateLimiter } from './limits.js';
@@ -118,6 +118,7 @@ function loadAiConfig() {
     provider: normalizedProvider,
     baseUrl: String(baseUrl).replace(/\/+$/, ''),
     model,
+    reasoningEffort: store.getSetting('ai.reasoningEffort') ?? (process.env.STRU_AI_REASONING_EFFORT !== undefined ? envConfig.reasoningEffort : defaultReasoningEffort(model, baseUrl)),
     apiKey,
     timeoutMs,
     contextTokens: Number.isFinite(storedContextTokens) && storedContextTokens > 0
@@ -598,6 +599,7 @@ function aiSettingsView() {
     provider: aiConfig.provider,
     baseUrl: aiConfig.baseUrl,
     model: aiConfig.model,
+    reasoningEffort: aiConfig.reasoningEffort,
     visionEnabled: Boolean(aiConfig.vision?.enabled),
     visionModel: aiConfig.vision?.model ?? '',
     visionBaseUrl: aiConfig.vision?.baseUrl ?? '',
@@ -1072,6 +1074,9 @@ async function handleApi(ctx) {
     if (body.model !== undefined && (typeof body.model !== 'string' || !body.model.trim())) {
       throw new HttpError(400, 'model 不能为空');
     }
+    if (body.reasoningEffort !== undefined && !['', 'low', 'medium', 'high'].includes(body.reasoningEffort)) {
+      throw new HttpError(400, 'reasoningEffort 只能是空值、low、medium 或 high');
+    }
     if (body.visionModel !== undefined && typeof body.visionModel !== 'string') {
       throw new HttpError(400, 'visionModel 必须是字符串（留空表示不启用）');
     }
@@ -1098,6 +1103,7 @@ async function handleApi(ctx) {
     if (body.provider !== undefined) store.setSetting('ai.provider', String(body.provider), admin.id);
     if (body.baseUrl !== undefined) store.setSetting('ai.baseUrl', String(body.baseUrl).replace(/\/+$/, ''), admin.id);
     if (body.model !== undefined) store.setSetting('ai.model', String(body.model).trim(), admin.id);
+    if (body.reasoningEffort !== undefined) store.setSetting('ai.reasoningEffort', body.reasoningEffort, admin.id);
     if (body.contextTokens !== undefined) {
       const value = Math.round(Number(body.contextTokens));
       if (value > 0) store.setSetting('ai.contextTokens', String(value), admin.id);
@@ -1129,6 +1135,16 @@ async function handleApi(ctx) {
       model: aiConfig.model,
     });
     return sendJson(res, 200, aiSettingsView());
+  }
+
+  if (pathname === '/api/admin/settings/ai/models' && method === 'GET') {
+    requireSystemAdmin(ctx);
+    if (aiConfig.provider !== 'openai' || !aiConfig.apiKey) {
+      throw new HttpError(400, '请先保存 OpenAI 兼容接口和 API Key');
+    }
+    const models = await listModels(aiConfig, { force: true });
+    if (!models) throw new HttpError(502, '无法获取模型列表，请检查已保存的接口地址、API Key 和网关的 /models 接口');
+    return sendJson(res, 200, { models });
   }
 
   if (pathname === '/api/admin/settings/ai/test' && method === 'POST') {
@@ -1336,6 +1352,7 @@ async function handleApi(ctx) {
     dropStaleMessages(session);
     const ops = Array.isArray(result.ops) ? result.ops : [];
     const inspect = Array.isArray(result.inspect) ? result.inspect : [];
+    const measure = Array.isArray(result.measure) ? result.measure : [];
     const summary = summarizeOps(ops);
     const saved = saveAssistantMessage(session, {
       reply: result.reply ?? '',
@@ -1368,6 +1385,7 @@ async function handleApi(ctx) {
       reply: result.reply ?? '',
       ops,
       inspect,
+      measure,
       done: result.done === true,
       summary,
       provider: aiProvider.id,
@@ -1491,6 +1509,7 @@ async function handleApi(ctx) {
       flushDeltas(true);
       const ops = Array.isArray(result.ops) ? result.ops : [];
       const inspect = Array.isArray(result.inspect) ? result.inspect : [];
+      const measure = Array.isArray(result.measure) ? result.measure : [];
       const summary = summarizeOps(ops);
       dropStaleMessages(session);
       const saved = saveAssistantMessage(session, {
@@ -1525,6 +1544,7 @@ async function handleApi(ctx) {
         reply: result.reply ?? '',
         ops,
         inspect,
+        measure,
         done: result.done === true,
         summary,
         provider: aiProvider.id,
