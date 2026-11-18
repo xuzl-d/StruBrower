@@ -50,6 +50,7 @@ import { colorLockOf, effectiveSurface, isElementVisible } from './bim/layers';
 import { schemeColor } from './bim/colorScheme';
 import { cameraAngles, directionFromAngles, frameCamera } from './bim/viewFrame';
 import type { ProjectDocument, SolidMaterial, Vec2 } from './bim/types';
+import { SOLID_PATTERNS } from '../shared/materials.js';
 
 export type ViewKind = '3d' | 'plan';
 export type Tool = 'select' | 'wall' | 'column' | 'slab' | 'grid' | 'primitive';
@@ -228,6 +229,75 @@ function previewMaterial(): MeshStandardMaterial {
 }
 
 /**
+ * 程序化迷彩：按零件表面三维坐标生成斑块，不依赖 UV，贴在放样斜面上也不会翘起。
+ * 做法是在标准材质的 fragment shader 里注入一段三维 value-noise，把 diffuseColor
+ * 按噪声分层混到色板的几种颜色上；色板来自材质 pattern（内置名或自定义 colors）。
+ */
+const CAMO_GLSL = /* glsl */ `
+  varying vec3 vCamoPos;
+  varying vec3 vCamoNormal;
+  uniform vec3 uCamoColors[4];
+  uniform float uCamoScale;
+  float camoHash(vec3 p) {
+    p = fract(p * 0.1031);
+    p += dot(p, p.yzx + 33.33);
+    return fract((p.x + p.y) * p.z);
+  }
+  float camoNoise(vec3 x) {
+    vec3 i = floor(x);
+    vec3 f = fract(x);
+    f = f * f * (3.0 - 2.0 * f);
+    return mix(
+      mix(mix(camoHash(i), camoHash(i + vec3(1,0,0)), f.x),
+          mix(camoHash(i + vec3(0,1,0)), camoHash(i + vec3(1,1,0)), f.x), f.y),
+      mix(mix(camoHash(i + vec3(0,0,1)), camoHash(i + vec3(1,0,1)), f.x),
+          mix(camoHash(i + vec3(0,1,1)), camoHash(i + vec3(1,1,1)), f.x), f.y), f.z);
+  }
+`;
+
+/** 把材质的 pattern 解析成 shader 用的 4 色色板 + scale */
+function camoSpec(pattern: SolidMaterial['pattern']): { colors: string[]; scale: number } | null {
+  if (!pattern) return null;
+  if (typeof pattern === 'string') {
+    const preset = SOLID_PATTERNS[pattern];
+    if (!preset) return null;
+    return { colors: preset.colors, scale: preset.scale };
+  }
+  return { colors: pattern.colors, scale: pattern.scale ?? 1.7 };
+}
+
+function attachCamo(material: MeshStandardMaterial, pattern: SolidMaterial['pattern']): void {
+  const spec = camoSpec(pattern);
+  if (!spec) return;
+  const colors = spec.colors.slice(0, 4);
+  while (colors.length < 4) colors.push(colors[colors.length - 1]);
+  const uniforms = {
+    uCamoColors: { value: colors.map((c) => new Color(c)) },
+    uCamoScale: { value: spec.scale },
+  };
+  material.onBeforeCompile = (shader) => {
+    Object.assign(shader.uniforms, uniforms);
+    shader.vertexShader = `varying vec3 vCamoPos;\nvarying vec3 vCamoNormal;\n${shader.vertexShader}`.replace(
+      '#include <begin_vertex>',
+      '#include <begin_vertex>\n vCamoPos = position;\n vCamoNormal = normal;',
+    );
+    shader.fragmentShader = `${CAMO_GLSL}\n${shader.fragmentShader}`.replace(
+      '#include <color_fragment>',
+      `#include <color_fragment>
+       float camoN = camoNoise(vCamoPos * uCamoScale);
+       camoN = 0.65 * camoN + 0.35 * camoNoise(vCamoPos * uCamoScale * 2.3);
+       float camoT = clamp(camoN, 0.0, 0.999) * 4.0;
+       vec3 camoCol = camoT < 1.0 ? uCamoColors[0]
+         : camoT < 2.0 ? mix(uCamoColors[0], uCamoColors[1], camoT - 1.0)
+         : camoT < 3.0 ? mix(uCamoColors[1], uCamoColors[2], camoT - 2.0)
+         : mix(uCamoColors[2], uCamoColors[3], camoT - 3.0);
+       diffuseColor.rgb *= camoCol;`,
+    );
+  };
+  material.customProgramCacheKey = () => `camo:${colors.join(',')}:${spec.scale}`;
+}
+
+/**
  * 特征材质 → MeshStandardMaterial。
  * - entry 为空（null）表示这一个零件跟随构件材质（材质浏览器指派的那个）；
  * - 图层颜色替换 / 类别颜色替换打开时 lockedColor 为真，颜色让位给替换色，
@@ -239,7 +309,7 @@ function featureMaterial(
   lockedColor: boolean,
 ): MeshStandardMaterial {
   const opacity = Math.min(1, Math.max(0.04, ((entry?.opacity ?? 100) / 100) * surface.opacity));
-  return new MeshStandardMaterial({
+  const material = new MeshStandardMaterial({
     color: !lockedColor && entry?.color ? entry.color : surface.color,
     roughness: entry?.roughness ?? surface.roughness,
     metalness: entry?.metalness ?? surface.metalness,
@@ -247,6 +317,9 @@ function featureMaterial(
     opacity,
     depthWrite: opacity >= 0.999,
   });
+  // 迷彩按零件本色生成；颜色被图层/类别替换锁定时不叠加图案，保证「看颜色找构件」仍然可靠
+  if (!lockedColor && entry?.pattern) attachCamo(material, entry.pattern);
+  return material;
 }
 
 /**

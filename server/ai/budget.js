@@ -163,12 +163,24 @@ export function trimProjectContext(context, limitTokens = PROJECT_CONTEXT_TOKENS
   const head = { ...source, elements: [], selected: [] };
   const headTokens = estimateTokens(head);
 
-  // ① 选中构件：优先完整信息（AI 就是在改它们）；实在占太多就降级成寻址简表
+  // ① 选中构件：优先完整信息（AI 就是在改它们）。
+  //    只要 head + selected 装得进总预算就原样保留；装不下才逐级降特征数，
+  //    且始终保留特征骨架（序号/id/名称/形状/变换），绝不退化成只有 id/name/category——
+  //    否则模型会以为「特征树没在上下文里」，反复让用户提供特征列表，无法做针对性修改。
   let selectedOut = selected;
   let selectedTokens = estimateTokens(selected);
   let selectedDegraded = false;
-  if (headTokens + selectedTokens > limit * 0.55) {
-    selectedOut = selected.map((item) => ({ id: item?.id, name: item?.name, category: item?.category }));
+  const selectedBudget = Math.max(300, limit - headTokens);
+  if (headTokens + selectedTokens > limit) {
+    let picked = null;
+    for (const steps of [24, 12, 6, 3]) {
+      const variant = selected.map((item) => compactSolidShapes(scaleSolid(item, steps)));
+      if (estimateTokens(variant) <= selectedBudget) {
+        picked = variant;
+        break;
+      }
+    }
+    selectedOut = picked ?? selected.map((item) => compactSolidShapes(scaleSolid(item, 3)));
     selectedTokens = estimateTokens(selectedOut);
     selectedDegraded = true;
   }

@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
-import type { CSSProperties, PointerEvent as ReactPointerEvent } from 'react';
+import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from 'react';
 import { aiApi, ApiError } from '../data';
 import type { AiContextUsage, AiConversationSummary, AiInspectView, AiPlan, AiStatus, AiStoredMessage } from '../data';
 import type { ProjectDocument } from '../bim/types';
 import type { ViewLookRequest } from '../ModelViewport';
 import { MAX_AGENT_STEPS, runAgentLoop } from '../ai/agentLoop';
+import { canNavigateWithArrow, createInputHistory } from '../ai/inputHistory';
 import { runMeasure } from '../ai/measure';
 import type { AgentRound, AgentRun, AgentShot } from '../ai/agentLoop';
 
@@ -31,6 +32,21 @@ interface AiPanelProps {
   onDockChange?: (width: number) => void;
   /** 三维视口的控制能力：应用完截图给模型看，AI 也能要求「转过去看一眼」 */
   viewport?: AiViewportHandle | null;
+}
+
+/** ↑/↓ 翻历史输入的本地存储键与读写（localStorage 不可用时静默降级为内存态） */
+const INPUT_HISTORY_KEY = 'strubrowser.ai.inputHistory.v1';
+function loadInputHistory(): string[] {
+  try {
+    const raw = localStorage.getItem(INPUT_HISTORY_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+function saveInputHistory(items: readonly string[]) {
+  try { localStorage.setItem(INPUT_HISTORY_KEY, JSON.stringify(items)); } catch { /* 隐私模式等：忽略 */ }
 }
 
 interface ChatMessage {
@@ -537,6 +553,8 @@ export default function AiPanel({
   const [commandGroup, setCommandGroup] = useState(0);
   const fileRef = useRef<HTMLInputElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  /** ↑/↓ 翻历史输入；从 localStorage 恢复，重启浏览器/服务后仍可翻 */
+  const inputHistoryRef = useRef(createInputHistory(100, loadInputHistory()));
   const [progress, setProgress] = useState<AiProgress | null>(null);
   const [now, setNow] = useState(0);
   const listRef = useRef<HTMLDivElement>(null);
@@ -1280,6 +1298,33 @@ export default function AiPanel({
     }
   };
 
+  /** ↑/↓ 翻历史输入；只在光标处于首/末行时拦截，避免打断多行文本里的正常移动 */
+  const handleHistoryKey = (event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return false;
+    if (commandsOpen) return false; // 命令面板打开时交给它自己的交互
+    const el = event.currentTarget;
+    const value = el.value;
+    const caret = el.selectionStart ?? value.length;
+    const up = event.key === 'ArrowUp';
+    // ↑ 仅在首行、↓ 仅在末行拦截（且 ↓ 需确实处于历史浏览中）
+    if (!canNavigateWithArrow(value, caret, up)
+      || (!up && !inputHistoryRef.current.browsing)) return false;
+    const next = up
+      ? inputHistoryRef.current.prev(value)
+      : inputHistoryRef.current.next();
+    if (next === null) return false;
+    event.preventDefault();
+    setInput(next);
+    // 回填后把光标移到末尾，符合终端习惯；textarea 受控，等一帧 DOM 更新后再设
+    window.requestAnimationFrame(() => {
+      const node = inputRef.current;
+      if (!node) return;
+      const end = node.value.length;
+      node.setSelectionRange(end, end);
+    });
+    return true;
+  };
+
   const send = async (text?: string) => {
     const typed = (text ?? input).trim();
     const pickedImages = attachments.filter((item) => item.kind === 'image');
@@ -1321,6 +1366,11 @@ export default function AiPanel({
     // 告诉模型最后那张图不是参考图，而是它自己刚做出来的东西
     const serverMessage = includeShot ? `${content}\n${SHOT_MARKER}` : content;
 
+    // 记一条输入历史，供 ↑ / ↓ 回溯（只记用户真正打的字；纯图/纯文件的默认文案不记）
+    if (typed) {
+      inputHistoryRef.current.push(typed);
+      saveInputHistory(inputHistoryRef.current.items());
+    }
     setInput('');
     setAttachments([]);
     setAttachError('');
@@ -1386,9 +1436,28 @@ export default function AiPanel({
           await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
           return runMeasure(docRef.current, requests);
         },
+        callTool: async (name, args) => {
+          setPhase(`第 ${roundNo} 步：正在查询建模资料（${name}）…`);
+          const result = await aiApi.callTool(projectId, name, args);
+          return result.text;
+        },
+        recall: async (goal) => {
+          // 打转时召回：用同一套知识检索，但换一个更贴近目标的关键词重试
+          setPhase(`第 ${roundNo} 步：原地打转，正在召回建模配方换思路…`);
+          try {
+            const result = await aiApi.callTool(projectId, 'search_recipes', { query: goal });
+            return result.text;
+          } catch {
+            return '';
+          }
+        },
         onStage: (stage) => {
           if (stage.type === 'measure') {
             setPhase(`第 ${stage.step} 步：已完成 ${stage.count} 项测量，正在判断…`);
+          } else if (stage.type === 'tool') {
+            setPhase(`第 ${stage.step} 步：${stage.ok ? '查到' : '未能查到'}${stage.title}，正在决策…`);
+          } else if (stage.type === 'recall') {
+            setPhase(`第 ${stage.step} 步：已召回配方，换策略再试…`);
           } else if (stage.type === 'apply-failed') {
             setPhase(`第 ${stage.step} 步：参数被服务端拒绝，让 AI 自己改…`);
           } else if (stage.type === 'inspect') {
@@ -1449,6 +1518,7 @@ export default function AiPanel({
   };
 
   const insertCommand = (command: string) => {
+    if (inputHistoryRef.current.browsing) inputHistoryRef.current.cancel();
     setInput((current) => current.trim() ? `${current.trimEnd()}\n${command}` : command);
     setCommandsOpen(false);
     inputRef.current?.focus();
@@ -1905,7 +1975,10 @@ export default function AiPanel({
             value={input}
             rows={2}
             placeholder="描述需求，或粘贴 / 拖入图片、文本文件让 AI 照着建模"
-            onChange={(event) => setInput(event.target.value)}
+            onChange={(event) => {
+              if (inputHistoryRef.current.browsing) inputHistoryRef.current.cancel();
+              setInput(event.target.value);
+            }}
             onPaste={(event) => {
               const files = Array.from(event.clipboardData?.files ?? []).filter(
                 (file) => file.type.startsWith('image/') || isTextFile(file),
@@ -1916,6 +1989,7 @@ export default function AiPanel({
               void addFiles(files);
             }}
             onKeyDown={(event) => {
+              if (handleHistoryKey(event)) return;
               if (event.key === 'Enter' && !event.shiftKey) {
                 event.preventDefault();
                 void send();

@@ -188,7 +188,9 @@ export default function App({ initialAccountSection }: { initialAccountSection?:
 
   /* ---------- 文档与编辑 ---------- */
   const [summaries, setSummaries] = useState<ProjectSummary[]>([]);
-  const [project, setProject] = useState<ProjectDocument>(() => createDemoProject());
+  // 初始必须是空项目：真实文档是异步加载的，若首帧先渲染示例墙柱，
+  // 刷新时就会看到「示例模型 → 用户模型」的闪烁切换。示例项目只在确实没有已存项目时才创建。
+  const [project, setProject] = useState<ProjectDocument>(() => createProject());
   const projectRef = useRef(project);
   projectRef.current = project;
   const lastSavedRef = useRef<ProjectDocument | null>(null);
@@ -494,6 +496,8 @@ export default function App({ initialAccountSection }: { initialAccountSection?:
         setDraftStart(null);
         setConflictRev(null);
         setSaveState('saved');
+        // 与 setProject 同批提交：视口只在 hydrated 后挂载，挂载时直接就是用户模型。
+        setHydrated(true);
         setSummaries(await repository.list());
         await repository.saveLastOpenedId(loaded.id);
       } catch (error) {
@@ -1577,6 +1581,70 @@ export default function App({ initialAccountSection }: { initialAccountSection?:
     commit((document) => ({ ...document, grids: document.grids.filter((grid) => grid.id !== id) }), '已删除轴网');
   }
 
+  function deleteLevel(id: string) {
+    const current = projectRef.current;
+    if (current.levels.length <= 1) {
+      setMessage('至少要保留一个标高。');
+      return;
+    }
+    // 删除标高后，把引用它的构件改挂到第一个剩余标高，避免出现悬空 levelId
+    const fallback = current.levels.find((level) => level.id !== id)!;
+    commit((document) => ({
+      ...document,
+      levels: document.levels.filter((level) => level.id !== id),
+      elements: document.elements.map((element) => ({
+        ...element,
+        levelId: element.levelId === id ? fallback.id : element.levelId,
+        ...('topLevelId' in element && element.topLevelId === id ? { topLevelId: fallback.id } : {}),
+      })),
+    }), '已删除标高');
+  }
+
+  function deleteLayer(id: string) {
+    const current = projectRef.current;
+    const layer = current.layers?.find((item) => item.id === id);
+    if (!layer) return;
+    if (layer.locked) {
+      setMessage(`图层「${layer.name}」已锁定，无法删除。`);
+      return;
+    }
+    commit((document) => ({
+      ...document,
+      layers: (document.layers ?? []).filter((item) => item.id !== id),
+      elements: document.elements.map((element) => ({
+        ...element,
+        ...(element.layerId === id ? { layerId: undefined } : {}),
+      })),
+    }), '已删除图层');
+  }
+
+  function deleteMaterial(id: string) {
+    commit((document) => ({
+      ...document,
+      materials: document.materials.filter((item) => item.id !== id),
+      elements: document.elements.map((element) => ({
+        ...element,
+        ...(element.materialId === id ? { materialId: undefined } : {}),
+      })),
+    }), '已删除材质');
+  }
+
+  function deleteElement(id: string) {
+    const element = projectRef.current.elements.find((item) => item.id === id);
+    if (!element) return;
+    if (element.pinned) {
+      setMessage(`构件「${element.name}」已锁定，无法删除。`);
+      return;
+    }
+    applyOutcome(immediateModify(projectRef.current, 'delete', [id]));
+  }
+
+  function clearGrids() {
+    const count = projectRef.current.grids.length;
+    if (!count) return;
+    commit((document) => ({ ...document, grids: [] }), `已清空 ${count} 条轴网`);
+  }
+
   function handlePickPoint(point: Vec2) {
     if (tool === 'column') {
       addColumn(point);
@@ -2606,6 +2674,11 @@ export default function App({ initialAccountSection }: { initialAccountSection?:
           onSelectElement={selectElement}
           onToggleVisibility={toggleVisibility}
           onDeleteGrid={deleteGrid}
+          onClearGrids={clearGrids}
+          onDeleteLevel={deleteLevel}
+          onDeleteLayer={deleteLayer}
+          onDeleteMaterial={deleteMaterial}
+          onDeleteElement={deleteElement}
           onRenameProject={renameProject}
           onOpenLayers={() => setLayersOpen(true)}
           onOpenMaterials={() => setMaterialsOpen(true)}
@@ -2689,39 +2762,49 @@ export default function App({ initialAccountSection }: { initialAccountSection?:
             ><span>⊞</span>缩放至全部</button>
           </div>
 
-          <ModelViewport
-            project={project}
-            selection={selection}
-            activeLevelId={activeLevelId}
-            viewKind={viewKind}
-            projection={projection}
-            tool={tool}
-            draftStart={draftStart}
-            primitiveKind={primitiveKind}
-            settings={viewSettings}
-            modify={modify}
-            onRendererInfo={setRendererInfo}
-            onSelect={selectElement}
-            onBoxSelect={boxSelect}
-            onContextAction={handleContextAction}
-            onHover={(point) => {
-              setHoverPoint(point);
-              cursorRef.current = point ? [point.x, point.y] as Vec2 : null;
-            }}
-            onPickPoint={handlePickPoint}
-            onModifyClick={handleModifyClick}
-            onDragMove={dragMoveSelection}
-            fitElementId={fitElementId}
-            zoomAllRequest={zoomAllRequest}
-            onClickEmpty={() => {
-              setSelection([]);
-              setSelectedLevelId(null);
-              syncAwaitSelection([]);
-            }}
-            onViewportApi={(api) => {
-              viewportRef.current = api;
-            }}
-          />
+          {hydrated ? (
+            <ModelViewport
+              project={project}
+              selection={selection}
+              activeLevelId={activeLevelId}
+              viewKind={viewKind}
+              projection={projection}
+              tool={tool}
+              draftStart={draftStart}
+              primitiveKind={primitiveKind}
+              settings={viewSettings}
+              modify={modify}
+              onRendererInfo={setRendererInfo}
+              onSelect={selectElement}
+              onBoxSelect={boxSelect}
+              onContextAction={handleContextAction}
+              onHover={(point) => {
+                setHoverPoint(point);
+                cursorRef.current = point ? [point.x, point.y] as Vec2 : null;
+              }}
+              onPickPoint={handlePickPoint}
+              onModifyClick={handleModifyClick}
+              onDragMove={dragMoveSelection}
+              fitElementId={fitElementId}
+              zoomAllRequest={zoomAllRequest}
+              onClickEmpty={() => {
+                setSelection([]);
+                setSelectedLevelId(null);
+                syncAwaitSelection([]);
+              }}
+              onViewportApi={(api) => {
+                viewportRef.current = api;
+              }}
+            />
+          ) : (
+            <div className="viewport-host viewport-loading" role="status" aria-live="polite">
+              <div className="viewport-loading-card">
+                <div className="viewport-loading-spinner" />
+                <strong>正在加载模型…</strong>
+                <span>正在读取上次打开的项目</span>
+              </div>
+            </div>
+          )}
 
           {tool !== 'select' && !modify ? (
             <DrawCoordinateBar

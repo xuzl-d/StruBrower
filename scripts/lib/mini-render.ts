@@ -11,6 +11,7 @@ import fs from 'node:fs';
 import zlib from 'node:zlib';
 import { Box3, BufferGeometry, Matrix4, Sphere, Vector3 } from 'three';
 import type { SolidMaterial } from '../../src/bim/types';
+import { SOLID_PATTERNS } from '../../shared/materials.js';
 
 export interface RasterView {
   name: string;
@@ -96,6 +97,62 @@ function hexToRgb(hex: string): Rgb {
   ];
 }
 
+/* ---------- 程序化迷彩（离线近似：与真机 shader 同样的 noise，按面质心取色） ---------- */
+
+function camoHash(x: number, y: number, z: number): number {
+  let px = (x * 0.1031) % 1;
+  let py = (y * 0.1031) % 1;
+  let pz = (z * 0.1031) % 1;
+  const d = px * (py + 33.33) + py * (pz + 33.33) + pz * (px + 33.33);
+  px += d; py += d; pz += d;
+  const r = (px + py) * pz;
+  return r - Math.floor(r);
+}
+
+function camoNoise(x: number, y: number, z: number): number {
+  const ix = Math.floor(x), iy = Math.floor(y), iz = Math.floor(z);
+  let fx = x - ix, fy = y - iy, fz = z - iz;
+  fx = fx * fx * (3 - 2 * fx);
+  fy = fy * fy * (3 - 2 * fy);
+  fz = fz * fz * (3 - 2 * fz);
+  const mix = (a: number, b: number, t: number) => a + (b - a) * t;
+  const c000 = camoHash(ix, iy, iz), c100 = camoHash(ix + 1, iy, iz);
+  const c010 = camoHash(ix, iy + 1, iz), c110 = camoHash(ix + 1, iy + 1, iz);
+  const c001 = camoHash(ix, iy, iz + 1), c101 = camoHash(ix + 1, iy, iz + 1);
+  const c011 = camoHash(ix, iy + 1, iz + 1), c111 = camoHash(ix + 1, iy + 1, iz + 1);
+  return mix(
+    mix(mix(c000, c100, fx), mix(c010, c110, fx), fy),
+    mix(mix(c001, c101, fx), mix(c011, c111, fx), fy),
+    fz,
+  );
+}
+
+function patternColors(pattern: SolidMaterial['pattern']): { colors: string[]; scale: number } | null {
+  if (!pattern) return null;
+  if (typeof pattern === 'string') {
+    const preset = SOLID_PATTERNS[pattern];
+    return preset ? { colors: preset.colors, scale: preset.scale } : null;
+  }
+  return { colors: pattern.colors, scale: pattern.scale ?? 1.7 };
+}
+
+function camoColorAt(pattern: SolidMaterial['pattern'], p: Vector3): Rgb {
+  const spec = patternColors(pattern);
+  if (!spec || !spec.colors.length) return [1, 1, 1];
+  const colors = spec.colors.slice(0, 4).map(hexToRgb);
+  let n = camoNoise(p.x * spec.scale, p.y * spec.scale, p.z * spec.scale);
+  n = 0.65 * n + 0.35 * camoNoise(p.x * spec.scale * 2.3, p.y * spec.scale * 2.3, p.z * spec.scale * 2.3);
+  const t = Math.min(0.999, Math.max(0, n)) * colors.length;
+  const i = Math.min(colors.length - 1, Math.floor(t));
+  const next = Math.min(colors.length - 1, i + 1);
+  const frac = t - i;
+  return [
+    colors[i][0] + (colors[next][0] - colors[i][0]) * frac,
+    colors[i][1] + (colors[next][1] - colors[i][1]) * frac,
+    colors[i][2] + (colors[next][2] - colors[i][2]) * frac,
+  ];
+}
+
 /* ---------- PNG 编码（RGB8，无滤波） ---------- */
 
 const CRC_TABLE = (() => {
@@ -159,7 +216,8 @@ function collectTriangles(geometry: BufferGeometry, materials: Array<SolidMateri
   const n = [new Vector3(), new Vector3(), new Vector3()];
   for (const group of groups) {
     const material = materials[group.materialIndex] ?? null;
-    const color = hexToRgb(material?.color ?? '#d5dbe2');
+    const baseColor = hexToRgb(material?.color ?? '#d5dbe2');
+    const hasCamo = !!material?.pattern;
     const end = Math.min(count, group.start + group.count);
     for (let i = group.start; i + 2 < end; i += 3) {
       for (let k = 0; k < 3; k += 1) {
@@ -174,6 +232,11 @@ function collectTriangles(geometry: BufferGeometry, materials: Array<SolidMateri
         n[1].copy(face);
         n[2].copy(face);
       }
+      // 迷彩按面质心采样（离线近似：一个三角形一个色块）；
+      // 真机 shader 逐像素采样，过渡更细。这里只用于验证斑块分布与配色。
+      const color = hasCamo
+        ? camoColorAt(material!.pattern!, new Vector3().addVectors(v[0], v[1]).add(v[2]).multiplyScalar(1 / 3))
+        : baseColor;
       tri.push({
         p: [v[0].clone(), v[1].clone(), v[2].clone()],
         n: [n[0].clone(), n[1].clone(), n[2].clone()],

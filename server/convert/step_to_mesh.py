@@ -34,15 +34,27 @@ from OCP.BRepMesh import BRepMesh_IncrementalMesh
 from OCP.Quantity import Quantity_Color
 from OCP.STEPCAFControl import STEPCAFControl_Reader
 from OCP.TCollection import TCollection_ExtendedString
-from OCP.TDF import TDF_LabelSequence
+try:
+    from OCP.TDF import TDF_LabelSequence
+except ImportError:
+    from OCP.collections import Sequence_TDF_Label as TDF_LabelSequence
 from OCP.TDocStd import TDocStd_Document
 from OCP.TopAbs import TopAbs_FACE, TopAbs_REVERSED, TopAbs_SOLID
 from OCP.TopExp import TopExp, TopExp_Explorer
 from OCP.TopLoc import TopLoc_Location
-from OCP.TopTools import TopTools_IndexedMapOfShape
+try:
+    from OCP.TopTools import TopTools_IndexedMapOfShape
+except ImportError:
+    from OCP.collections import IndexedMap_TopoDS_Shape_TopTools_ShapeMapHasher as TopTools_IndexedMapOfShape
 from OCP.TopoDS import TopoDS
+if not hasattr(TopoDS, "Face_s") and hasattr(TopoDS, "Face"):
+    TopoDS.Face_s = TopoDS.Face
 from OCP.XCAFDoc import XCAFDoc_DocumentTool
-from OCP.XCAFPrs import XCAFPrs, XCAFPrs_IndexedDataMapOfShapeStyle
+from OCP.XCAFPrs import XCAFPrs
+try:
+    from OCP.XCAFPrs import XCAFPrs_IndexedDataMapOfShapeStyle
+except ImportError:
+    from OCP.collections import IndexedDataMap_TopoDS_Shape_XCAFPrs_Style_TopTools_ShapeMapHasher as XCAFPrs_IndexedDataMapOfShapeStyle
 
 DEFAULT_COLOR = (0.78, 0.79, 0.82)
 
@@ -138,7 +150,11 @@ def main():
 
     bbox = Bnd_Box()
     BRepBndLib.Add_s(root, bbox)
-    xmin, ymin, zmin, xmax, ymax, zmax = bbox.Get()
+    if hasattr(bbox, "GetXMin"):
+        xmin, ymin, zmin = bbox.GetXMin(), bbox.GetYMin(), bbox.GetZMin()
+        xmax, ymax, zmax = bbox.GetXMax(), bbox.GetYMax(), bbox.GetZMax()
+    else:
+        xmin, ymin, zmin, xmax, ymax, zmax = bbox.Get()
     diagonal = math.dist((xmin, ymin, zmin), (xmax, ymax, zmax))
     deflection = max(diagonal * args.deflection_ratio, 1e-6)
 

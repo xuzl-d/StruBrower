@@ -1,0 +1,1225 @@
+{
+ "id": "tank-tracked",
+ "name": "履带式坦克",
+ "summary": "AI 端到端生成的履带式坦克：斜面装甲车体、多面炮塔、中空炮管+炮口加固套、双侧履带行走机构（履带环 + 履带吊式精细轮系：9 支重轮带端盖内圈、3 托带轮、前后大轮盘带 18 螺栓孔+轮毂盖+行走减速机，保留上下前后 4 排均匀履带齿（削顶梯形截面，两侧带斜切），linear/circular/mirror 阵列）、炮盾、车长舱盖、观察镜、后部发动机盖与散热槽，黑色皮革履带带 + 程序化丛林迷彩（材质 pattern，按表面坐标生成，无悬浮几何块）。",
+ "features": [
+  {
+   "id": "ft-d03fedb2-f710-4e09-ab17-b861ce0fd2d4",
+   "mode": "add",
+   "shape": {
+    "shape": "loft",
+    "sections": [
+     {
+      "z": 0.75,
+      "profile": [
+       [
+        -2.8,
+        -1.25
+       ],
+       [
+        2.55,
+        -1.25
+       ],
+       [
+        2.95,
+        -1
+       ],
+       [
+        2.95,
+        1
+       ],
+       [
+        2.55,
+        1.25
+       ],
+       [
+        -2.8,
+        1.25
+       ]
+      ]
+     },
+     {
+      "z": 1.35,
+      "profile": [
+       [
+        -2.95,
+        -1.48
+       ],
+       [
+        2.95,
+        -1.48
+       ],
+       [
+        3.2,
+        -1.12
+       ],
+       [
+        3.2,
+        1.12
+       ],
+       [
+        2.95,
+        1.48
+       ],
+       [
+        -2.95,
+        1.48
+       ]
+      ]
+     },
+     {
+      "z": 1.8,
+      "profile": [
+       [
+        -2.65,
+        -1.35
+       ],
+       [
+        2.05,
+        -1.35
+       ],
+       [
+        2.5,
+        -1.05
+       ],
+       [
+        2.5,
+        1.05
+       ],
+       [
+        2.05,
+        1.35
+       ],
+       [
+        -2.65,
+        1.35
+       ]
+      ]
+     }
+    ]
+   },
+   "label": "装甲车体",
+   "material": {
+    "color": "#4d5a36",
+    "roughness": 0.7,
+    "metalness": 0.15,
+    "pattern": "jungle"
+   }
+  },
+  {
+   "id": "ft-b2d96420-add1-44bc-9d53-0e1a5dff784c",
+   "mode": "add",
+   "shape": {
+    "shape": "loft",
+    "sections": [
+     {
+      "z": 1.82,
+      "profile": [
+       [
+        -1.35,
+        -0.85
+       ],
+       [
+        0.9,
+        -0.85
+       ],
+       [
+        1.35,
+        -0.45
+       ],
+       [
+        1.35,
+        0.45
+       ],
+       [
+        0.9,
+        0.85
+       ],
+       [
+        -1.35,
+        0.85
+       ]
+      ]
+     },
+     {
+      "z": 2.15,
+      "profile": [
+       [
+        -1.5,
+        -1.03
+       ],
+       [
+        0.9,
+        -1.03
+       ],
+       [
+        1.4,
+        -0.5
+       ],
+       [
+        1.4,
+        0.5
+       ],
+       [
+        0.9,
+        1.03
+       ],
+       [
+        -1.5,
+        1.03
+       ]
+      ]
+     },
+     {
+      "z": 2.75,
+      "profile": [
+       [
+        -1.12,
+        -0.75
+       ],
+       [
+        0.65,
+        -0.75
+       ],
+       [
+        1.02,
+        -0.4
+       ],
+       [
+        1.02,
+        0.4
+       ],
+       [
+        0.65,
+        0.75
+       ],
+       [
+        -1.12,
+        0.75
+       ]
+      ]
+     }
+    ]
+   },
+   "label": "多面装甲炮塔",
+   "material": {
+    "color": "#596344",
+    "roughness": 0.65,
+    "metalness": 0.2,
+    "pattern": "jungle"
+   }
+  },
+  {
+   "id": "ft-4bee6a85-ded7-4a3f-9e2c-cfbaabf7d656",
+   "mode": "add",
+   "shape": {
+    "shape": "tube",
+    "radius": 0.105,
+    "thickness": 0.025,
+    "height": 3.9,
+    "segments": 24
+   },
+   "label": "中空炮管",
+   "translate": [
+    3.15,
+    0,
+    2.3
+   ],
+   "rotate": [
+    0,
+    90,
+    0
+   ],
+   "material": {
+    "color": "#4d5a36",
+    "roughness": 0.5,
+    "metalness": 0.6,
+    "pattern": "jungle"
+   }
+  },
+  {
+   "id": "ft-e33acceb-6e01-4995-bb57-508e418a3d76",
+   "mode": "add",
+   "shape": {
+    "shape": "roundedBox",
+    "width": 5.15,
+    "depth": 0.34,
+    "height": 0.14,
+    "radius": 0.057,
+    "segments": 32
+   },
+   "label": "左履带护板",
+   "translate": [
+    -0.1,
+    1.49,
+    1.51
+   ],
+   "pattern": {
+    "type": "mirror",
+    "axis": "y",
+    "center": [
+     0,
+     0,
+     0
+    ]
+   },
+   "material": {
+    "color": "#4d5a36",
+    "roughness": 0.7,
+    "metalness": 0.2
+   }
+  },
+  {
+   "id": "ft-ab94df87-41d1-465d-b671-4e45bfabae40",
+   "mode": "add",
+   "shape": {
+    "shape": "group",
+    "features": [
+     {
+      "id": "ft-bd899705-4c92-493d-9517-44bfaacedd26",
+      "mode": "add",
+      "shape": {
+       "shape": "prism",
+       "profile": [
+        [
+         -2.3,
+         0.08
+        ],
+        [
+         2.3,
+         0.08
+        ],
+        [
+         2.7,
+         0.28
+        ],
+        [
+         2.95,
+         0.65
+        ],
+        [
+         2.95,
+         0.94
+        ],
+        [
+         2.65,
+         1.3
+        ],
+        [
+         2.3,
+         1.43
+        ],
+        [
+         -2.3,
+         1.43
+        ],
+        [
+         -2.7,
+         1.22
+        ],
+        [
+         -2.95,
+         0.88
+        ],
+        [
+         -2.95,
+         0.58
+        ],
+        [
+         -2.7,
+         0.25
+        ]
+       ],
+       "height": 0.58,
+       "twist": 0,
+       "taper": 1
+      },
+      "label": "履带外环",
+      "translate": [
+       0,
+       1.57,
+       0
+      ],
+      "rotate": [
+       90,
+       0,
+       0
+      ],
+      "material": {
+       "name": "黑色皮革",
+       "color": "#15181b",
+       "roughness": 0.84,
+       "metalness": 0.03
+      }
+     },
+     {
+      "id": "ft-b5933147-72ba-4ad2-867e-7d2a95b87c8d",
+      "mode": "cut",
+      "shape": {
+       "shape": "prism",
+       "profile": [
+        [
+         -2.25,
+         0.24
+        ],
+        [
+         2.25,
+         0.24
+        ],
+        [
+         2.56,
+         0.41
+        ],
+        [
+         2.78,
+         0.7
+        ],
+        [
+         2.78,
+         0.87
+        ],
+        [
+         2.53,
+         1.15
+        ],
+        [
+         2.25,
+         1.27
+        ],
+        [
+         -2.25,
+         1.27
+        ],
+        [
+         -2.56,
+         1.09
+        ],
+        [
+         -2.78,
+         0.83
+        ],
+        [
+         -2.78,
+         0.64
+        ],
+        [
+         -2.56,
+         0.39
+        ]
+       ],
+       "height": 0.64,
+       "twist": 0,
+       "taper": 1
+      },
+      "label": "履带内腔",
+      "translate": [
+       0,
+       1.57,
+       0
+      ],
+      "rotate": [
+       90,
+       0,
+       0
+      ],
+      "material": {
+       "name": "黑色皮革",
+       "color": "#15181b",
+       "roughness": 0.84,
+       "metalness": 0.03
+      }
+     },
+     {
+      "id": "tt-roadwheel",
+      "mode": "add",
+      "label": "底部支重轮",
+      "shape": {
+       "shape": "cylinder",
+       "radius": 0.2,
+       "height": 0.5,
+       "segments": 20
+      },
+      "translate": [
+       -2.2,
+       1.57,
+       0.42
+      ],
+      "rotate": [
+       90,
+       0,
+       0
+      ],
+      "pattern": {
+       "type": "linear",
+       "count": 9,
+       "step": [
+        0.55,
+        0,
+        0
+       ]
+      },
+      "material": {
+       "name": "装甲军绿",
+       "color": "#596344",
+       "roughness": 0.62,
+       "metalness": 0.35
+      }
+     },
+     {
+      "id": "tt-roadcap",
+      "mode": "add",
+      "label": "支重轮端盖",
+      "shape": {
+       "shape": "cylinder",
+       "radius": 0.115,
+       "height": 0.52,
+       "segments": 16
+      },
+      "translate": [
+       -2.2,
+       1.57,
+       0.42
+      ],
+      "rotate": [
+       90,
+       0,
+       0
+      ],
+      "pattern": {
+       "type": "linear",
+       "count": 9,
+       "step": [
+        0.55,
+        0,
+        0
+       ]
+      },
+      "material": {
+       "name": "石墨灰",
+       "color": "#33383d",
+       "roughness": 0.46,
+       "metalness": 0.28
+      }
+     },
+     {
+      "id": "tt-roadcap-in",
+      "mode": "add",
+      "label": "支重轮端盖内圈",
+      "shape": {
+       "shape": "cylinder",
+       "radius": 0.05,
+       "height": 0.54,
+       "segments": 12
+      },
+      "translate": [
+       -2.2,
+       1.57,
+       0.42
+      ],
+      "rotate": [
+       90,
+       0,
+       0
+      ],
+      "pattern": {
+       "type": "linear",
+       "count": 9,
+       "step": [
+        0.55,
+        0,
+        0
+       ]
+      },
+      "material": {
+       "name": "不锈钢",
+       "color": "#cfd6dd",
+       "roughness": 0.22,
+       "metalness": 0.96
+      }
+     },
+     {
+      "id": "tt-carrier",
+      "mode": "add",
+      "label": "托带轮",
+      "shape": {
+       "shape": "cylinder",
+       "radius": 0.14,
+       "height": 0.46,
+       "segments": 16
+      },
+      "translate": [
+       -1.2,
+       1.57,
+       1.12
+      ],
+      "rotate": [
+       90,
+       0,
+       0
+      ],
+      "pattern": {
+       "type": "linear",
+       "count": 3,
+       "step": [
+        1.2,
+        0,
+        0
+       ]
+      },
+      "material": {
+       "name": "装甲军绿",
+       "color": "#596344",
+       "roughness": 0.62,
+       "metalness": 0.35
+      }
+     },
+     {
+      "id": "tt-disc-front",
+      "mode": "add",
+      "label": "前端大轮盘",
+      "shape": {
+       "shape": "cylinder",
+       "radius": 0.4,
+       "height": 0.5,
+       "segments": 28
+      },
+      "translate": [
+       2.4,
+       1.57,
+       0.755
+      ],
+      "rotate": [
+       90,
+       0,
+       0
+      ],
+      "material": {
+       "name": "装甲军绿",
+       "color": "#596344",
+       "roughness": 0.62,
+       "metalness": 0.35
+      }
+     },
+     {
+      "id": "tt-disc-rear",
+      "mode": "add",
+      "label": "后端大轮盘",
+      "shape": {
+       "shape": "cylinder",
+       "radius": 0.4,
+       "height": 0.5,
+       "segments": 28
+      },
+      "translate": [
+       -2.4,
+       1.57,
+       0.755
+      ],
+      "rotate": [
+       90,
+       0,
+       0
+      ],
+      "material": {
+       "name": "装甲军绿",
+       "color": "#596344",
+       "roughness": 0.62,
+       "metalness": 0.35
+      }
+     },
+     {
+      "id": "tt-bolt-front",
+      "mode": "add",
+      "label": "前轮盘螺栓孔",
+      "shape": {
+       "shape": "cylinder",
+       "radius": 0.04,
+       "height": 0.54,
+       "segments": 8
+      },
+      "translate": [
+       2.6799999999999997,
+       1.57,
+       0.755
+      ],
+      "rotate": [
+       90,
+       0,
+       0
+      ],
+      "pattern": {
+       "type": "circular",
+       "count": 18,
+       "axis": "y",
+       "center": [
+        2.4,
+        1.57,
+        0.755
+       ]
+      },
+      "material": {
+       "name": "深灰结构件",
+       "color": "#1b1e21",
+       "roughness": 0.5,
+       "metalness": 0.2
+      }
+     },
+     {
+      "id": "tt-bolt-rear",
+      "mode": "add",
+      "label": "后轮盘螺栓孔",
+      "shape": {
+       "shape": "cylinder",
+       "radius": 0.04,
+       "height": 0.54,
+       "segments": 8
+      },
+      "translate": [
+       -2.12,
+       1.57,
+       0.755
+      ],
+      "rotate": [
+       90,
+       0,
+       0
+      ],
+      "pattern": {
+       "type": "circular",
+       "count": 18,
+       "axis": "y",
+       "center": [
+        -2.4,
+        1.57,
+        0.755
+       ]
+      },
+      "material": {
+       "name": "深灰结构件",
+       "color": "#1b1e21",
+       "roughness": 0.5,
+       "metalness": 0.2
+      }
+     },
+     {
+      "id": "tt-hub",
+      "mode": "add",
+      "label": "前后轮毂",
+      "shape": {
+       "shape": "cylinder",
+       "radius": 0.14,
+       "height": 0.52,
+       "segments": 18
+      },
+      "translate": [
+       -2.4,
+       1.57,
+       0.755
+      ],
+      "rotate": [
+       90,
+       0,
+       0
+      ],
+      "pattern": {
+       "type": "linear",
+       "count": 2,
+       "step": [
+        4.8,
+        0,
+        0
+       ]
+      },
+      "material": {
+       "name": "石墨灰",
+       "color": "#33383d",
+       "roughness": 0.46,
+       "metalness": 0.28
+      }
+     },
+     {
+      "id": "tt-hubcap",
+      "mode": "add",
+      "label": "前后轮毂盖",
+      "shape": {
+       "shape": "cylinder",
+       "radius": 0.075,
+       "height": 0.54,
+       "segments": 16
+      },
+      "translate": [
+       -2.4,
+       1.57,
+       0.755
+      ],
+      "rotate": [
+       90,
+       0,
+       0
+      ],
+      "pattern": {
+       "type": "linear",
+       "count": 2,
+       "step": [
+        4.8,
+        0,
+        0
+       ]
+      },
+      "material": {
+       "name": "不锈钢",
+       "color": "#cfd6dd",
+       "roughness": 0.22,
+       "metalness": 0.96
+      }
+     },
+     {
+      "id": "tt-drive",
+      "mode": "add",
+      "label": "行走减速机",
+      "shape": {
+       "shape": "cylinder",
+       "radius": 0.22,
+       "height": 0.3,
+       "segments": 18
+      },
+      "translate": [
+       -2.4,
+       1.2,
+       0.755
+      ],
+      "rotate": [
+       90,
+       0,
+       0
+      ],
+      "material": {
+       "name": "石墨灰",
+       "color": "#33383d",
+       "roughness": 0.46,
+       "metalness": 0.28
+      }
+     },
+     {
+      "id": "ft-1b86d514-9d15-4ec1-9b6a-2b998f11bcaf",
+      "mode": "add",
+      "shape": {
+       "shape": "prism",
+       "profile": [
+        [
+         -0.058,
+         0
+        ],
+        [
+         0.058,
+         0
+        ],
+        [
+         0.018,
+         0.095
+        ],
+        [
+         -0.018,
+         0.095
+        ]
+       ],
+       "height": 0.63,
+       "twist": 0,
+       "taper": 1
+      },
+      "label": "上排履带齿",
+      "translate": [
+       -2.25,
+       1.57,
+       1.4075
+      ],
+      "pattern": {
+       "type": "linear",
+       "count": 24,
+       "step": [
+        0.195,
+        0,
+        0
+       ]
+      },
+      "material": {
+       "name": "黑色皮革",
+       "color": "#15181b",
+       "roughness": 0.84,
+       "metalness": 0.03
+      },
+      "rotate": [
+       90,
+       0,
+       0
+      ]
+     },
+     {
+      "id": "ft-3eee6c3b-bfd0-4cc8-962f-9650bf64b070",
+      "mode": "add",
+      "shape": {
+       "shape": "prism",
+       "profile": [
+        [
+         -0.018,
+         0
+        ],
+        [
+         0.018,
+         0
+        ],
+        [
+         0.058,
+         0.095
+        ],
+        [
+         -0.058,
+         0.095
+        ]
+       ],
+       "height": 0.63,
+       "twist": 0,
+       "taper": 1
+      },
+      "label": "下排履带齿",
+      "translate": [
+       -2.25,
+       1.57,
+       0.01
+      ],
+      "pattern": {
+       "type": "linear",
+       "count": 24,
+       "step": [
+        0.195,
+        0,
+        0
+       ]
+      },
+      "material": {
+       "name": "黑色皮革",
+       "color": "#15181b",
+       "roughness": 0.84,
+       "metalness": 0.03
+      },
+      "rotate": [
+       90,
+       0,
+       0
+      ]
+     },
+     {
+      "id": "ft-c3aba980-aaac-4b5b-adc0-8f64ba92b7ac",
+      "mode": "add",
+      "shape": {
+       "shape": "prism",
+       "profile": [
+        [
+         -0.058,
+         0
+        ],
+        [
+         0.058,
+         0
+        ],
+        [
+         0.018,
+         0.095
+        ],
+        [
+         -0.018,
+         0.095
+        ]
+       ],
+       "height": 0.63,
+       "twist": 0,
+       "taper": 1
+      },
+      "label": "前端履带齿",
+      "translate": [
+       2.3,
+       1.57,
+       1.4075
+      ],
+      "pattern": {
+       "type": "circular",
+       "count": 12,
+       "axis": "y",
+       "angle": 180,
+       "center": [
+        2.3,
+        1.57,
+        0.755
+       ]
+      },
+      "material": {
+       "name": "黑色皮革",
+       "color": "#15181b",
+       "roughness": 0.84,
+       "metalness": 0.03
+      },
+      "rotate": [
+       90,
+       0,
+       0
+      ]
+     },
+     {
+      "id": "ft-dfa84ac4-44d5-47c9-a234-43ab2fa35dca",
+      "mode": "add",
+      "shape": {
+       "shape": "prism",
+       "profile": [
+        [
+         -0.058,
+         0
+        ],
+        [
+         0.058,
+         0
+        ],
+        [
+         0.018,
+         0.095
+        ],
+        [
+         -0.018,
+         0.095
+        ]
+       ],
+       "height": 0.63,
+       "twist": 0,
+       "taper": 1
+      },
+      "label": "后端履带齿",
+      "translate": [
+       -2.3,
+       1.57,
+       1.4075
+      ],
+      "pattern": {
+       "type": "circular",
+       "count": 12,
+       "axis": "y",
+       "angle": -180,
+       "center": [
+        -2.3,
+        1.57,
+        0.755
+       ]
+      },
+      "material": {
+       "name": "黑色皮革",
+       "color": "#15181b",
+       "roughness": 0.84,
+       "metalness": 0.03
+      },
+      "rotate": [
+       90,
+       0,
+       0
+      ]
+     }
+    ]
+   },
+   "label": "两侧履带与负重轮",
+   "pattern": {
+    "type": "mirror",
+    "axis": "y",
+    "center": [
+     0,
+     0,
+     0
+    ]
+   },
+   "material": {
+    "name": "不锈钢",
+    "color": "#cfd6dd",
+    "roughness": 0.22,
+    "metalness": 0.96
+   }
+  },
+  {
+   "id": "ft-5849073b-b79f-4c01-8b99-c46152053790",
+   "mode": "add",
+   "shape": {
+    "shape": "roundedBox",
+    "width": 0.5,
+    "depth": 0.72,
+    "height": 0.55,
+    "radius": 0.1,
+    "segments": 32
+   },
+   "label": "炮盾",
+   "translate": [
+    1.2,
+    0,
+    2.3
+   ],
+   "material": {
+    "color": "#6a7047",
+    "roughness": 0.65,
+    "metalness": 0.3,
+    "pattern": "jungle"
+   }
+  },
+  {
+   "id": "ft-24e5d3f7-9f34-4fc7-a4b7-32b4745b4b77",
+   "mode": "add",
+   "shape": {
+    "shape": "tube",
+    "radius": 0.135,
+    "thickness": 0.055,
+    "height": 0.3,
+    "segments": 24
+   },
+   "label": "炮口加固套",
+   "translate": [
+    4.96,
+    0,
+    2.3
+   ],
+   "rotate": [
+    0,
+    90,
+    0
+   ],
+   "material": {
+    "name": "不锈钢",
+    "color": "#cfd6dd",
+    "roughness": 0.22,
+    "metalness": 0.96
+   }
+  },
+  {
+   "id": "ft-fb97e635-f1b6-49cd-8b8b-6ecfec2c5ba9",
+   "mode": "add",
+   "shape": {
+    "shape": "cylinder",
+    "radius": 0.37,
+    "height": 0.12,
+    "segments": 24
+   },
+   "label": "车长舱盖",
+   "translate": [
+    -0.48,
+    0.15,
+    2.79
+   ],
+   "fillet": {
+    "radius": 0.015,
+    "segments": 24
+   },
+   "material": {
+    "color": "#746744",
+    "roughness": 0.65,
+    "metalness": 0.2,
+    "pattern": "jungle"
+   }
+  },
+  {
+   "id": "ft-b6430d01-464a-442e-98b8-e0852e54d057",
+   "mode": "add",
+   "shape": {
+    "shape": "roundedBox",
+    "width": 0.28,
+    "depth": 0.4,
+    "height": 0.12,
+    "radius": 0.035,
+    "segments": 32
+   },
+   "label": "观察镜底座",
+   "translate": [
+    0.35,
+    0,
+    2.77
+   ],
+   "material": {
+    "name": "深灰塑料",
+    "color": "#30343a",
+    "roughness": 0.5,
+    "metalness": 0.03
+   }
+  },
+  {
+   "id": "ft-13aa9ff5-d589-411b-98fa-193e476053f6",
+   "mode": "add",
+   "shape": {
+    "shape": "roundedBox",
+    "width": 0.018,
+    "depth": 0.29,
+    "height": 0.065,
+    "radius": 0.005,
+    "segments": 32
+   },
+   "label": "观察镜玻璃",
+   "translate": [
+    0.498,
+    0,
+    2.79
+   ],
+   "material": {
+    "name": "玻璃",
+    "color": "#cfe2ef",
+    "roughness": 0.06,
+    "metalness": 0.05,
+    "opacity": 32
+   }
+  },
+  {
+   "id": "ft-591df7ce-41c7-4ba2-93a6-5e12f6888847",
+   "mode": "add",
+   "shape": {
+    "shape": "roundedBox",
+    "width": 1.15,
+    "depth": 1.6,
+    "height": 0.07,
+    "radius": 0.06,
+    "segments": 32
+   },
+   "label": "后部发动机盖",
+   "translate": [
+    -2,
+    0,
+    1.82
+   ],
+   "material": {
+    "color": "#514732",
+    "roughness": 0.75,
+    "metalness": 0.15,
+    "pattern": "jungle"
+   }
+  },
+  {
+   "id": "ft-df92fc91-5a4d-4536-8ba7-20506e8f7e4f",
+   "mode": "cut",
+   "shape": {
+    "shape": "box",
+    "width": 0.065,
+    "depth": 1.28,
+    "height": 0.05
+   },
+   "label": "发动机盖散热槽",
+   "translate": [
+    -2.45,
+    0,
+    1.85
+   ],
+   "pattern": {
+    "type": "linear",
+    "count": 10,
+    "step": [
+     0.1,
+     0,
+     0
+    ]
+   },
+   "material": {
+    "name": "深灰塑料",
+    "color": "#30343a",
+    "roughness": 0.5,
+    "metalness": 0.03
+   }
+  }
+ ]
+}

@@ -6,6 +6,9 @@ export declare const SOLID_MATERIAL_PRESETS: Record<string, SolidMaterial>;
 /** 全部预设名 */
 export declare const SOLID_MATERIAL_KEYS: string[];
 
+/** 内置程序化图案（迷彩）配色 */
+export declare const SOLID_PATTERNS: Record<string, { scale: number; colors: string[] }>;
+
 /** 缺省 PBR 参数 */
 export declare const SOLID_MATERIAL_DEFAULTS: { roughness: number; metalness: number; opacity: number };
 

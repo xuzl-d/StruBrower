@@ -158,6 +158,8 @@ export interface YdbStats {
   skewedSlabs?: number;
   /** 其中夹层/错层板数量（顶点落在带 HDiff 的节点上、按层底绝对高差定位），可选展示字段 */
   mezzanineSlabs?: number;
+  /** 全房间洞数量（RoomIsHole=1 或 Thickness=0，已跳过不生成楼板），可选展示字段 */
+  roomHoles?: number;
   subBeams: number;
 }
 
@@ -486,7 +488,7 @@ function parseDatabase(db: Database, name: string, notices: string[]): YdbImport
   };
 
   const elements: YdbImportResult['patch']['elements'] = [];
-  const count: YdbStats = { levels: naturalFloors.length, grids: grids.length, columns: 0, beams: 0, arcBeams: 0, walls: 0, arcWalls: 0, braces: 0, slabs: 0, skewedSlabs: 0, mezzanineSlabs: 0, subBeams: 0 };
+  const count: YdbStats = { levels: naturalFloors.length, grids: grids.length, columns: 0, beams: 0, arcBeams: 0, walls: 0, arcWalls: 0, braces: 0, slabs: 0, skewedSlabs: 0, mezzanineSlabs: 0, roomHoles: 0, subBeams: 0 };
 
   const stamp = (category: 'wall' | 'column' | 'beam' | 'brace' | 'slab') => ({
     layerId: layerIdForCategory(category), visible: true,
@@ -640,9 +642,20 @@ function parseDatabase(db: Database, name: string, notices: string[]): YdbImport
   // 降板为负值（如 -50 / -150）。板底绝对标高 = 层底 + 层高 + VertexZ − 板厚。
   // 标准层被多自然层复用时，同一板布置在每个自然层各生成一份。
   let fallbackSlabCount = 0;
-  for (const row of query(db, 'SELECT ID, StdFlrID, VertexX, VertexY, VertexZ, Thickness, cc, GridsID FROM tblSlab')) {
+  let roomHoleCount = 0;
+  for (const row of query(db, 'SELECT ID, StdFlrID, VertexX, VertexY, VertexZ, Thickness, cc, GridsID, RoomIsHole FROM tblSlab')) {
     const floors = floorsByStd.get(intOf(row.StdFlrID));
     if (!floors) continue;
+    // 全房间洞：RoomIsHole=1 或 Thickness=0 表示该房间整块挖空、不生成楼板。
+    // 依据 yjks-model：slab 路径 `if (slabThickness == 0) continue;`；ND 路径 `IsHole() -> nThick=0`，
+    // 全房间洞仅作为洞口标记（CATEGORY_TAG_ST_ROOM_HOLE），不是实体楼板。旧代码把 0 厚当未指定回退，
+    // 导致洞区仍被画成楼板。必须在回退判定之前剔除。
+    const rawThicknessMm = num(row.Thickness);
+    const isRoomHole = intOf(row.RoomIsHole) === 1 || rawThicknessMm === 0;
+    if (isRoomHole) {
+      roomHoleCount += floors.length;
+      continue;
+    }
     const xs = numberList(row.VertexX);
     const ys = numberList(row.VertexY);
     const zs = numberList(row.VertexZ);
@@ -652,11 +665,10 @@ function parseDatabase(db: Database, name: string, notices: string[]): YdbImport
     // 若末点为 (0,0) 且前面仍有 ≥3 点，剔除它，否则会在轮廓中心多出一个错误尖角。
     if (n >= 4 && xs[n - 1] === 0 && ys[n - 1] === 0) n -= 1;
     if (n < 3) continue;
-    // YJK 用 Thickness=9999（及 0）表示「板厚未单独指定」，必须回退到标准层默认板厚，
-    // 不能当成真实的 9.999m 厚板（否则会生成悬空的巨厚竖板）。
-    const rawThicknessMm = num(row.Thickness);
+    // YJK 用 Thickness=9999 表示「板厚未单独指定」，必须回退到标准层默认板厚，
+    // 不能当成真实的 9.999m 厚板（否则会生成悬空的巨厚竖板）。Thickness=0 已在上面作为全房间洞剔除。
     let t = rawThicknessMm * MM;
-    const needsFallback = rawThicknessMm === 9999 || rawThicknessMm <= 0 || rawThicknessMm > 1000;
+    const needsFallback = rawThicknessMm === 9999 || rawThicknessMm < 0 || rawThicknessMm > 1000;
     if (needsFallback) {
       t = stdDefaultSlabThickness.get(intOf(row.StdFlrID)) ?? fallbackSlabThickness;
       fallbackSlabCount += 1;
@@ -719,8 +731,12 @@ function parseDatabase(db: Database, name: string, notices: string[]): YdbImport
       if (skewed) count.skewedSlabs = (count.skewedSlabs ?? 0) + 1;
     }
   }
+  count.roomHoles = roomHoleCount;
   if (fallbackSlabCount > 0) {
-    notices.push(`${fallbackSlabCount} 块楼板的厚度在 ydb 中标记为未指定（9999/0），已按该标准层的默认板厚处理。`);
+    notices.push(`${fallbackSlabCount} 块楼板的厚度在 ydb 中标记为未指定（9999），已按该标准层的默认板厚处理。`);
+  }
+  if (roomHoleCount > 0) {
+    notices.push(`${roomHoleCount} 处全房间洞（RoomIsHole / 0 厚板）已按洞处理，不再生成楼板。`);
   }
 
   // 材质去重（项目已有内置材质时按 id 覆盖，这里只带回实际用到的）

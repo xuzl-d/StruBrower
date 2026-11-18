@@ -34,13 +34,14 @@ import vase from './models/vase.json' with { type: 'json' };
 import pipe from './models/pipe.json' with { type: 'json' };
 import bracket from './models/bracket.json' with { type: 'json' };
 import crawlerCrane from './models/crawler-crane.json' with { type: 'json' };
+import tankTracked from './models/tank-tracked.json' with { type: 'json' };
 import { evaluateFormula } from './formula.js';
 import { writeDimension } from './dimensions.js';
 
 const clamp = (value, min, max) => Math.min(Math.max(Number.isFinite(value) ? value : min, min), max);
 
 /** 库里的顺序 = 界面上的顺序（先建筑/复杂件，再零件） */
-const RAW_DOCUMENTS = [pavilionHex, pavilionOct, aircraftA350, crawlerCrane, quadcopter, screwdriver, gear, vase, pipe, bracket];
+const RAW_DOCUMENTS = [pavilionHex, pavilionOct, aircraftA350, crawlerCrane, tankTracked, quadcopter, screwdriver, gear, vase, pipe, bracket];
 
 function deepFreeze(value) {
   if (!value || typeof value !== 'object' || Object.isFrozen(value)) return value;

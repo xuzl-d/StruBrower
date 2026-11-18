@@ -49,14 +49,14 @@ function repairPrompt(problem) {
  * @param {(event: object) => void} [options.onEvent] 阶段事件（SSE 用）
  */
 export async function planWithRepair({ run, message, context, history = [], memory = '', images = [], document, onEvent }) {
-  const first = await run({ message, context, history, memory, images });
+  const first = await run({ message, context, history, memory, images, document });
   let problem = dryRun(document, first?.ops);
   if (!problem) return { result: first, repaired: 0 };
 
   for (let attempt = 1; attempt <= MAX_REPAIR; attempt += 1) {
     onEvent?.({ type: 'status', text: `参数没通过校验（${problem}），正在自动修正…` });
     try {
-      const fixed = await run({ message: `${message}\n\n${repairPrompt(problem)}`, context, history, memory });
+      const fixed = await run({ message: `${message}\n\n${repairPrompt(problem)}`, context, history, memory, document });
       // 修正轮把指令删空（改成只回文字）等于推翻重来，保留第一轮更有价值
       if (!Array.isArray(fixed?.ops) || !fixed.ops.length) break;
       const stillBad = dryRun(document, fixed.ops);

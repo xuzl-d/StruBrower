@@ -222,8 +222,11 @@ button { color: inherit; }
   padding: 0 14px;
   color: #b9c5d5;
   font-size: calc(15px * var(--ui-font-scale, 1));
+  cursor: pointer;
+  user-select: none;
 }
-.tree-section-title > span { color: #7f8ea3; }
+.tree-section-title:hover { color: #dce7f5; }
+.tree-caret { display: inline-block; width: 12px; color: #7f8ea3; font-size: calc(15px * var(--ui-font-scale, 1)); text-align: center; }
 .tree-section-title em { display: grid; min-width: 18px; height: 17px; place-items: center; margin-left: auto; border-radius: 8px; background: #263449; color: #a4b4c9; font-size: calc(13.5px * var(--ui-font-scale, 1)); font-style: normal; }
 .element-list { min-height: 0; flex: 1; overflow: auto; padding: 0 7px; }
 .tree-row { min-height: 34px; gap: 2px; padding: 0 4px 0 0; border: 1px solid transparent; border-radius: 4px; }
@@ -267,6 +270,12 @@ button { color: inherit; }
 .zoom-all-button:hover { border-color: #52749d; background: #223249; color: #e2ecf8; }
 .viewport-host { position: relative; min-height: 0; flex: 1; cursor: crosshair; }
 .viewport-host canvas { display: block; width: 100%; height: 100%; }
+/* 项目异步加载完成前不挂载视口，避免出现「示例模型 → 用户模型」的闪切 */
+.viewport-loading { display: flex; align-items: center; justify-content: center; cursor: default; }
+.viewport-loading-card { display: flex; flex-direction: column; align-items: center; gap: 10px; color: #7d90a8; font-size: calc(12.5px * var(--ui-font-scale, 1)); }
+.viewport-loading-card strong { color: #c4d3e6; font-size: calc(14px * var(--ui-font-scale, 1)); font-weight: 600; }
+.viewport-loading-spinner { width: 26px; height: 26px; border: 2px solid #2b3a4e; border-top-color: #6aa5e8; border-radius: 50%; animation: viewport-spin .8s linear infinite; }
+@keyframes viewport-spin { to { transform: rotate(360deg); } }
 .axis-indicator {
   position: absolute;
   z-index: 1;
@@ -552,9 +561,28 @@ button { color: inherit; }
   font-size: calc(12px * var(--ui-font-scale, 1));
   letter-spacing: .6px;
   text-transform: uppercase;
+  cursor: pointer;
+  user-select: none;
 }
+.category-heading:hover { color: #c3d2e6; }
 .category-heading span { color: #7fa8df; font-size: calc(15px * var(--ui-font-scale, 1)); }
 .category-heading em { margin-left: auto; color: #6e7f95; font-size: calc(12px * var(--ui-font-scale, 1)); font-style: normal; }
+
+.browser-context-menu {
+  position: fixed;
+  z-index: 400;
+  min-width: 150px;
+  padding: 4px;
+  border: 1px solid #3a4a60;
+  border-radius: 6px;
+  background: #1b2735;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .45);
+}
+.context-menu-target { padding: 5px 9px 6px; border-bottom: 1px solid #2b3a4d; margin-bottom: 3px; color: #8ea0b7; font-size: calc(12px * var(--ui-font-scale, 1)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.context-menu-item { display: block; width: 100%; padding: 7px 9px; border: 0; border-radius: 4px; background: transparent; color: #d4deeb; font-size: calc(13.5px * var(--ui-font-scale, 1)); text-align: left; cursor: pointer; }
+.context-menu-item:hover { background: #26364a; }
+.context-menu-item.danger { color: #ef9a9a; }
+.context-menu-item.danger:hover { background: #48262a; color: #ffc2c2; }
 
 .element-symbol.wall { color: #9dc3f5; }
 .element-symbol.column { color: #c2b2ff; }

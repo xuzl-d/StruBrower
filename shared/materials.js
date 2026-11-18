@@ -24,9 +24,18 @@ export const SOLID_MATERIAL_PRESETS = {
   paintOrange: { name: '橙色烤漆', color: '#e2622a', roughness: 0.35, metalness: 0.05 },
   ceramic: { name: '陶瓷', color: '#f3f1ec', roughness: 0.18, metalness: 0.02 },
   wood: { name: '木材', color: '#a9793f', roughness: 0.7, metalness: 0 },
+  // 程序化迷彩：pattern 按表面三维坐标生成斑块，不依赖 UV，斜面上也不会翘起。
+  camoJungle: { name: '丛林迷彩', color: '#4d5a36', roughness: 0.85, metalness: 0.04, pattern: 'jungle' },
+  camoDesert: { name: '沙漠迷彩', color: '#a18e5d', roughness: 0.85, metalness: 0.04, pattern: 'desert' },
 };
 
 export const SOLID_MATERIAL_KEYS = Object.keys(SOLID_MATERIAL_PRESETS);
+
+/** 内置迷彩配色（底色 + 斑块色），渲染端按表面坐标分层取样 */
+export const SOLID_PATTERNS = {
+  jungle: { scale: 1.7, colors: ['#4d5a36', '#6b6f45', '#a18e5d', '#3c3528'] },
+  desert: { scale: 1.7, colors: ['#a18e5d', '#c2ad7d', '#8a7650', '#5c5038'] },
+};
 
 /** 默认材质参数（特征没写材质时，跟随构件材质，不用这些值） */
 export const SOLID_MATERIAL_DEFAULTS = { roughness: 0.62, metalness: 0.04, opacity: 100 };
@@ -103,6 +112,29 @@ export function resolveSolidMaterial(spec) {
     }
   }
 
+  if (source.pattern !== undefined) {
+    if (typeof source.pattern === 'string') {
+      if (!SOLID_PATTERNS[source.pattern]) {
+        errors.push(`material.pattern 不支持「${source.pattern}」，可用：${Object.keys(SOLID_PATTERNS).join(', ')}`);
+      } else {
+        material.pattern = source.pattern;
+      }
+    } else if (source.pattern && typeof source.pattern === 'object' && !Array.isArray(source.pattern)) {
+      const colors = source.pattern.colors;
+      if (!Array.isArray(colors) || colors.length < 2 || colors.some((c) => !normalizeHexColor(c))) {
+        errors.push('material.pattern.colors 至少需要 2 个 #rrggbb 颜色');
+      } else {
+        const scale = source.pattern.scale;
+        material.pattern = {
+          colors: colors.map((c) => normalizeHexColor(c)),
+          ...(typeof scale === 'number' && Number.isFinite(scale) && scale > 0 ? { scale } : {}),
+        };
+      }
+    } else {
+      errors.push('material.pattern 必须是图案名或 { colors: string[], scale?: number }');
+    }
+  }
+
   // 只有 opacity 没有颜色也能用：透明是独立效果
   if (!Object.keys(material).length && !errors.length) {
     return { material: null, errors };
@@ -114,10 +146,12 @@ export function resolveSolidMaterial(spec) {
 export function solidMaterialKey(material) {
   if (!material) return '';
   const order = ['name', 'color', 'roughness', 'metalness', 'opacity'];
-  return order
+  const parts = order
     .filter((key) => material[key] !== undefined)
-    .map((key) => `${key}:${material[key]}`)
-    .join('|');
+    .map((key) => `${key}:${material[key]}`);
+  // pattern 可能是对象，单独稳定序列化，保证不同色板不会合并到同一材质槽
+  if (material.pattern !== undefined) parts.push(`pattern:${JSON.stringify(material.pattern)}`);
+  return parts.join('|');
 }
 
 /** 界面显示名：有名字用名字，没名字退回色值 */

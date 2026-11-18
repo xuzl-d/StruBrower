@@ -9,6 +9,14 @@ import { describeImages, resolveVision } from './vision.js';
 import { normalizeInspect } from './inspect.js';
 import { normalizeMeasure } from './measure.js';
 import {
+  toolDefinitions,
+  toolPromptText,
+  runServerTool,
+  getTool,
+  SERVER_SIDE,
+} from './tools.js';
+import { formatKnowledge } from './knowledge.js';
+import {
   clipToTokens,
   estimateTokens,
   fitHistory,
@@ -55,53 +63,15 @@ export function resolveAiConfig(env = process.env) {
   };
 }
 
-const TOOL = {
-  type: 'function',
-  function: {
-    name: 'apply_bim_ops',
-    description: '提交对当前 BIM 项目的建模指令：建筑构件（墙/柱/板）与任意造型实体（特征树），单位米，Z-up',
-    parameters: {
-      type: 'object',
-      properties: {
-        reply: { type: 'string', description: '给用户的简短中文说明；信息不足时在这里提问' },
-        ops: {
-          type: 'array',
-          description: '建模指令列表：这一轮要执行的修改，前端会立刻应用到模型（不需要用户确认）。'
-            + '不需要修改模型时返回空数组',
-          items: { type: 'object', additionalProperties: true },
-        },
-        inspect: {
-          type: 'array',
-          description: '想看的视角（最多 4 个）。前端会先把这一轮的 ops 应用到模型，再真的把三维视图转到这些角度、'
-            + '截图、把图发回给你，让你自己判断改得对不对。可以和 ops 同轮出现。'
-            + '元素写法：{ "view": "front" | "back" | "left" | "right" | "top" | "bottom" | "iso" } '
-            + '或 { "azimuth": 45, "elevation": 20 }（度）。'
-            + '要看细节时再加两个可选字段：focus = 构件名或 id（只框住那个件），'
-            + 'zoom = 取景倍数（1 整机框满，2 推进一倍，0.4~4）。'
-            + '例如 { "view": "right", "focus": "夹头", "zoom": 2.5 } 就是凑到夹头右侧特写。'
-            + '也允许 zoom 小于 1 退远看整体比例。',
-          items: { type: 'object', additionalProperties: true },
-        },
-        measure: {
-          type: 'array',
-          description: '几何测量请求（最多 6 条），前端先应用这一轮的 ops，再对当前特征树求值并把结果文字发回给你。可与 ops、inspect 同轮出现。'
-            + '坐标是造型构件的局部坐标（米，与特征 translate 同一坐标系）。三种写法：'
-            + '{ "type": "surface", "feature": "车身", "axis": "z", "at": [x, y] } 沿轴向穿过一点，返回与该特征表面的交点（axis=x 时 at=[y,z]，axis=y 时 at=[x,z]；feature 省略表示整个构件含布尔结果）；'
-            + '{ "type": "bounds", "feature": "车身" } 返回包围盒；'
-            + '{ "type": "gap", "a": "后视镜", "b": "车身" } 返回两个特征之间的最近距离和穿插估计。'
-            + 'target 可指定构件名或 id，只有一个造型构件时可省略。feature、a、b 可用特征名、id 或从 1 起的序号。',
-          items: { type: 'object', additionalProperties: true },
-        },
-        done: {
-          type: 'boolean',
-          description: '你认为已经满足用户需求、不需要再改也不用再看图时设 true。'
-            + '设 true 时 ops、inspect、measure 都要留空；第一次生成后不要立刻设 true，先看一组视角再判断。',
-        },
-      },
-      required: ['reply', 'ops'],
-    },
-  },
-};
+/**
+ * 工具清单由注册表生成（server/ai/tools.js）：加一个工具只改注册表，不用改这里。
+ * MODEL_CATALOG 也从 shared/models/*.json 生成——两者共同实现「加数据/加工具不改提示词代码」。
+ */
+const TOOLS = toolDefinitions();
+/** 兼容旧引用（测试 / 外部脚本可能 import TOOL） */
+const TOOL = TOOLS.find((tool) => tool.function.name === 'apply_bim_ops') ?? TOOLS[0];
+
+const TOOL_PROMPT_TEXT = toolPromptText();
 
 /**
  * 模型库清单：提示词里那份「可用模型」直接由 shared/models/*.json 生成。
@@ -114,7 +84,16 @@ const MODEL_CATALOG = LIBRARY_MODELS.map((entry) => {
   return `  · ${entry.id}（${entry.name}）：${entry.summary}${params}`;
 }).join('\n');
 
-const SYSTEM_PROMPT = `你是 StruBrowser 的建模助手（BIM + 参数化造型）。用户用自然语言描述需求，你只能通过 apply_bim_ops 工具返回结构化指令，不要输出其它格式，也不要输出代码。
+const SYSTEM_PROMPT = `你是 StruBrowser 的建模助手（BIM + 参数化造型）。用户用自然语言描述需求，你通过下面登记的工具完成，不要输出其它格式，也不要输出代码。
+
+【怎么工作：自己决定下一步】
+你不是一次性给答案，而是在一个循环里工作：每一步可以**同时调用多个工具**，工具结果会回传给你，你再决定下一步。
+${TOOL_PROMPT_TEXT}
+规则：
+- 不熟悉某个物体、不确定怎么做、或想复用现成案例时，**先单独调用 search_recipes / describe_model 拿到资料**，再根据结果用 apply_bim_ops 建模——不要凭印象硬拼特征树。
+- apply_bim_ops 落地后，用 inspect 截图自己看、用 measure 量位置，依据看到的再改，直到满足需求，最后调 finish。
+- inspect / measure 会自动等同一轮的 apply_bim_ops 先落地再执行，所以「改 + 看」可以放在同一步。
+- search_recipes / describe_model / inspect_tree 是只读查询，不改动模型、不产生新版本，随时可查。
 
 单位：米；坐标系：Z-up；平面点是 [x, y]。
 
@@ -390,55 +369,132 @@ pattern = { type:'linear', count, step:[dx,dy,dz] } / { type:'circular', count, 
 0. 每条指令都必须带 op 字段，值就是上面列出的指令名（例如 { "op": "addSolid", "features": [...] }）；不要写成 action / type / kind。
 1. 优先使用上下文中已有的标高名与类型名；只有确实需要时才 addLevel。
 2. 默认墙/柱高度到上一层标高；没有上一层时用 height: 3。
-3. 不要发明不存在的构件名称；修改/删除前先在上下文中确认目标（elements 里带 solid 的条目列出了该造型每个特征的序号、id、形状与材质）。
-4. 需求含糊时，reply 里提一个简短的问题，ops 返回空数组。但如果消息里带着【服务端校验反馈】（说明你的上一条指令被拒绝），不要反问、不要只解释——直接按提示把字段改到范围内，重新输出完整指令。
-5. 坐标要合理：建筑构件之间避免不必要的重叠；造型零件按真实连接和间隙布置，不要把相邻零件整个吞掉。
-6. 不要编造单位换算：用户没说单位时按米理解，明显是毫米级的小零件（螺丝、手机壳）按常识折算成米。
-7. 指令会在服务端 dry-run 校验：报错信息里会指出「哪个特征的哪个字段、允许范围是多少、为什么」，照着改就是。`;
+3. 不要发明不存在的构件名称。上下文 JSON 的 \`selected\` 字段就是**当前选中的构件**，已附带它的完整特征树（features 的序号、id、名称、形状、尺寸、变换与材质）；用户说「选中的 / 这个 / 当前构件 / 我刚选的」时直接读 \`selected\` 来改，**不要再要求用户提供特征列表、打开特征树，也不要说「特征树没有在上下文中展开」**——它就是提供给你的特征列表。需要改别的构件时再用 \`elements[].solid\`（带 solid 的条目列出了该造型每个特征的序号、id、形状与材质）寻址。
+4. **绝不要说「selected 为空 / 没有选中的构件 / 特征被截断 / elements 被截断，所以无法处理」这类话**。上下文里的 \`elements\` 已经列出项目里的造型构件及其完整特征树，\`selected\` 为空只表示用户这次没点选，不代表没有特征树：用户点名构件（如「坦克履带」）时直接按名字在 \`elements\` 里找到它并开改。只有当 \`elements\` 里确实找不到对应构件、或用户描述的关键特征在 featureCount 范围内但 features 列表里没有时，才可以反问用户。
+5. 需求含糊时，reply 里提一个简短的问题，ops 返回空数组。但如果消息里带着【服务端校验反馈】（说明你的上一条指令被拒绝），不要反问、不要只解释——直接按提示把字段改到范围内，重新输出完整指令。
+6. 坐标要合理：建筑构件之间避免不必要的重叠；造型零件按真实连接和间隙布置，不要把相邻零件整个吞掉。
+7. 不要编造单位换算：用户没说单位时按米理解，明显是毫米级的小零件（螺丝、手机壳）按常识折算成米。
+8. 指令会在服务端 dry-run 校验：报错信息里会指出「哪个特征的哪个字段、允许范围是多少、为什么」，照着改就是。`;
 
-function parseToolArguments(message) {
-  const call = message?.tool_calls?.[0];
-  if (call?.function?.arguments) {
+/**
+ * 把模型这一轮的输出解析成「工具调用列表」。
+ * 支持三种形态：
+ * 1. 标准 function calling：一次给多个 tool_calls，按 function.name 分发到注册表；
+ * 2. 老格式单工具：apply_bim_ops 里塞了 ops/inspect/measure/done → 拆成对应工具；
+ * 3. 纯 JSON 兜底：content 里的 JSON 带 tool_calls 数组，或干脆是老格式。
+ * 返回的结构同时保留扁平字段（reply/ops/inspect/measure/done）兼容调用方，
+ * 并新增 calls[] 作为「模型自主选择的工具链」真相源。
+ */
+export function parseToolArguments(message) {
+  const rawCalls = Array.isArray(message?.tool_calls) ? message.tool_calls : [];
+  const calls = [];
+
+  const pushCall = (name, args, id) => {
+    const tool = getTool(name);
+    if (!tool) return;
+    const call = { id: id || `${name}-${calls.length}`, name, args: args ?? {}, side: tool.side, title: tool.title };
+    // 按工具类型归一化参数：视角/测量沿用原有 normalize，保证与前端约定一致
+    if (name === 'inspect') call.args = { views: normalizeInspect(args?.views) };
+    if (name === 'measure') call.args = { requests: normalizeMeasure(args?.requests) };
+    calls.push(call);
+  };
+
+  for (const raw of rawCalls) {
+    const name = raw?.function?.name;
+    if (!getTool(name)) continue;
+    let args = {};
     try {
-      const parsed = JSON.parse(call.function.arguments);
-      return {
+      args = typeof raw.function.arguments === 'string' ? JSON.parse(raw.function.arguments || '{}') : (raw.function.arguments ?? {});
+    } catch {
+      args = {};
+    }
+    pushCall(name, args, raw.id);
+  }
+
+  // content 里的 JSON（纯 JSON 兜底 / thinking 模型）：支持 tool_calls 数组与老格式
+  let contentReply = '';
+  if (!calls.length && typeof message?.content === 'string' && message.content.trim()) {
+    let parsed = null;
+    const match = message.content.match(/\{[\s\S]*\}/);
+    if (match) {
+      try { parsed = JSON.parse(match[0]); } catch { /* 纯文本 */ }
+    }
+    if (parsed?.tool_calls) {
+      for (const call of parsed.tool_calls) pushCall(call?.name ?? call?.tool, call?.arguments ?? call?.args);
+    } else if (parsed) {
+      // 老格式：一个 apply_bim_ops 带全部字段，或干脆没有工具名
+      const flat = {
         reply: typeof parsed.reply === 'string' ? parsed.reply : '',
         ops: Array.isArray(parsed.ops) ? parsed.ops : [],
         inspect: normalizeInspect(parsed.inspect),
         measure: normalizeMeasure(parsed.measure),
         done: parsed.done === true,
       };
-    } catch {
-      return null;
+      pushCall('apply_bim_ops', flat);
+    } else {
+      contentReply = message.content;
     }
   }
-  if (typeof message?.content === 'string' && message.content.trim()) {
-    const match = message.content.match(/\{[\s\S]*\}/);
-    if (match) {
-      try {
-        const parsed = JSON.parse(match[0]);
-        return {
-          reply: typeof parsed.reply === 'string' ? parsed.reply : '',
-          ops: Array.isArray(parsed.ops) ? parsed.ops : [],
-          inspect: normalizeInspect(parsed.inspect),
-          measure: normalizeMeasure(parsed.measure),
-          done: parsed.done === true,
-        };
-      } catch {
-        // 忽略
-      }
+
+  if (!calls.length && !contentReply) return null;
+
+  // 扁平视图：从工具链里汇总出旧调用方要的字段（ops/inspect/measure/done/reply）
+  const replyParts = [];
+  const ops = [];
+  const inspect = [];
+  const measure = [];
+  let done = false;
+  for (const call of calls) {
+    if (call.name === 'apply_bim_ops') {
+      if (call.args?.reply) replyParts.push(String(call.args.reply));
+      if (Array.isArray(call.args?.ops)) ops.push(...call.args.ops);
+      if (call.args?.done === true) done = true;
+      // 老格式：apply_bim_ops 里塞了 inspect / measure / done，折算回扁平视图以兼容调用方
+      if (Array.isArray(call.args?.inspect)) inspect.push(...normalizeInspect(call.args.inspect));
+      if (Array.isArray(call.args?.measure)) measure.push(...normalizeMeasure(call.args.measure));
+    } else if (call.name === 'inspect' && Array.isArray(call.args?.views)) {
+      inspect.push(...call.args.views);
+    } else if (call.name === 'measure' && Array.isArray(call.args?.requests)) {
+      measure.push(...call.args.requests);
+    } else if (call.name === 'finish') {
+      done = true;
+      if (call.args?.note) replyParts.push(String(call.args.note));
     }
-    return { reply: message.content, ops: [], inspect: [], measure: [], done: false };
   }
-  return null;
+  const reply = replyParts.join('\n') || contentReply;
+  return { reply, ops, inspect, measure, done, calls };
+}
+
+/**
+ * 执行工具链里的服务端只读工具，把结果写回 call.result，并返回可回灌给模型的文字。
+ * 前端工具（inspect/measure/apply_bim_ops/finish）不在这里执行——它们需要 WebGL 视口和浏览器里的文档。
+ */
+async function executeServerCalls(calls, env) {
+  if (!calls?.length) return '';
+  const blocks = [];
+  for (const call of calls) {
+    if (call.side !== SERVER_SIDE) continue;
+    const result = await runServerTool(call.name, call.args, env);
+    if (!result) continue;
+    call.result = result.text;
+    call.ok = result.ok;
+    blocks.push(`【工具 ${call.name} 的结果】\n${result.text}`);
+  }
+  return blocks.length
+    ? `${blocks.join('\n\n')}\n\n请基于以上工具结果决定下一步：可以调用 apply_bim_ops 落地修改、继续用只读工具查证，或调用 finish 收工。不要重复调用刚才已经查过的只读工具。`
+    : '';
 }
 
 /** 纯 JSON 兜底提示：thinking 模式或部分模型不接受 tools / tool_choice 时改用 */
-const JSON_ONLY_PROMPT = `本次不再使用工具调用。请只输出一个 JSON 对象，不要输出 Markdown 代码块或任何解释文字：
-{"reply": "给用户的简短中文说明；信息不足时在这里提问", "ops": [ ... 建模指令 ... ], "inspect": [ ... 想看的视角 ... ], "measure": [ ... 几何测量请求 ... ], "done": false}
-不需要修改模型时 ops 返回空数组；指令格式与规则同前面的说明。
-想看模型就把 inspect 写成 [{ "view": "front" }, { "view": "right" }, { "view": "iso" }]（最多 4 个），
-可以和 ops 同轮出现（先应用修改再截图）。需要几何测量时写 measure，格式同前面的说明。确认已满足需求时 done 为 true、ops、inspect、measure 都留空。`;
+const JSON_ONLY_PROMPT = `本次不再使用 function calling。请只输出一个 JSON 对象，不要输出 Markdown 代码块或任何解释文字。
+按你想做的事输出工具调用数组（可多个、可组合）：
+{"reply":"给用户的简短中文说明","tool_calls":[{"name":"工具名","arguments":{...}}, ...]}
+可用工具与参数（name(参数): 说明）：
+${TOOL_PROMPT_TEXT.split('\n').slice(1).join('\n')}
+例：先查再做 → {"reply":"我先查一下履带做法","tool_calls":[{"name":"search_recipes","arguments":{"query":"坦克履带"}}]}
+例：查完直接建 → {"reply":"查到了，用现成履带吊改","tool_calls":[{"name":"apply_bim_ops","arguments":{"reply":"...","ops":[{"op":"addSolid","library":"crawler-crane"}],"done":false}},{"name":"inspect","arguments":{"views":[{"view":"iso"}]}}]}
+需要修改就用 apply_bim_ops（ops 里每条带 op 字段）；想看模型用 inspect（views）；想量尺寸用 measure（requests）；完成用 finish。
+只读工具（search_recipes / describe_model / inspect_tree）的结果会回传给你，你再决定下一步，不要在 reply 里空等。`;
 
 /** 判断 400 是否属于「不支持工具调用 / 强制 tool_choice」这一类可降级错误 */
 const TOOL_REJECT_PATTERN = /tool_choice|tool choice|thinking mode|thinking 模式|does not support (this )?tool|tools? (is |are )?not supported|unsupported.*tools?/i;
@@ -801,10 +857,13 @@ async function streamCompletion(config, payload, onEvent = null, options = {}) {
  */
 export function buildPrompt({ message, context, history, images = [], memory = '', model, contextTokens }) {
   const memoryText = String(memory ?? '').trim();
+  // 首轮按需求检索一次知识并注入（后续自检轮由模型自己调 search_recipes，避免每轮重复占预算）
+  const knowledgeText = formatKnowledge(message, { recipeLimit: 1, modelLimit: 2, maxChars: 1400 });
   const budget = planBudget({
     model,
     contextTokens,
-    systemTokens: estimateTokens(SYSTEM_PROMPT) + estimateTokens(JSON_ONLY_PROMPT),
+    systemTokens: estimateTokens(SYSTEM_PROMPT) + estimateTokens(JSON_ONLY_PROMPT)
+      + estimateTokens(knowledgeText) + estimateTokens(TOOL_PROMPT_TEXT),
     messageTokens: estimateTokens(message),
     imageCount: images.length,
   });
@@ -832,6 +891,9 @@ export function buildPrompt({ message, context, history, images = [], memory = '
       role: 'system',
       content: `当前项目上下文（JSON）：\n${JSON.stringify(project.context)}`,
     },
+    ...(knowledgeText
+      ? [{ role: 'system', content: knowledgeText }]
+      : []),
     // 预算裁掉了摘要之后的一段历史：必须让模型知道「记忆有断档」，否则它会当成没发生过
     ...(fitted.dropped > 0
       ? [{
@@ -947,10 +1009,111 @@ function rejectBlindReply(result, vision) {
   );
 }
 
+/** 服务端只读工具循环上限：防止模型一直查不决策 */
+const MAX_TOOL_TURNS = 4;
+
+/**
+ * 调一次模型并解析成工具调用：优先 function calling，400 时降级为纯 JSON。
+ * invoke(payload) 由调用方提供（非流式 / 流式），这样两条路径共用同一套降级逻辑。
+ */
+async function callAndParse(config, { base, messages, invoke, firstError }) {
+  try {
+    const raw = await invoke({ ...base, messages, tools: TOOLS });
+    const parsed = parseToolArguments(raw);
+    if (parsed) return { raw, parsed, degraded: false };
+  } catch (error) {
+    if (!(error instanceof AiRequestError && error.status === 400)) throw error;
+    if (firstError && !firstError.value) firstError.value = error;
+  }
+  // 兜底：去掉 tools / temperature，追加纯 JSON 指令（工具调用数组）
+  try {
+    const raw = await invoke({
+      model: base.model,
+      messages: [...messages, { role: 'system', content: JSON_ONLY_PROMPT }],
+      ...(config.reasoningEffort ? { reasoning_effort: config.reasoningEffort } : {}),
+    });
+    const parsed = parseToolArguments(raw);
+    if (parsed) return { raw, parsed, degraded: true };
+  } catch (error) {
+    if (error instanceof AiRequestError) {
+      const hint = TOOL_REJECT_PATTERN.test(error.body) || TOOL_REJECT_PATTERN.test(firstError?.value?.body ?? '')
+        ? '（当前模型不支持 function calling 或处于 thinking 模式，可换用 gpt-4o-mini / qwen-plus 等支持工具调用的模型，或在模型设置里关闭 thinking）'
+        : '';
+      throw new Error(`${error.message}${hint}`);
+    }
+    throw error;
+  }
+  return null;
+}
+
+/**
+ * 把服务端工具结果回灌给模型。
+ *
+ * 注意：绝不能用标准 function calling 的 assistant(tool_calls) + role:'tool' 消息——
+ * 部分 OpenAI 兼容网关（把 /chat/completions 翻译成 Responses API 的，如 gpt-6.1-sol）
+ * 在 HTTP 模式下要求 function_call_output 携带 item_reference id，且不支持靠
+ * previous_response_id 续接，一旦回灌 role:'tool' 就报 400：
+ *   "function_call_output requires item_reference ids matching each call_id"
+ * 这里改用一条纯文本 user 消息描述「你上轮调用了什么、结果是什么」，
+ * 消息历史里不出现 tool_calls / role:'tool'，所有兼容网关都能接受。
+ * 模型本来就能从文本里读懂工具结果（纯 JSON 兜底路径一直这么做）。
+ */
+function buildToolFeedback(calls) {
+  const lines = [];
+  for (const call of calls) {
+    const name = call.name ?? call.title ?? '工具';
+    const args = call.args && Object.keys(call.args).length ? ` ${JSON.stringify(call.args)}` : '';
+    const result = call.side === SERVER_SIDE
+      ? String(call.result ?? '')
+      : '（该工具将在前端执行，本轮只记录为待执行）';
+    lines.push(`【工具 ${name}${args} 的返回结果】\n${result}`);
+  }
+  return [{
+    role: 'user',
+    content: '上一轮你请求查询的信息已经查到，结果如下。请据此继续完成用户的任务：\n\n'
+      + lines.join('\n\n'),
+  }];
+}
+
+/**
+ * 服务端工具循环：模型只调只读工具时，执行后把结果回灌，让它接着决策；
+ * 直到它给出副作用工具（apply_bim_ops/inspect/measure/finish）或到达上限，再交回前端。
+ * 混合调用（只读 + 副作用同轮）时：只读工具照常执行，结果写进 notes 随结果返回，
+ * 由前端 agentLoop 回灌，模型下一轮据此继续。
+ */
+export async function runWithToolLoop(config, { base, messages, invoke, emit, env, firstError }) {
+  let working = messages;
+  let toolTurns = 0;
+  let degraded = false;
+  for (;;) {
+    const got = await callAndParse(config, { base, messages: working, invoke, firstError });
+    if (!got) throw new Error('AI 返回内容无法解析为建模指令');
+    degraded ||= got.degraded;
+    const { parsed } = got;
+    const serverCalls = (parsed.calls ?? []).filter((call) => call.side === SERVER_SIDE);
+    const clientCalls = (parsed.calls ?? []).filter((call) => call.side !== SERVER_SIDE);
+
+    if (!serverCalls.length) {
+      return { parsed, degraded, toolTurns };
+    }
+
+    emit?.({ type: 'status', text: `正在执行 ${serverCalls.map((call) => call.title ?? call.name).join('、')}…` });
+    const notes = await executeServerCalls(serverCalls, env);
+    toolTurns += 1;
+
+    // 混合调用：本轮的副作用工具仍要交给前端落地，只读结果放进 notes 由前端下一轮回灌
+    if (clientCalls.length || toolTurns >= MAX_TOOL_TURNS) {
+      return { parsed: { ...parsed, notes }, degraded, toolTurns };
+    }
+    // 纯只读轮：纯文本回灌工具结果，继续让模型决策（不产生 role:tool / tool_calls 历史）
+    working = [...working, ...buildToolFeedback(parsed.calls)];
+  }
+}
+
 function createOpenAiProvider(config) {
   const provider = {
     id: config.provider,
-    async plan({ message, context, history = [], memory = '', images = [] }) {
+    async plan({ message, context, history = [], memory = '', images = [], document = null }) {
       const prepared = await prepareImages(config, message, images);
       const { messages, usage } = buildPrompt({
         message: prepared.message,
@@ -963,49 +1126,21 @@ function createOpenAiProvider(config) {
       });
       const base = { model: config.model, messages, temperature: 0.2, ...(config.reasoningEffort ? { reasoning_effort: config.reasoningEffort } : {}) };
       const vision = prepared.vision;
-
-      // 首选工具调用，但**不强制** tool_choice：thinking 模型（qwen3 / GLM 等）会直接 400
-      // 「Thinking mode does not support this tool_choice」。默认 auto 由模型自行决定。
-      let firstError = null;
-      let needFallback = false;
-      try {
-        const data = await requestCompletion(config, { ...base, tools: [TOOL] });
-        const parsed = parseToolArguments(data?.choices?.[0]?.message);
-        if (parsed) return rejectBlindReply({ ...parsed, model: config.model, vision, context: usage }, vision);
-        needFallback = true;
-      } catch (error) {
-        // 400 一律降级重试一次：OpenAI 兼容实现的差异很大（thinking / tools / temperature 都可能被拒绝），
-        // 401 / 403 / 404 / 429 / 5xx 这类配置或配额问题直接抛出。
-        if (error instanceof AiRequestError && error.status === 400) {
-          firstError = error;
-          needFallback = true;
-        } else {
-          throw error;
-        }
-      }
-
-      if (needFallback) {
-        // 兜底：去掉 tools / temperature，追加「只输出 JSON」指令，解析逻辑不变（仍走 ops 校验）
-        try {
-          const data = await requestCompletion(config, {
-            model: config.model,
-            messages: [...messages, { role: 'system', content: JSON_ONLY_PROMPT }],
-            ...(config.reasoningEffort ? { reasoning_effort: config.reasoningEffort } : {}),
-          });
-          const parsed = parseToolArguments(data?.choices?.[0]?.message);
-          if (parsed) return rejectBlindReply({ ...parsed, model: config.model, degraded: true, vision, context: usage }, vision);
-        } catch (error) {
-          if (error instanceof AiRequestError) {
-            const hint = TOOL_REJECT_PATTERN.test(error.body) || TOOL_REJECT_PATTERN.test(firstError?.body ?? '')
-              ? '（当前模型不支持 function calling 或处于 thinking 模式，可换用 gpt-4o-mini / qwen-plus 等支持工具调用的模型，或在模型设置里关闭 thinking）'
-              : '';
-            throw new Error(`${error.message}${hint}`);
-          }
-          throw error;
-        }
-      }
-
-      throw new Error('AI 返回内容无法解析为建模指令');
+      const firstError = { value: null };
+      // 首选 function calling（tools 来自注册表），400 自动降级纯 JSON；只读工具在服务端即时执行并回灌
+      const { parsed, degraded, toolTurns } = await runWithToolLoop(config, {
+        base,
+        messages,
+        firstError,
+        env: { context, document },
+        invoke: async (payload) => {
+          const data = await requestCompletion(config, payload);
+          return data?.choices?.[0]?.message;
+        },
+      });
+      return rejectBlindReply({
+        ...parsed, model: config.model, vision, context: usage, degraded, toolTurns,
+      }, vision);
     },
 
     /**
@@ -1013,7 +1148,7 @@ function createOpenAiProvider(config) {
      * 返回值与 plan 完全一致（同样经过 ops 校验）。thinking 模型一次要几十秒到几分钟，
      * 有中间过程用户才不会以为卡死。
      */
-    async planStream({ message, context, history = [], memory = '', images = [], onEvent = null, signal = null }) {
+    async planStream({ message, context, history = [], memory = '', images = [], document = null, onEvent = null, signal = null }) {
       const emit = (event) => {
         try {
           onEvent?.(event);
@@ -1035,44 +1170,30 @@ function createOpenAiProvider(config) {
       const vision = prepared.vision;
 
       emit({ type: 'status', text: `已连接 ${config.model}，等待模型响应…` });
-      let firstError = null;
-      let needFallback = false;
+      const firstError = { value: null };
+      const invokeStream = async (payload) => {
+        const data = await streamCompletion(config, payload, emit, { signal });
+        return data?.choices?.[0]?.message;
+      };
       try {
-        const data = await streamCompletion(config, { ...base, tools: [TOOL] }, emit, { signal });
-        const parsed = data ? parseToolArguments(data.choices?.[0]?.message) : null;
-        if (parsed) return rejectBlindReply({ ...parsed, model: config.model, vision, context: usage }, vision);
-        needFallback = true;
+        const { parsed, degraded, toolTurns } = await runWithToolLoop(config, {
+          base, messages, firstError, emit,
+          env: { context, document },
+          invoke: invokeStream,
+        });
+        return rejectBlindReply({
+          ...parsed, model: config.model, vision, context: usage, degraded, toolTurns,
+        }, vision);
       } catch (error) {
-        // 400 与「只有空流」都降级；401/403/429/5xx 直接抛
-        if (error instanceof AiRequestError && error.status === 400) {
-          firstError = error;
-          needFallback = true;
-        } else {
+        if (!(error instanceof AiRequestError && error.status === 400) && !(error instanceof Error && /无法解析为建模指令/.test(error.message))) {
           throw error;
         }
       }
 
-      if (needFallback) {
-        emit({ type: 'status', text: '模型不支持工具调用，改用纯 JSON 输出…' });
-        try {
-          const data = await streamCompletion(config, {
-            model: config.model,
-            messages: [...messages, { role: 'system', content: JSON_ONLY_PROMPT }],
-            ...(config.reasoningEffort ? { reasoning_effort: config.reasoningEffort } : {}),
-          }, emit, { signal });
-          const parsed = data ? parseToolArguments(data.choices?.[0]?.message) : null;
-          if (parsed) return rejectBlindReply({ ...parsed, model: config.model, degraded: true, vision, context: usage }, vision);
-        } catch (error) {
-          if (!(error instanceof AiRequestError && error.status === 400)) throw error;
-          firstError ??= error;
-        }
-      }
-
-      // 流式两条路都没拿到东西：退回一次性请求（内部还有重试 + 反向走流式通道的兜底）
-      // 注意传 prepared.message：图片此时已换成文字规格，不必再读一遍图
+      // 流式通道没拿到东西：退回一次性请求（内部仍有重试 + 反向走流式通道的兜底）
       emit({ type: 'status', text: '流式通道没有返回内容，改用普通请求重试…' });
       try {
-        const result = await provider.plan({ message: prepared.message, context, history, memory, images: prepared.images });
+        const result = await provider.plan({ message: prepared.message, context, history, memory, images: prepared.images, document });
         return rejectBlindReply({ ...result, degraded: true, vision }, vision);
       } catch (error) {
         if (error instanceof Error && firstError && !TOOL_REJECT_PATTERN.test(error.message)) {

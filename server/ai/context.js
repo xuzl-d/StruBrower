@@ -66,15 +66,22 @@ function solidSummary(element, maxFeatures = 48) {
 /** 一层里最多列多少构件：造型实体排在前面，保证 AI 正在改的东西不会被截掉 */
 const MAX_ELEMENTS = 160;
 
+/** 轴网最多列多少条：模型里常把 STEP 轮廓线误存成轴网（几千条），
+ *  全量塞进 head 会把项目预算一次吃光，连选中构件的特征树都留不下。 */
+const MAX_GRIDS = 60;
+
 /** 把项目压缩成 LLM 可读的上下文（不发送网格几何，避免超大 token）。 */
 export function buildProjectContext(document, selectedIds = []) {
   const levelName = new Map(document.levels.map((level) => [level.id, level.name]));
   const typeById = new Map(document.types.map((type) => [type.id, type]));
+  const selectedSet = new Set(Array.isArray(selectedIds) ? selectedIds : []);
 
-  // 造型实体优先：AI 改的就是它们，被截断就等于瞎猜
+  // 优先级：选中构件 > 造型实体 > 其它。选中件必须排最前，
+  // 否则一旦超过 MAX_ELEMENTS 就会在 buildProjectContext 阶段直接消失。
   const ordered = [
-    ...document.elements.filter((element) => element.primitive?.kind === 'solid'),
-    ...document.elements.filter((element) => element.primitive?.kind !== 'solid'),
+    ...document.elements.filter((element) => selectedSet.has(element.id)),
+    ...document.elements.filter((element) => !selectedSet.has(element.id) && element.primitive?.kind === 'solid'),
+    ...document.elements.filter((element) => !selectedSet.has(element.id) && element.primitive?.kind !== 'solid'),
   ].slice(0, MAX_ELEMENTS);
 
   const elements = ordered.map((element) => {
@@ -118,9 +125,12 @@ export function buildProjectContext(document, selectedIds = []) {
       ...(type.thickness !== undefined ? { thickness: type.thickness } : {}),
       ...(type.width !== undefined ? { width: type.width, depth: type.depth } : {}),
     })),
-    grids: document.grids.map((grid) => ({ name: grid.name, start: grid.start, end: grid.end })),
+    grids: document.grids.slice(0, MAX_GRIDS).map((grid) => ({ name: grid.name, start: grid.start, end: grid.end })),
+    ...(document.grids.length > MAX_GRIDS
+      ? { gridsTruncated: true, gridCount: document.grids.length, gridsOmitted: document.grids.length - MAX_GRIDS }
+      : {}),
     counts,
-    selected: elements.filter((element) => selectedIds.includes(element.id)),
+    selected: elements.filter((element) => selectedSet.has(element.id)),
     elements,
     truncated: document.elements.length > elements.length,
   };

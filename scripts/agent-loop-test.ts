@@ -50,19 +50,40 @@ function scripted(decisions: AgentDecision[]) {
   check('只请求了一次模型', calls.length === 1);
 }
 
-// ── 2. 改了但没说要再看：停下来交给用户，不硬循环 ───────────────
+// ── 2. 关掉首轮自检：改了但没说要再看，停下来交给用户，不硬循环 ─────
 {
   const { plan, calls } = scripted([{ reply: '已生成', ops: [{ op: 'addSolid' }] }]);
   const run = await runAgentLoop(first, {
     goal: first.text,
+    ensureFirstLook: false,
     plan,
     apply: async () => ({ note: '已应用 1 条指令，新 rev 7' }),
     inspect: async () => [shot('前视')],
     stopped: () => false,
   });
-  check('没有 inspect 也没 done → no-action', run.reason === 'no-action' && run.applied === 1, run);
+  check('关掉首轮自检后 no-action', run.reason === 'no-action' && run.applied === 1, run);
   check('no-action 只跑一轮', calls.length === 1 && run.steps === 1);
   check('统计到一次落地', run.applied === 1);
+}
+
+// ── 2b. 第一轮纯文字需求建完就停 → 必须补拍默认视角自检（履带画不好的病根）──
+{
+  const { plan, calls } = scripted([
+    { reply: '建好了', ops: [{ op: 'addSolid' }] },
+    { reply: '三个视角都核对了', done: true },
+  ]);
+  let inspected: string[] = [];
+  const run = await runAgentLoop({ ...first, images: [], thumbs: [] }, {
+    goal: '做一个履带式坦克',
+    plan,
+    apply: async () => ({ note: '已应用 1 条指令，新 rev 9' }),
+    inspect: async (views) => { inspected = views.map(v => v.label); return views.map(v => shot(v.label)); },
+    stopped: () => false,
+  });
+  check('首轮自检触发，闭环跑到 done', run.reason === 'done' && run.steps === 2, run);
+  check('补拍了前视/右视/等轴测', inspected.join('/') === '前视/右视/等轴测', inspected);
+  check('第二轮把自检视角图回传', calls[1]?.images.length === 3, calls[1]?.images.length);
+  check('统计到 3 张截图', run.shots === 3, run.shots);
 }
 
 // ── 3. 完整闭环：改 → 看 → 改 → 看 → 确认 ─────────────────────

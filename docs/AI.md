@@ -766,7 +766,7 @@ renderSheet(geometry, materials, [
 | 写法 | 示例 | 说明 |
 | --- | --- | --- |
 | 预设名 | `"material": "aluminum"` | 服务端用 `shared/materials.js` 展开成完整参数 |
-| 自定义对象 | `{ name?, color, roughness?, metalness?, opacity? }` | `color` 必须 `#rrggbb`；`roughness`/`metalness` 0–1；`opacity` 0–100 |
+| 自定义对象 | `{ name?, color, roughness?, metalness?, opacity?, pattern? }` | `color` 必须 `#rrggbb`；`roughness`/`metalness` 0–1；`opacity` 0–100；`pattern` 见下 |
 
 预设（`shared/materials.js`，界面下拉框、AI、模板共用同一份）：
 
@@ -782,6 +782,25 @@ renderSheet(geometry, materials, [
 | `copper` / `brass` / `gold` | 紫铜 / 黄铜 / 金色镀层 | — | 0.2–0.3 / 0.95–1 |
 | `paintWhite` / `paintOrange` | 白 / 橙烤漆 | — | 0.32–0.35 / 0.04–0.05 |
 | `ceramic` / `wood` | 陶瓷 / 木材 | — | 0.18 / 0.7 |
+| `camoJungle` / `camoDesert` | 丛林 / 沙漠迷彩 | `#4d5a36` / `#a18e5d` | 0.85 / 0.04，带 `pattern` |
+
+#### 程序化图案 `pattern`（迷彩）
+
+迷彩、涂装这类**表面花纹**用 `pattern`，不要堆薄片几何 —— 薄片贴在放样斜面上会翘起来。
+`pattern` 按零件表面的**三维坐标**生成斑块，不依赖 UV，贴任何曲面都服帖：
+
+```json
+{ "shape": "loft", "label": "装甲车体", "material": { "color": "#4d5a36", "pattern": "jungle" } }
+{ "shape": "box", "label": "定制迷彩", "material": { "color": "#4d5a36",
+    "pattern": { "colors": ["#4d5a36", "#6b6f45", "#a18e5d", "#3c3528"], "scale": 1.7 } } }
+```
+
+- 内置图案名：`jungle`（丛林 4 色）、`desert`（沙漠 4 色），配色在 `shared/materials.js` 的 `SOLID_PATTERNS`；
+- 自定义色板：`{ colors: [#rrggbb ×≥2], scale? }`，`scale` 越大斑块越碎（缺省 1.7）；
+- 视口用三平面噪声逐像素生成（`src/ModelViewport.tsx` 的 `attachCamo`），`lockedColor`（图层/类别颜色替换）时不叠加，保证按颜色找构件仍然可靠；
+- 图案参与材质分组 key，不同色板不会被合并到同一材质槽。
+
+参考实现：`shared/models/tank-tracked.json` 的坦克车体/炮塔用 `pattern: 'jungle'`。
 
 规则：
 
@@ -960,7 +979,9 @@ renderSheet(geometry, materials, [
 三个通用坑：`prism` 是**居中**拉伸（台基忘了抬 h/2 会埋进地里）；按边布置时局部 **+Y 指向圆心**；
 `group` 的 `scale` 在 rotate/translate **之前**生效，抬升量要按缩放后的尺寸给。
 
-履带吊（机械类）的几条做法，换别的机器同样成立：
+### 履带与行走机构：履带吊/坦克怎么做才像
+
+履带吊（机械类）的几条做法，换别的机器（坦克、挖掘机、履带车）同样成立：
 
 1. **先量、再建。** 拿到 STEP / OBJ 参考件别凭印象定尺寸：把顶点按「两条履带质心连线」旋到车体坐标
    （X 沿履带、Y 横向、地面 z=0），再统计各组件包围盒。这台车量出来是履带 5.06 × 0.66 × 1.25、

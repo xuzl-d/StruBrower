@@ -188,7 +188,7 @@ function segments(value, label, fallback = 24) {
 }
 
 /**
- * 特征材质：接受预设名字符串（'aluminum'）或对象 { preset?, name?, color?, roughness?, metalness?, opacity? }。
+ * 特征材质：接受预设名字符串（'aluminum'）或对象 { preset?, name?, color?, roughness?, metalness?, opacity?, pattern? }。
  * 预设直接用共享材质库展开成完整参数，模型不必自己编色值；对象写法覆盖预设里的同名字段。
  */
 function materialSpec(value, label) {

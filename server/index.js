@@ -19,6 +19,7 @@ import {
 } from './auth.js';
 import { applyOps, OpsError, summarizeOps } from './ai/ops.js';
 import { buildProjectContext } from './ai/context.js';
+import { toolNames, runServerTool } from './ai/tools.js';
 import { describeOpsBrief, compactConversation, maybeSummarize } from './ai/memory.js';
 import { contextWindowOf, describeUsage, estimateTokens } from './ai/budget.js';
 import { createProvider, defaultReasoningEffort, resolveAiConfig } from './ai/provider.js';
@@ -359,6 +360,16 @@ async function readJson(req, limit = 1024 * 1024) {
 
 /** 带图请求的体积上限：图片以 base64 传输，比原始字节多约 1/3 */
 const MAX_AI_BODY_BYTES = 14 * 1024 * 1024;
+
+/**
+ * 需求文本长度上限。用户手写的需求限 4000 字符；
+ * internal 自检回执是系统拼的（含工具结果 / 截图说明），单独放宽，
+ * 否则 inspect_tree 的长结果会让下一轮请求被 400「需求描述过长」拦掉。
+ */
+function checkAiMessageLength(body, text) {
+  const limit = body?.internal === true ? 60000 : 4000;
+  if (text.length > limit) throw new HttpError(400, '需求描述过长');
+}
 
 /** 图片校验（数量 / 格式 / 体积），错误转成 400 而不是 500 */
 function parseImageBody(body) {
@@ -1286,7 +1297,8 @@ async function handleApi(ctx) {
       contextWindow: contextWindowOf(aiConfig.model, aiConfig.contextTokens),
       ready: aiConfig.ready,
       mock: aiProvider.id === 'mock',
-      ops: ['addLevel', 'addGrid', 'addWall', 'addColumn', 'addSlab', 'addSolid', 'addFeature', 'editFeature', 'deleteFeature', 'updateElement', 'setTypeProperty', 'deleteElement'],
+      ops: toolNames(),
+      tools: toolNames(),
     });
   }
 
@@ -1303,7 +1315,7 @@ async function handleApi(ctx) {
     // 文本附件（txt / md / json / csv / 代码…）先解析：只给文件不写字时还要靠它补一句默认需求
     const attachments = parseAttachments(body.attachments);
     const typed = aiMessageOf(body, images, attachments);
-    if (typed.length > 4000) throw new HttpError(400, '需求描述过长');
+    checkAiMessageLength(body, typed);
     const message = applyAttachments(typed, attachments);
     const stored = store.getDocument(projectId);
     if (!stored) throw new HttpError(404, '项目文档不存在');
@@ -1387,6 +1399,9 @@ async function handleApi(ctx) {
       inspect,
       measure,
       done: result.done === true,
+      calls: Array.isArray(result.calls) ? result.calls : undefined,
+      notes: result.notes ?? '',
+      toolTurns: result.toolTurns ?? 0,
       summary,
       provider: aiProvider.id,
       model: aiConfig.model,
@@ -1417,7 +1432,7 @@ async function handleApi(ctx) {
     // 文本附件（txt / md / json / csv / 代码…）先解析：只给文件不写字时还要靠它补一句默认需求
     const attachments = parseAttachments(body.attachments);
     const typed = aiMessageOf(body, images, attachments);
-    if (typed.length > 4000) throw new HttpError(400, '需求描述过长');
+    checkAiMessageLength(body, typed);
     const message = applyAttachments(typed, attachments);
     const stored = store.getDocument(projectId);
     if (!stored) throw new HttpError(404, '项目文档不存在');
@@ -1546,6 +1561,9 @@ async function handleApi(ctx) {
         inspect,
         measure,
         done: result.done === true,
+        calls: Array.isArray(result.calls) ? result.calls : undefined,
+        notes: result.notes ?? '',
+        toolTurns: result.toolTurns ?? 0,
         summary,
         provider: aiProvider.id,
         model: aiConfig.model,
@@ -1610,6 +1628,25 @@ async function handleApi(ctx) {
       applied: result.applied,
       summary: summarizeOps(body.ops),
     });
+  }
+
+  // 只读工具端点：模型库配方检索 / 模板详情 / 特征树检查。
+  // 与 apply 严格分开——这里不改文档、不生成 rev、不广播；只读权限即可调用。
+  if ((match = pathname.match(/^\/api\/projects\/([^/]+)\/ai\/tool$/)) && method === 'POST') {
+    const projectId = match[1];
+    const user = requireUser(ctx);
+    requireProjectRole(projectId, user.id, 'read');
+    enforceLimit(aiLimiter, user, 'AI');
+    const body = await readJson(req, MAX_AI_BODY_BYTES);
+    const name = String(body.name ?? '');
+    const args = body.args && typeof body.args === 'object' ? body.args : {};
+    const stored = store.getDocument(projectId);
+    if (!stored) throw new HttpError(404, '项目文档不存在');
+    const context = buildProjectContext(stored.document, []);
+    const result = await runServerTool(name, args, { context, document: stored.document });
+    if (!result) throw new HttpError(400, `未知或不可在此执行的工具：${name}`);
+    store.audit(projectId, user.id, 'ai.tool', { name, ok: result.ok });
+    return sendJson(res, 200, result);
   }
 
   /* ---------- STEP 转换（服务端 OCCT，保留面颜色） ---------- */

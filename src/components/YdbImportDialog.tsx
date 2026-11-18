@@ -25,7 +25,7 @@ export default function YdbImportDialog({ result, onCancel, onConfirm }: YdbImpo
     { label: stats.arcWalls ? `墙（含 ${stats.arcWalls} 段弧墙）` : '墙', value: stats.walls, tone: '#b09b7f' },
     { label: '支撑', value: stats.braces, tone: '#5f8f86' },
     {
-      label: `楼板${stats.mezzanineSlabs ? `（含 ${stats.mezzanineSlabs} 块夹层）` : ''}${stats.skewedSlabs ? `（含 ${stats.skewedSlabs} 块斜板）` : ''}`,
+      label: `楼板${stats.mezzanineSlabs ? `（含 ${stats.mezzanineSlabs} 块夹层）` : ''}${stats.skewedSlabs ? `（含 ${stats.skewedSlabs} 块斜板）` : ''}${stats.roomHoles ? `（跳过 ${stats.roomHoles} 处全房间洞）` : ''}`,
       value: stats.slabs, tone: '#7fa88a',
     },
   ];

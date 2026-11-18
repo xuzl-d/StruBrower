@@ -30,6 +30,7 @@ export type {
   AiSettingsView,
   AiStatus,
   AiStoredMessage,
+  AiToolCall,
   AuthUser,
   MemberEntry,
   VersionEntry,

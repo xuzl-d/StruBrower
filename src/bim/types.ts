@@ -462,6 +462,12 @@ export interface SolidMaterial {
   metalness?: number;
   /** 不透明度 0–100，缺省 100 */
   opacity?: number;
+  /**
+   * 程序化表面图案：按零件表面三维坐标生成，不依赖 UV，贴在斜面上也不会翘起。
+   * - 'jungle' / 'desert'：内置迷彩配色；
+   * - 自定义色板：{ colors: ['#..', ...], scale?: number }。
+   */
+  pattern?: string | { colors: string[]; scale?: number };
 }
 
 /**

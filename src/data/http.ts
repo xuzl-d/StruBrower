@@ -508,6 +508,17 @@ export interface AiContextUsage {
   canCompact?: boolean;
 }
 
+/** 一次通用工具调用（与 src/ai/agentLoop.ts 的 AgentToolCall 同构） */
+export interface AiToolCall {
+  id?: string;
+  name: string;
+  args?: Record<string, unknown>;
+  side?: 'server' | 'client';
+  title?: string;
+  result?: string;
+  ok?: boolean;
+}
+
 export interface AiPlan {
   reply: string;
   ops: Array<Record<string, unknown>>;
@@ -517,6 +528,12 @@ export interface AiPlan {
   measure?: AiMeasureRequest[];
   /** AI 自评：已经满足用户需求，不用再改也不用再看图（自检闭环的收工信号） */
   done?: boolean;
+  /** 注册表驱动的工具调用列表（真相源）；扁平字段 ops/inspect/measure/done 是它的兼容视图 */
+  calls?: AiToolCall[];
+  /** 服务端只读工具（查配方 / 查模板 / 查特征树）已执行好的结果，需回灌给模型 */
+  notes?: string;
+  /** 服务端执行了几轮只读工具（查 → 决策） */
+  toolTurns?: number;
   summary: Record<string, number>;
   provider: string;
   model: string;
@@ -548,7 +565,7 @@ export type AiPlanEvent =
   | { type: 'plan'; chars: number }
   /** 连接中断后自动重试：前端据此清掉上一轮的半截草稿，别把两次输出拼在一起 */
   | { type: 'retry'; attempt: number; total: number; delayMs: number; reason: string }
-  | { type: 'result'; reply: string; ops: Array<Record<string, unknown>>; inspect?: AiInspectView[]; measure?: AiMeasureRequest[]; done?: boolean; summary: Record<string, number>; provider: string; model: string; mock: boolean; ms?: number; events?: number; repaired?: number; warning?: string; vision?: AiVisionInfo | null; context?: AiContextUsage | null; conversationId?: string | null; messageId?: string | null; userMessageId?: string | null }
+  | { type: 'result'; reply: string; ops: Array<Record<string, unknown>>; inspect?: AiInspectView[]; measure?: AiMeasureRequest[]; done?: boolean; calls?: AiToolCall[]; notes?: string; toolTurns?: number; summary: Record<string, number>; provider: string; model: string; mock: boolean; ms?: number; events?: number; repaired?: number; warning?: string; vision?: AiVisionInfo | null; context?: AiContextUsage | null; conversationId?: string | null; messageId?: string | null; userMessageId?: string | null }
   | { type: 'error'; message: string };
 
 export interface AiPlanStreamOptions {
@@ -801,6 +818,9 @@ export function createAiApi(baseUrl = '') {
               inspect: Array.isArray(event.inspect) ? event.inspect : [],
               measure: Array.isArray(event.measure) ? event.measure : [],
               done: event.done === true,
+              calls: Array.isArray(event.calls) ? event.calls : undefined,
+              notes: event.notes,
+              toolTurns: event.toolTurns,
               summary: event.summary ?? {},
               provider: event.provider ?? '',
               model: event.model ?? '',
@@ -890,6 +910,14 @@ export function createAiApi(baseUrl = '') {
       return request<AiApplyResult>(baseUrl, `/api/projects/${projectId}/ai/apply`, {
         method: 'POST',
         body: { ops, message },
+      });
+    },
+
+    /** 执行服务端只读工具（search_recipes / describe_model / inspect_tree）：不落库、不产生新版本 */
+    async callTool(projectId: string, name: string, args: Record<string, unknown>) {
+      return request<{ ok: boolean; text: string }>(baseUrl, `/api/projects/${projectId}/ai/tool`, {
+        method: 'POST',
+        body: { name, args },
       });
     },
   };
