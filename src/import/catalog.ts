@@ -26,6 +26,7 @@ export const IMPORT_FORMATS: ImportFormatMeta[] = [
   { id: '3mf', label: '3MF', extensions: ['3mf'], hint: '打印交换格式（Z-up，默认毫米）' },
   { id: 'dxf', label: 'DXF（三维面）', extensions: ['dxf'], hint: '只导入 3DFACE / 网格实体，线框会被忽略' },
   { id: 'skp', label: 'SketchUp（.skp）', extensions: ['skp'], hint: '读取版本 / 单位 / 预览，几何需先导出 DAE 或 OBJ' },
+  { id: 'ydb', label: '盈建科结构模型（.ydb）', extensions: ['ydb'], hint: 'YJK 结构模型（SQLite）；语义导入柱 / 梁 / 墙 / 支撑 / 板与楼层' },
 ];
 
 /** 文件选择器的 accept 串（STEP 由 OCCT 链路单独处理，见 App）。 */

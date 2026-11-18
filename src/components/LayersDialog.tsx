@@ -26,7 +26,7 @@ export interface LayersDialogProps {
   onToast?: (text: string) => void;
 }
 
-const CATEGORIES: ElementCategory[] = ['wall', 'column', 'slab', 'mesh'];
+const CATEGORIES: ElementCategory[] = ['wall', 'column', 'beam', 'brace', 'slab', 'mesh'];
 
 export default function LayersDialog({
   project, selection, currentLayerId, readOnly, onUpdate, onCurrentLayer, onClose, onToast,

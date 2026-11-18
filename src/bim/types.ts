@@ -162,8 +162,32 @@ export interface SlabType {
   formulas?: FormulaMap;
 }
 
+/** 梁族类型：结构梁，截面用宽 b × 高 h（米）。 */
+export interface BeamType {
+  id: Id;
+  category: 'beam';
+  name: string;
+  /** 截面宽 b（米） */
+  width: number;
+  /** 截面高 h（米） */
+  depth: number;
+  materialId: Id;
+  formulas?: FormulaMap;
+}
+
+/** 支撑族类型：斜撑 / 水平支撑，截面用宽 b × 高 h（米）。 */
+export interface BraceType {
+  id: Id;
+  category: 'brace';
+  name: string;
+  width: number;
+  depth: number;
+  materialId: Id;
+  formulas?: FormulaMap;
+}
+
 /** 族类型（Revit 的 Type）。同一类型的实例共享尺寸参数。 */
-export type FamilyType = WallType | ColumnType | SlabType;
+export type FamilyType = WallType | ColumnType | SlabType | BeamType | BraceType;
 
 export interface ElementBase {
   id: Id;
@@ -194,6 +218,16 @@ export interface WallInstance extends ElementBase {
   /** 顶部约束：顶部标高 + 偏移 */
   topLevelId: Id;
   topOffset: number;
+  /**
+   * 弧形墙（ydb 圆弧网格）：圆心（世界坐标 XY，米）。
+   * 缺省或为 null 表示直线墙。存在时墙沿 start→end 的圆弧生成，而非直线。
+   */
+  arcCenter?: Vec2;
+  /**
+   * 有符号圆心角（弧度）：从 start 到 end 沿墙实际走向的扫掠角。
+   * 正值逆时针、负值顺时针；绝对值可大于 π（优弧）。缺省时按劣弧推断。
+   */
+  arcSweep?: number;
 }
 
 export interface ColumnInstance extends ElementBase {
@@ -211,6 +245,41 @@ export interface SlabInstance extends ElementBase {
   /** 轮廓（平面坐标，逆时针或顺时针均可），厚度取自类型 */
   points: Vec2[];
   baseOffset: number;
+  /**
+   * 斜板：每个轮廓顶点相对板基准顶标高的 Z 偏移（米），与 points 一一对应。
+   * 缺省或全 0 表示平板。坡屋顶 / 错层板各点不同，几何层据此构造倾斜面。
+   */
+  vertexZ?: number[];
+}
+
+/** 梁实例：沿平面线段的水平构件，截面宽高取自梁族类型，竖向由底部/顶部标高约束。 */
+export interface BeamInstance extends ElementBase {
+  category: 'beam';
+  start: Vec2;
+  end: Vec2;
+  /** 相对底部标高的偏移，米 */
+  baseOffset: number;
+  topLevelId: Id;
+  topOffset: number;
+  /** 绕 Z 轴转角，弧度（梁截面侧向旋转） */
+  rotation?: number;
+  /**
+   * 弧形梁（ydb 圆弧网格）：圆心（世界坐标 XY，米）与从 start 到 end 的有符号圆心角。
+   * 其中 sweep 正值逆时针、负值顺时针；缺省表示直线梁。
+   */
+  arcCenter?: Vec2;
+  arcSweep?: number;
+}
+
+/** 支撑实例：斜杆，两端平面点为 start/end，两端高差由顶部标高表达。 */
+export interface BraceInstance extends ElementBase {
+  category: 'brace';
+  start: Vec2;
+  end: Vec2;
+  baseOffset: number;
+  topLevelId: Id;
+  topOffset: number;
+  rotation?: number;
 }
 
 /** 三维向量（米，Z-up） */
@@ -518,7 +587,7 @@ export interface MeshInstance extends ElementBase {
   parametric?: ParametricModel;
 }
 
-export type BimElement = WallInstance | ColumnInstance | SlabInstance | MeshInstance;
+export type BimElement = WallInstance | ColumnInstance | SlabInstance | BeamInstance | BraceInstance | MeshInstance;
 
 export type ElementCategory = BimElement['category'];
 
@@ -545,5 +614,7 @@ export const categoryLabels: Record<ElementCategory, string> = {
   wall: '墙',
   column: '柱',
   slab: '楼板',
+  beam: '梁',
+  brace: '支撑',
   mesh: '导入几何',
 };

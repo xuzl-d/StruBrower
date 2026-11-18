@@ -23,6 +23,8 @@ const PRODUCT_ENTITY: Record<ElementCategory, string> = {
   wall: 'IFCWALL',
   column: 'IFCCOLUMN',
   slab: 'IFCSLAB',
+  beam: 'IFCBEAM',
+  brace: 'IFCMEMBER',
   mesh: 'IFCBUILDINGELEMENTPROXY',
 };
 

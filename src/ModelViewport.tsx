@@ -47,6 +47,7 @@ import type { PrimitiveKind } from './bim/primitives';
 import { modifyPreview, transformParams } from './bim/modify';
 import type { ModifyClick, ModifySession, PreviewSpec } from './bim/modify';
 import { colorLockOf, effectiveSurface, isElementVisible } from './bim/layers';
+import { schemeColor } from './bim/colorScheme';
 import { cameraAngles, directionFromAngles, frameCamera } from './bim/viewFrame';
 import type { ProjectDocument, SolidMaterial, Vec2 } from './bim/types';
 
@@ -1339,6 +1340,10 @@ export default function ModelViewport(props: ModelViewportProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  /* 楼层显示范围：current 模式只渲染工作标高上的构件；全楼模式下恒为 null，
+     切换工作标高不会触发网格重建。这是纯显示过滤，不改动 project 里的任何数据。 */
+  const renderLevelId = settings.levelDisplayMode === 'current' ? activeLevelId : null;
+
   /* 构件网格重建 */
   useEffect(() => {
     const models = modelsRef.current;
@@ -1346,6 +1351,8 @@ export default function ModelViewport(props: ModelViewportProps) {
     disposeGroup(models);
     models.clear();
     for (const element of project.elements) {
+      // 楼层范围过滤：current 模式只画底部约束（levelId）在工作标高上的构件
+      if (renderLevelId && element.levelId !== renderLevelId) continue;
       // 可见性 = 构件自身 visible && 图层可见 && 类别可见（Revit VV 语义）
       if (!isElementVisible(project, element)) continue;
       const model = buildElementModel(project, element);
@@ -1353,16 +1360,22 @@ export default function ModelViewport(props: ModelViewportProps) {
       const { geometry, materials } = model;
       const vertexColors = element.category === 'mesh' ? element.vertexColors : undefined;
       const surface = effectiveSurface(project, element);
+      // 视图配色方案：用户手动的图层/类别颜色替换优先，方案色只覆盖「未手动锁定」的构件。
+      // 只改渲染用的 surface，不写回 project，切换即时生效且不影响导出/明细。
+      const lockedColor = colorLockOf(project, element) !== null;
+      const paletteColor = lockedColor ? null : schemeColor(settingsRef.current.colorScheme, element.category);
+      if (paletteColor) surface.color = paletteColor;
       const decal = element.category === 'mesh' && element.primitive?.kind === 'decal' ? element.primitive : null;
       // 图层 / 类别颜色替换优先于零件自定义色（否则图层着色对特征实体失效）
-      const lockedColor = colorLockOf(project, element) !== null;
+      // featureMaterial 内部的 lockedColor 同样判断 colorLock；方案色已写进 surface.color，零件色在 project 方案下才生效
+      const materialLocked = lockedColor || paletteColor !== null;
       let material: MeshStandardMaterial | MeshBasicMaterial | Array<MeshStandardMaterial | MeshBasicMaterial>;
       if (decal) {
         material = decalMaterial(decal, surface.opacity);
       } else if (materials.length > 1) {
-        material = materials.map((entry) => featureMaterial(entry, surface, lockedColor));
+        material = materials.map((entry) => featureMaterial(entry, surface, materialLocked));
       } else {
-        const single = featureMaterial(materials[0] ?? null, surface, lockedColor || Boolean(vertexColors));
+        const single = featureMaterial(materials[0] ?? null, surface, materialLocked || Boolean(vertexColors));
         if (vertexColors) {
           single.vertexColors = true;
           single.color.set('#ffffff');
@@ -1381,7 +1394,7 @@ export default function ModelViewport(props: ModelViewportProps) {
       models.add(mesh);
     }
     applySelection(models, selection, settingsRef.current.highlightColor);
-  }, [project]);
+  }, [project, settings.colorScheme, renderLevelId]);
 
   /* 背景色 / 地面网格显示 */
   useEffect(() => {
@@ -1999,6 +2012,13 @@ export default function ModelViewport(props: ModelViewportProps) {
   }
 }
 
+/**
+ * 选中高亮的「原色快照」——纯渲染态，用 WeakMap 挂靠材质对象生命周期。
+ * 只改 three.js 材质的 color（显示属性），不写 project、不写材质 userData；
+ * 取消选中即精确还原，原始构件 / 材质 / 配色数据全程不受影响。
+ */
+const selectionBaseColor = new WeakMap<object, string>();
+
 function applySelection(models: Group, selection: string[], color: string): void {
   const selected = new Set(selection);
   models.traverse((child) => {
@@ -2007,9 +2027,23 @@ function applySelection(models: Group, selection: string[], color: string): void
     // 特征实体是材质数组（逐零件材质），高亮要作用到每一种材质上
     const list = Array.isArray(child.material) ? child.material : [child.material];
     for (const material of list) {
-      if (!(material instanceof MeshStandardMaterial)) continue;
-      material.emissive.set(isSelected ? color : '#000000');
-      material.emissiveIntensity = isSelected ? 0.45 : 0;
+      if (!(material instanceof MeshStandardMaterial || material instanceof MeshBasicMaterial)) continue;
+      // 第一次改动前存原色快照：取消选中时精确还原（含 vertexColors 白底），
+      // 不会把上一次的高亮色误当原色。材质随模型重建而新建，WeakMap 条目自动回收。
+      if (!selectionBaseColor.has(material)) {
+        selectionBaseColor.set(material, material.color.getHexString());
+      }
+      if (isSelected) {
+        // 直接覆盖成高亮色，不叠加自发光，选中状态一眼可辨
+        material.color.set(color);
+      } else {
+        material.color.set(`#${selectionBaseColor.get(material)!}`);
+      }
+      // 兼容旧的叠加高亮：清掉可能残留的自发光
+      if (material instanceof MeshStandardMaterial) {
+        material.emissive.set('#000000');
+        material.emissiveIntensity = 0;
+      }
     }
   });
 }

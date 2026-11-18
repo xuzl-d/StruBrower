@@ -37,6 +37,8 @@ export const DEFAULT_LAYER_SPECS: LayerSpec[] = [
   { id: DEFAULT_LAYER_ID, name: '0 · 默认', color: '#a3adb8' },
   { id: 'layer-wall', name: 'A-WALL · 墙', color: '#c6bba8' },
   { id: 'layer-column', name: 'S-COLM · 柱', color: '#8b98a8' },
+  { id: 'layer-beam', name: 'S-BEAM · 梁', color: '#7f9bb5' },
+  { id: 'layer-brace', name: 'S-BRAC · 支撑', color: '#6f8f8a' },
   { id: 'layer-slab', name: 'S-FLOR · 楼板', color: '#9fb0a4' },
   { id: 'layer-import', name: 'IMP-GEOM · 导入几何', color: '#9fd3e4' },
   { id: 'layer-reference', name: 'A-REF · 参照', color: '#7f8fa6' },
@@ -58,6 +60,8 @@ export function defaultCategoryOverrides(): Record<ElementCategory, CategoryOver
   return {
     wall: { visible: true },
     column: { visible: true },
+    beam: { visible: true },
+    brace: { visible: true },
     slab: { visible: true },
     mesh: { visible: true },
   };
@@ -67,6 +71,8 @@ export function defaultCategoryOverrides(): Record<ElementCategory, CategoryOver
 export function layerIdForCategory(category: ElementCategory): Id {
   if (category === 'wall') return 'layer-wall';
   if (category === 'column') return 'layer-column';
+  if (category === 'beam') return 'layer-beam';
+  if (category === 'brace') return 'layer-brace';
   if (category === 'slab') return 'layer-slab';
   if (category === 'mesh') return 'layer-import';
   return DEFAULT_LAYER_ID;

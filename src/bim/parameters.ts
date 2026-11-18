@@ -55,6 +55,8 @@ export const TYPE_PARAMETER_SPECS: Record<FamilyType['category'], ParameterKeySp
   wall: [LENGTH('thickness', '厚度', 0.02, 2)],
   column: [LENGTH('width', '截面宽', 0.1, 3), LENGTH('depth', '截面深', 0.1, 3)],
   slab: [LENGTH('thickness', '厚度', 0.02, 1)],
+  beam: [LENGTH('width', '截面宽 b', 0.05, 2), LENGTH('depth', '截面高 h', 0.05, 3)],
+  brace: [LENGTH('width', '截面宽 b', 0.03, 2), LENGTH('depth', '截面高 h', 0.03, 2)],
 };
 
 /** 内置变量（上下文相关，随构件/标高变化而自动更新）。 */
@@ -149,12 +151,16 @@ export function elementParameterSpecs(element: BimElement): ParameterKeySpec[] {
   if (element.category !== 'mesh') {
     specs.push(LENGTH('baseOffset', '底部偏移', -100, 100));
   }
-  if (element.category === 'wall' || element.category === 'column') {
+  if (element.category === 'wall' || element.category === 'column'
+    || element.category === 'beam' || element.category === 'brace') {
     specs.push(LENGTH('topOffset', '顶部偏移', -100, 100));
   }
-  if (element.category === 'wall') {
+  if (element.category === 'wall' || element.category === 'beam' || element.category === 'brace') {
     specs.push(LENGTH('start.x', '起点 X', -1e5, 1e5), LENGTH('start.y', '起点 Y', -1e5, 1e5));
     specs.push(LENGTH('end.x', '终点 X', -1e5, 1e5), LENGTH('end.y', '终点 Y', -1e5, 1e5));
+  }
+  if (element.category === 'beam' || element.category === 'brace') {
+    specs.push({ key: 'rotation', label: '截面转角', unit: 'angle', min: -Math.PI * 4, max: Math.PI * 4 });
   }
   if (element.category === 'column') {
     specs.push(LENGTH('position.x', '定位 X', -1e5, 1e5), LENGTH('position.y', '定位 Y', -1e5, 1e5));
@@ -432,7 +438,8 @@ function elementContext(project: ProjectDocument, element: BimElement, index: nu
   const level = project.levels.find((item) => item.id === element.levelId);
   const base = (level?.elevation ?? 0) + (readElementParameter(element, 'baseOffset') ?? 0);
   let top = base;
-  if (element.category === 'wall' || element.category === 'column') {
+  if (element.category === 'wall' || element.category === 'column'
+    || element.category === 'beam' || element.category === 'brace') {
     const topLevel = project.levels.find((item) => item.id === element.topLevelId);
     top = (topLevel?.elevation ?? base) + element.topOffset;
   } else if (element.category === 'slab') {
@@ -440,8 +447,16 @@ function elementContext(project: ProjectDocument, element: BimElement, index: nu
     top = base + (type?.category === 'slab' ? type.thickness : 0);
   }
   const type = project.types.find((item) => item.id === element.typeId);
-  const length = element.category === 'wall'
-    ? Math.hypot(element.end[0] - element.start[0], element.end[1] - element.start[1]) : 0;
+  let length = 0;
+  if (element.category === 'wall' || element.category === 'beam' || element.category === 'brace') {
+    const arcCenter = 'arcCenter' in element ? element.arcCenter : undefined;
+    const arcSweep = 'arcSweep' in element ? element.arcSweep : undefined;
+    if (arcCenter && arcSweep !== undefined) {
+      length = Math.abs(arcSweep) * Math.hypot(element.start[0] - arcCenter[0], element.start[1] - arcCenter[1]);
+    } else {
+      length = Math.hypot(element.end[0] - element.start[0], element.end[1] - element.start[1]);
+    }
+  }
   const area = element.category === 'slab' ? polygonAreaLocal(element.points) : 0;
   // 造型构件（特征树 / 参数化）没有「顶部标高」，但设计规则几乎都要用层高：
   // 「柱高 = 层高 − 0.3」这种公式不该因为构件类别不同就算出 0。
@@ -462,10 +477,10 @@ function elementContext(project: ProjectDocument, element: BimElement, index: nu
     Area: area,
     厚度: type?.category === 'wall' || type?.category === 'slab' ? type.thickness : 0,
     TypeThickness: type?.category === 'wall' || type?.category === 'slab' ? type.thickness : 0,
-    截面宽: type?.category === 'column' ? type.width : 0,
-    TypeWidth: type?.category === 'column' ? type.width : 0,
-    截面深: type?.category === 'column' ? type.depth : 0,
-    TypeDepth: type?.category === 'column' ? type.depth : 0,
+    截面宽: type?.category === 'column' || type?.category === 'beam' || type?.category === 'brace' ? type.width : 0,
+    TypeWidth: type?.category === 'column' || type?.category === 'beam' || type?.category === 'brace' ? type.width : 0,
+    截面深: type?.category === 'column' || type?.category === 'beam' || type?.category === 'brace' ? type.depth : 0,
+    TypeDepth: type?.category === 'column' || type?.category === 'beam' || type?.category === 'brace' ? type.depth : 0,
     底部偏移: readElementParameter(element, 'baseOffset') ?? 0,
     BaseOffset: readElementParameter(element, 'baseOffset') ?? 0,
     序号: index + 1,

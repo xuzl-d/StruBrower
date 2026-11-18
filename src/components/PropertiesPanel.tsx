@@ -74,7 +74,8 @@ export default function PropertiesPanel({
           <fieldset className="property-fieldset" disabled={readOnly}>
           <div className="property-object">
             <div className="property-object-icon">
-              {element.category === 'wall' ? '▤' : element.category === 'column' ? '▮' : element.category === 'slab' ? '▬' : '◇'}
+              {element.category === 'wall' ? '▤' : element.category === 'column' ? '▮' : element.category === 'beam' ? '═'
+                : element.category === 'brace' ? '╱' : element.category === 'slab' ? '▬' : '◇'}
             </div>
             <div>
               <strong>{element.name}</strong>
@@ -151,7 +152,8 @@ export default function PropertiesPanel({
               onFormula={(formula) => onElementFormula(element.id, 'baseOffset', formula)}
             />
           ) : null}
-          {element.category === 'wall' || element.category === 'column' ? (
+          {element.category === 'wall' || element.category === 'column'
+            || element.category === 'beam' || element.category === 'brace' ? (
             <>
               <SelectField
                 label="顶部标高"
@@ -299,15 +301,31 @@ function GeometryFields({
       onFormula={(formula) => onElementFormula(element.id, key, formula)}
     />
   );
-  if (element.category === 'wall') {
-    const wall = element as WallInstance;
+  if (element.category === 'wall' || element.category === 'beam' || element.category === 'brace') {
+    const linear = element as WallInstance;
+    const spanLabel = element.category === 'wall' ? '墙长' : element.category === 'beam' ? '跨度' : '支撑长';
     return (
       <>
-        {bind('起点 X', 'start.x', wall.start[0], (value) => onElementPatch(wall.id, { start: [value, wall.start[1]] }))}
-        {bind('起点 Y', 'start.y', wall.start[1], (value) => onElementPatch(wall.id, { start: [wall.start[0], value] }))}
-        {bind('终点 X', 'end.x', wall.end[0], (value) => onElementPatch(wall.id, { end: [value, wall.end[1]] }))}
-        {bind('终点 Y', 'end.y', wall.end[1], (value) => onElementPatch(wall.id, { end: [wall.end[0], value] }))}
-        <ReadonlyRow label="墙长" value={`${wallLength(wall).toFixed(2)} m`} />
+        {bind('起点 X', 'start.x', linear.start[0], (value) => onElementPatch(linear.id, { start: [value, linear.start[1]] }))}
+        {bind('起点 Y', 'start.y', linear.start[1], (value) => onElementPatch(linear.id, { start: [linear.start[0], value] }))}
+        {bind('终点 X', 'end.x', linear.end[0], (value) => onElementPatch(linear.id, { end: [value, linear.end[1]] }))}
+        {bind('终点 Y', 'end.y', linear.end[1], (value) => onElementPatch(linear.id, { end: [linear.end[0], value] }))}
+        <ReadonlyRow label={spanLabel} value={`${wallLength(linear).toFixed(2)} m`} />
+        {(element.category === 'wall' || element.category === 'beam') && 'arcCenter' in linear && linear.arcCenter ? (
+          <ReadonlyRow
+            label={element.category === 'wall' ? '墙形式' : '梁形式'}
+            value={`弧形（R ${Math.hypot(linear.start[0] - linear.arcCenter[0], linear.start[1] - linear.arcCenter[1]).toFixed(2)} m）`}
+          />
+        ) : null}
+        {'rotation' in linear && typeof linear.rotation === 'number' ? (
+          <NumberField
+            label="截面转角"
+            value={Number((linear.rotation * 180 / Math.PI).toFixed(1))}
+            step={5}
+            unit="°"
+            onCommit={(value) => onElementPatch(linear.id, { rotation: (value * Math.PI) / 180 })}
+          />
+        ) : null}
       </>
     );
   }
@@ -334,6 +352,12 @@ function GeometryFields({
     return (
       <>
         <ReadonlyRow label="轮廓点" value={`${slab.points.length} 个`} />
+        {slab.vertexZ && slab.vertexZ.some((z) => Math.abs(z) > 1e-4) ? (
+          <ReadonlyRow
+            label="板形式"
+            value={`斜板（高差 ${(Math.max(...slab.vertexZ) - Math.min(...slab.vertexZ)).toFixed(2)} m）`}
+          />
+        ) : null}
         <ReadonlyRow
           label="外包尺寸"
           value={`${(Math.max(...xs) - Math.min(...xs)).toFixed(2)} × ${(Math.max(...ys) - Math.min(...ys)).toFixed(2)} m`}

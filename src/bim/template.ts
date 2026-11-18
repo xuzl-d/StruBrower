@@ -50,7 +50,7 @@ export function createProject(template: ProjectTemplate = { name: '未命名项�
 }
 
 /** 构件自动命名：同类别按顺序递增，例如 墙 1、墙 2；轴网按 1、2、3… */
-export function nextElementName(project: ProjectDocument, category: 'wall' | 'column' | 'slab' | 'grid'): string {
+export function nextElementName(project: ProjectDocument, category: 'wall' | 'column' | 'slab' | 'beam' | 'brace' | 'grid'): string {
   if (category === 'grid') {
     const used = new Set(project.grids.map((grid) => grid.name));
     for (let index = 1; index < 100; index += 1) {
@@ -59,7 +59,8 @@ export function nextElementName(project: ProjectDocument, category: 'wall' | 'co
     }
     return String(project.grids.length + 1);
   }
-  const prefix = category === 'wall' ? '墙' : category === 'column' ? '柱' : '楼板';
+  const prefix = category === 'wall' ? '墙' : category === 'column' ? '柱' : category === 'slab' ? '楼板'
+    : category === 'beam' ? '梁' : '支撑';
   const used = new Set(project.elements.map((element) => element.name));
   for (let index = 1; index <= 9999; index += 1) {
     const candidate = `${prefix} ${index}`;

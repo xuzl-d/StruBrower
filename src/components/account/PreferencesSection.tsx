@@ -1,6 +1,12 @@
 import { useEffect, useState } from 'react';
 import { DEFAULT_VIEW_SETTINGS, FONT_SCALES, RENDER_SCALES, SNAP_STEPS } from '../../settings';
 import type { ViewSettings } from '../../settings';
+import {
+  COLOR_SCHEME_HINTS,
+  COLOR_SCHEME_LABELS,
+  schemeColor,
+} from '../../bim/colorScheme';
+import type { ColorScheme } from '../../bim/colorScheme';
 import type { AccountDiagnostics } from './AccountCenter';
 
 interface PreferencesSectionProps {
@@ -16,6 +22,15 @@ const COLOR_FIELDS: Array<{ key: 'highlightColor' | 'backgroundColor' | 'gridCol
   { key: 'gridColor', label: '轴网线', hint: '轴网线的颜色' },
   { key: 'bubbleColor', label: '轴网气泡', hint: '端部圆圈与描边颜色' },
 ];
+
+const COLOR_SCHEMES: ColorScheme[] = ['revitSoft', 'revitGray', 'yjk', 'project'];
+
+const SCHEME_SWATCH_CATEGORIES = [
+  { key: 'slab', label: '楼板' },
+  { key: 'beam', label: '梁' },
+  { key: 'column', label: '柱' },
+  { key: 'wall', label: '墙' },
+] as const;
 
 const TOGGLE_FIELDS: Array<{
   key: 'showGroundGrid' | 'showLevelGrid' | 'showGrids' | 'showBubbles' | 'showAxisIndicator'
@@ -84,6 +99,33 @@ export default function PreferencesSection({
           </div>
           <button onClick={reset}>恢复默认</button>
         </header>
+        <div className="account-form">
+          <label className="account-field">
+            <span>构件配色方案</span>
+            <select
+              value={settings.colorScheme}
+              onChange={(event) => set('colorScheme', event.target.value as ColorScheme)}
+            >
+              {COLOR_SCHEMES.map((scheme) => (
+                <option key={scheme} value={scheme}>{COLOR_SCHEME_LABELS[scheme]}</option>
+              ))}
+            </select>
+            <em>{COLOR_SCHEME_HINTS[settings.colorScheme]}</em>
+          </label>
+          {settings.colorScheme !== 'project' ? (
+            <div className="settings-scheme-preview" title="当前方案下各类构件的显示颜色">
+              {SCHEME_SWATCH_CATEGORIES.map((item) => {
+                const swatch = schemeColor(settings.colorScheme, item.key);
+                return (
+                  <span className="settings-scheme-chip" key={item.key}>
+                    <i style={{ background: swatch ?? '#a3adb8' }} />
+                    {item.label}
+                  </span>
+                );
+              })}
+            </div>
+          ) : null}
+        </div>
         <div className="settings-colors">
           {COLOR_FIELDS.map((field) => (
             <label className="settings-color" key={field.key} title={field.hint}>

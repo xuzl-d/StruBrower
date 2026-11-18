@@ -20,13 +20,17 @@ export function translateElement(element: BimElement, translation: Translation):
   const dz = translation.dz ?? 0;
   if (!dx && !dy && !dz) return element;
 
-  if (element.category === 'wall') {
+  if (element.category === 'wall' || element.category === 'beam' || element.category === 'brace') {
+    // 弧墙 / 弧梁：圆心同步平移
+    const baseArc = 'arcCenter' in element ? element.arcCenter : undefined;
+    const arcCenter = baseArc ? [round(baseArc[0] + dx), round(baseArc[1] + dy)] as [number, number] : baseArc;
     return {
       ...element,
       start: [round(element.start[0] + dx), round(element.start[1] + dy)],
       end: [round(element.end[0] + dx), round(element.end[1] + dy)],
       baseOffset: round(element.baseOffset + dz),
       topOffset: round(element.topOffset + dz),
+      ...(arcCenter ? { arcCenter } : {}),
     };
   }
   if (element.category === 'column') {
@@ -55,7 +59,8 @@ export function translateElements(elements: BimElement[], translation: Translati
 }
 
 function uniqueName(category: BimElement['category'], used: Set<string>): string {
-  const prefix = category === 'wall' ? '墙' : category === 'column' ? '柱' : category === 'slab' ? '楼板' : '构件';
+  const prefix = category === 'wall' ? '墙' : category === 'column' ? '柱' : category === 'slab' ? '楼板'
+    : category === 'beam' ? '梁' : category === 'brace' ? '支撑' : '构件';
   for (let index = 1; index < 10000; index += 1) {
     const candidate = `${prefix} ${index}`;
     if (!used.has(candidate)) return candidate;
@@ -106,8 +111,16 @@ export function rotateElement(element: BimElement, options: RotateOptions): BimE
     round(cy + (x - cx) * sin + (y - cy) * cos),
   ];
 
-  if (element.category === 'wall') {
-    return { ...element, start: rotate(element.start[0], element.start[1]), end: rotate(element.end[0], element.end[1]) };
+  if (element.category === 'wall' || element.category === 'beam' || element.category === 'brace') {
+    // 弧墙 / 弧梁：圆心同步旋转；旋转保手性，sweep 符号不变
+    const baseArc = 'arcCenter' in element ? element.arcCenter : undefined;
+    const arcCenter = baseArc ? rotate(baseArc[0], baseArc[1]) : baseArc;
+    return {
+      ...element,
+      start: rotate(element.start[0], element.start[1]),
+      end: rotate(element.end[0], element.end[1]),
+      ...(arcCenter ? { arcCenter } : {}),
+    };
   }
   if (element.category === 'column') {
     return {
@@ -145,8 +158,18 @@ export function mirrorElement(element: BimElement, options: MirrorOptions): BimE
     axis === 'vertical' ? [round(2 * position - x), round(y)] : [round(x), round(2 * position - y)]
   );
 
-  if (element.category === 'wall') {
-    return { ...element, start: map(element.start[0], element.start[1]), end: map(element.end[0], element.end[1]) };
+  if (element.category === 'wall' || element.category === 'beam' || element.category === 'brace') {
+    // 弧墙 / 弧梁：圆心同步镜像；镜像反转手性，sweep 取反
+    const baseArc = 'arcCenter' in element ? element.arcCenter : undefined;
+    const baseSweep = 'arcSweep' in element ? element.arcSweep : undefined;
+    const arcCenter = baseArc ? map(baseArc[0], baseArc[1]) : baseArc;
+    const arcSweep = baseSweep !== undefined ? -baseSweep : baseSweep;
+    return {
+      ...element,
+      start: map(element.start[0], element.start[1]),
+      end: map(element.end[0], element.end[1]),
+      ...(arcCenter ? { arcCenter, arcSweep } : {}),
+    };
   }
   if (element.category === 'column') {
     const [x, y] = map(element.position[0], element.position[1]);
@@ -163,7 +186,7 @@ export function mirrorElement(element: BimElement, options: MirrorOptions): BimE
 export function selectionCenter(elements: BimElement[]): [number, number] {
   const points: Array<[number, number]> = [];
   for (const element of elements) {
-    if (element.category === 'wall') {
+    if (element.category === 'wall' || element.category === 'beam' || element.category === 'brace') {
       points.push([(element.start[0] + element.end[0]) / 2, (element.start[1] + element.end[1]) / 2]);
     } else if (element.category === 'column') {
       points.push(element.position);

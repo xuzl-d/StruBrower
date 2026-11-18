@@ -27,6 +27,7 @@
     "occt-import-js": "^0.0.23",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
+    "sql.js": "^1.16.0",
     "three": "^0.180.0",
     "three-bvh-csg": "^0.0.18",
     "three-csg-ts": "^3.2.0"
@@ -34,6 +35,7 @@
   "devDependencies": {
     "@types/react": "^19.1.10",
     "@types/react-dom": "^19.1.7",
+    "@types/sql.js": "^1.4.11",
     "@types/three": "^0.180.0",
     "@vitejs/plugin-react": "^5.0.2",
     "linkedom": "^0.18.15",

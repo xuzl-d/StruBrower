@@ -1,3 +1,4 @@
+import { sortedLevels } from '../bim/document';
 import { categoryLabels } from '../bim/types';
 import type { BimElement, ElementCategory, ProjectDocument } from '../bim/types';
 import type { ViewKind } from '../ModelViewport';
@@ -24,11 +25,13 @@ interface ProjectBrowserProps {
   onToggleLayer: (id: string) => void;
 }
 
-const CATEGORY_ORDER: ElementCategory[] = ['wall', 'column', 'slab', 'mesh'];
+const CATEGORY_ORDER: ElementCategory[] = ['wall', 'column', 'beam', 'brace', 'slab', 'mesh'];
 
 const SYMBOLS: Record<ElementCategory, string> = {
   wall: '▤',
   column: '▮',
+  beam: '═',
+  brace: '╱',
   slab: '▬',
   mesh: '◇',
 };
@@ -54,6 +57,8 @@ export default function ProjectBrowser({
   onOpenMaterials,
   onToggleLayer,
 }: ProjectBrowserProps) {
+  /** 视图/标高列表按高度升序显示 */
+  const orderedLevels = sortedLevels(project);
   const typeName = (element: BimElement): string =>
     project.types.find((type) => type.id === element.typeId)?.name ?? (element.category === 'mesh' ? element.source : '未指定类型');
 
@@ -85,7 +90,7 @@ export default function ProjectBrowser({
           <div className={`view-row ${viewKind === '3d' ? 'active' : ''}`} onClick={onActivate3d}>
             <span className="view-glyph">◈</span> 三维视图
           </div>
-          {project.levels.map((level) => (
+          {orderedLevels.map((level) => (
             <div
               key={level.id}
               className={`view-row ${viewKind === 'plan' && viewLevelId === level.id ? 'active' : ''}`}
@@ -101,7 +106,7 @@ export default function ProjectBrowser({
             <span>⌄</span> 标高 <em>{project.levels.length}</em>
             <button className="section-add" onClick={onAddLevel} title="添加标高">＋</button>
           </div>
-          {project.levels.map((level) => (
+          {orderedLevels.map((level) => (
             <div
               key={level.id}
               className={`level-row ${selectedLevelId === level.id ? 'selected' : ''} ${activeLevelId === level.id ? 'current' : ''}`}

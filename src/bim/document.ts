@@ -4,6 +4,10 @@ import { ensureDocumentParameters } from './parameters';
 import { createProject } from './template';
 import type {
   BimElement,
+  BeamInstance,
+  BeamType,
+  BraceInstance,
+  BraceType,
   ColumnInstance,
   ColumnType,
   FamilyType,
@@ -18,6 +22,14 @@ import type {
 
 export function levelById(project: ProjectDocument, id: string | undefined): Level | undefined {
   return project.levels.find((level) => level.id === id);
+}
+
+/** 按标高值升序返回楼层（同高再按名称），不改动 project 里的数组顺序。
+ *  楼层的显示顺序由高度决定，避免多次导入拼接后出现 0→9→18→3 这样的乱序。 */
+export function sortedLevels(project: ProjectDocument): Level[] {
+  return [...(project.levels ?? [])].sort(
+    (a, b) => a.elevation - b.elevation || a.name.localeCompare(b.name, 'zh-CN'),
+  );
 }
 
 export function typeById(project: ProjectDocument, id: string | undefined): FamilyType | undefined {
@@ -37,6 +49,16 @@ export function columnTypeOf(project: ProjectDocument, column: ColumnInstance): 
 export function slabTypeOf(project: ProjectDocument, slab: SlabInstance): SlabType | undefined {
   const type = typeById(project, slab.typeId);
   return type?.category === 'slab' ? type : undefined;
+}
+
+export function beamTypeOf(project: ProjectDocument, beam: BeamInstance): BeamType | undefined {
+  const type = typeById(project, beam.typeId);
+  return type?.category === 'beam' ? type : undefined;
+}
+
+export function braceTypeOf(project: ProjectDocument, brace: BraceInstance): BraceType | undefined {
+  const type = typeById(project, brace.typeId);
+  return type?.category === 'brace' ? type : undefined;
 }
 
 /** 构件底部世界 Z 值。 */
@@ -61,8 +83,19 @@ export function elementHeight(project: ProjectDocument, element: BimElement): nu
   return Math.max(0, topElevation(project, element) - baseElevation(project, element));
 }
 
+/** 线性构件（墙/梁/支撑）的中心线长度；弧形墙/梁按弧长计算。 */
+export function linearLength(element: WallInstance | BeamInstance | BraceInstance): number {
+  const arcCenter = 'arcCenter' in element ? element.arcCenter : undefined;
+  const arcSweep = 'arcSweep' in element ? element.arcSweep : undefined;
+  if (arcCenter && arcSweep !== undefined) {
+    const radius = Math.hypot(element.start[0] - arcCenter[0], element.start[1] - arcCenter[1]);
+    return Math.abs(arcSweep) * radius;
+  }
+  return Math.hypot(element.end[0] - element.start[0], element.end[1] - element.start[1]);
+}
+
 export function wallLength(wall: WallInstance): number {
-  return Math.hypot(wall.end[0] - wall.start[0], wall.end[1] - wall.start[1]);
+  return linearLength(wall);
 }
 
 export function polygonArea(points: Array<[number, number]>): number {
@@ -117,6 +150,16 @@ export function elementMeasures(project: ProjectDocument, element: BimElement): 
       { label: '厚度', value: `${(type?.thickness ?? 0.15).toFixed(3)} m` },
     ];
   }
+  if (element.category === 'beam' || element.category === 'brace') {
+    const type = element.category === 'beam'
+      ? beamTypeOf(project, element)
+      : braceTypeOf(project, element);
+    const length = linearLength(element);
+    return [
+      { label: '跨度', value: `${length.toFixed(2)} m` },
+      { label: '截面', value: `${((type?.width ?? 0.2) * 1000).toFixed(0)} × ${((type?.depth ?? 0.3) * 1000).toFixed(0)} mm` },
+    ];
+  }
   if (element.primitive) {
     return [
       { label: '体量类型', value: PRIMITIVE_LABELS[element.primitive.kind] },
@@ -140,7 +183,8 @@ export function countTriangles(project: ProjectDocument): number {
       return sum + (element.primitive ? primitiveTriangles(element.primitive) : Math.floor(element.indices.length / 3));
     }
     // 参数化构件按几何外形估算三角面：长方体 12 面、拉伸体按轮廓边数
-    if (element.category === 'wall' || element.category === 'column') return sum + 12;
+    if (element.category === 'wall' || element.category === 'column'
+      || element.category === 'beam' || element.category === 'brace') return sum + 12;
     return sum + Math.max(12, element.points.length * 2);
   }, 0);
 }

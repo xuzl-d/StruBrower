@@ -18,6 +18,7 @@ import { DEFAULT_IMPORT_COLOR } from './types';
 
 export { IMPORT_ACCEPT, IMPORT_FORMATS, IMPORT_LABELS, formatForFile } from './catalog';
 export type { ImportFormatMeta } from './catalog';
+export type { YdbImportResult, YdbStats } from './ydb';
 export { disposeParts };
 
 type Parser = (data: ArrayBuffer, context: ImportContext) => ImportedModel | Promise<ImportedModel>;

@@ -193,8 +193,17 @@ function lineAngle(lineDir: Vec2): number {
 export function mirrorElementAboutLine(element: BimElement, linePoint: Vec2, lineDir: Vec2): BimElement {
   const map = (p: Vec2): Vec2 => reflectPoint(p, linePoint, lineDir);
   const phi = lineAngle(lineDir);
-  if (element.category === 'wall') {
-    return { ...element, start: map(element.start), end: map(element.end) };
+  if (element.category === 'wall' || element.category === 'beam' || element.category === 'brace') {
+    // 弧墙 / 弧梁：圆心跟着镜像；镜像反转手性，sweep 取反
+    const baseArc = 'arcCenter' in element ? element.arcCenter : undefined;
+    const baseSweep = 'arcSweep' in element ? element.arcSweep : undefined;
+    const arcCenter = baseArc ? map(baseArc) : baseArc;
+    const arcSweep = baseSweep !== undefined ? -baseSweep : baseSweep;
+    return {
+      ...element,
+      start: map(element.start), end: map(element.end),
+      ...(arcCenter ? { arcCenter, arcSweep } : {}),
+    };
   }
   if (element.category === 'column') {
     return {
@@ -245,7 +254,9 @@ export function applyTransform(element: BimElement, transform: ElementTransform)
 
 /** 构件上可用于捕捉 / 对齐的锚点。 */
 export function elementAnchors(element: BimElement): Vec2[] {
-  if (element.category === 'wall') return [element.start, element.end, middle(element.start, element.end)];
+  if (element.category === 'wall' || element.category === 'beam' || element.category === 'brace') {
+    return [element.start, element.end, middle(element.start, element.end)];
+  }
   if (element.category === 'column') return [element.position];
   if (element.category === 'slab') return [...element.points, ...element.points.map((p, i) => middle(p, element.points[(i + 1) % element.points.length]!))];
   const offset = element.offset ?? [0, 0, 0];
@@ -328,7 +339,7 @@ function offsetDirection(element: BimElement, sidePoint: Vec2 | null): { center:
     const toward = sidePoint ? sub(sidePoint, center) : [1, 0] as Vec2;
     return { center, normal: length(toward) < 1e-9 ? ([1, 0] as Vec2) : scale2(toward, 1 / length(toward)) };
   };
-  if (element.category === 'wall') {
+  if (element.category === 'wall' || element.category === 'beam' || element.category === 'brace') {
     const dir = direction(element.start, element.end);
     return { center: middle(element.start, element.end), normal: [-dir[1], dir[0]] };
   }
@@ -359,7 +370,8 @@ function offsetDirection(element: BimElement, sidePoint: Vec2 | null): { center:
 }
 
 function nextName(project: ProjectDocument, category: BimElement['category']): string {
-  const prefix = category === 'wall' ? '墙' : category === 'column' ? '柱' : category === 'slab' ? '楼板' : '构件';
+  const prefix = category === 'wall' ? '墙' : category === 'column' ? '柱' : category === 'slab' ? '楼板'
+    : category === 'beam' ? '梁' : category === 'brace' ? '支撑' : '构件';
   const used = new Set(project.elements.map((element) => element.name));
   for (let index = 1; index < 10000; index += 1) {
     const candidate = `${prefix} ${index}`;
@@ -821,6 +833,7 @@ export function finishModify(project: ProjectDocument, session: ModifySession, c
       const wallA = wallById(project, session.hits[0] ?? null) ?? project.elements.find((e): e is WallInstance => ids.includes(e.id) && e.category === 'wall');
       const wallB = wallById(project, session.hits[1] ?? null) ?? project.elements.find((e): e is WallInstance => ids.includes(e.id) && e.category === 'wall' && e.id !== wallA?.id);
       if (!wallA || !wallB || wallA.id === wallB.id) return outcomeError(project, session, '修剪 / 延伸需要拾取两面不同的墙');
+      if (wallA.arcCenter || wallB.arcCenter) return outcomeError(project, session, '弧形墙暂不支持修剪 / 延伸（保持导入的精确弧线）');
       const intersection = infiniteLineIntersection(wallA.start, wallA.end, wallB.start, wallB.end);
       if (!intersection) return outcomeError(project, session, '两墙平行，无法修剪到角点');
       const trimOne = (wall: WallInstance, click: Vec2): WallInstance => {
@@ -840,6 +853,7 @@ export function finishModify(project: ProjectDocument, session: ModifySession, c
         ?? project.elements.find((element): element is WallInstance => element.category === 'wall'
           && distance(closestPointOnSegment(first, element.start, element.end), first) < 0.6);
       if (!wall) return outcomeError(project, session, '请单击墙上的拆分位置（目前仅支持墙）');
+      if (wall.arcCenter) return outcomeError(project, session, '弧形墙暂不支持拆分（保持导入的精确弧线）');
       const segment = sub(wall.end, wall.start);
       const wallLength = length(segment);
       if (wallLength < 0.2) return outcomeError(project, session, '墙太短，无法拆分');
@@ -910,6 +924,12 @@ export function approximateVolume(project: ProjectDocument, element: BimElement)
     const height = Math.max(0, (project.levels.find((level) => level.id === element.topLevelId)?.elevation ?? 0)
       + element.topOffset - (project.levels.find((level) => level.id === element.levelId)?.elevation ?? 0) - element.baseOffset);
     return width * depth * height;
+  }
+  if (element.category === 'beam' || element.category === 'brace') {
+    const type = project.types.find((item) => item.id === element.typeId);
+    const width = type && 'width' in type ? type.width : 0.2;
+    const depth = type && 'depth' in type ? type.depth : 0.3;
+    return Math.hypot(element.end[0] - element.start[0], element.end[1] - element.start[1]) * width * depth;
   }
   if (element.category === 'slab') {
     const type = project.types.find((item) => item.id === element.typeId);

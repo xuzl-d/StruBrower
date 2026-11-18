@@ -21,12 +21,14 @@ import ModifyOptionsBar from './components/ModifyOptionsBar';
 import DrawCoordinateBar from './components/DrawCoordinateBar';
 import ScheduleDialog from './components/ScheduleDialog';
 import ImportDialog from './components/ImportDialog';
+import YdbImportDialog from './components/YdbImportDialog';
 import { buildImportGeometry, countImportTriangles, disposeParts, formatForFile, parseModelBuffer, IMPORT_FORMATS } from './import';
-import type { ImportedModel, ImportTransform } from './import';
+import type { ImportedModel, ImportTransform, YdbImportResult } from './import';
 import LayersDialog from './components/LayersDialog';
+import LevelsDialog from './components/LevelsDialog';
 import MaterialsDialog from './components/MaterialsDialog';
 import ParametersDialog from './components/ParametersDialog';
-import { countTriangles, levelById } from './bim/document';
+import { countTriangles, levelById, sortedLevels } from './bim/document';
 import type { ProjectSummary } from './bim/document';
 import { booleanElement, exportObj, meshElementFromGeometry } from './bim/geometry';
 import { duplicateElements, translateElement } from './bim/edit';
@@ -227,6 +229,8 @@ export default function App({ initialAccountSection }: { initialAccountSection?:
   const [importProgress, setImportProgress] = useState<ImportProgress | null>(null);
   /** 解析完成、等待用户确认轴向 / 单位的模型 */
   const [importPending, setImportPending] = useState<{ fileName: string; model: ImportedModel } | null>(null);
+  /** ydb 语义模型：解析完成、等待确认写入文档 */
+  const [ydbPending, setYdbPending] = useState<YdbImportResult | null>(null);
   /** 拖文件到窗口时的提示层 */
   const [dragActive, setDragActive] = useState(false);
   const dragDepthRef = useRef(0);
@@ -286,6 +290,7 @@ export default function App({ initialAccountSection }: { initialAccountSection?:
   const [primitiveKind, setPrimitiveKind] = useState<PrimitiveKind | null>(null);
   const [scheduleOpen, setScheduleOpen] = useState(false);
   const [layersOpen, setLayersOpen] = useState(false);
+  const [levelsOpen, setLevelsOpen] = useState(false);
   const [materialsOpen, setMaterialsOpen] = useState(false);
   const [parametersOpen, setParametersOpen] = useState(false);
   /** 当前图层（CAD 语义）：新绘制 / 新导入的构件自动归入此层 */
@@ -299,8 +304,8 @@ export default function App({ initialAccountSection }: { initialAccountSection?:
   const [propertiesOpen, setPropertiesOpen] = useState(() => readUiFlag('strubrowser.ui.properties'));
 
   /** 是否有模态弹窗打开：打开时锁定主界面（屏蔽快捷键、点击空白不关闭） */
-  const modalOpen = layersOpen || materialsOpen || scheduleOpen || parametersOpen
-    || accountOpen || versionsOpen || membersOpen || importPending !== null;
+  const modalOpen = layersOpen || levelsOpen || materialsOpen || scheduleOpen || parametersOpen
+    || accountOpen || versionsOpen || membersOpen || importPending !== null || ydbPending !== null;
   const modalOpenRef = useRef(false);
   modalOpenRef.current = modalOpen;
 
@@ -323,7 +328,9 @@ export default function App({ initialAccountSection }: { initialAccountSection?:
     [project, selectedLevelId],
   );
   const triangles = useMemo(() => countTriangles(project), [project]);
-  const activeLevel = levelById(project, activeLevelId) ?? project.levels[0];
+  /** 楼层按高度排序（显示顺序由标高值决定，不改 project 数据） */
+  const orderedLevels = useMemo(() => sortedLevels(project), [project]);
+  const activeLevel = levelById(project, activeLevelId) ?? orderedLevels[0];
 
   /* 解析存储模式（本地 / 服务端），并恢复登录态 */
   useEffect(() => {
@@ -792,8 +799,9 @@ export default function App({ initialAccountSection }: { initialAccountSection?:
   /** Esc：Revit 逐级退出——先关弹窗，再退回上一个取点，退出命令，最后清空选择 */
   function escape() {
     if (modalOpen) {
-      if (importPending) cancelImport();
+      if (importPending || ydbPending) cancelImport();
       setLayersOpen(false);
+      setLevelsOpen(false);
       setMaterialsOpen(false);
       setScheduleOpen(false);
       setParametersOpen(false);
@@ -1403,6 +1411,15 @@ export default function App({ initialAccountSection }: { initialAccountSection?:
     if (viewKind === 'plan') setViewLevelId(levelId);
   }
 
+  /** 切换楼层显示范围（全楼 / 当前层）；纯显示，不改文档。切换时清空选中，避免停留在被隐藏的构件上。 */
+  function switchLevelDisplay(mode: ViewSettings['levelDisplayMode']) {
+    if (mode === viewSettings.levelDisplayMode) return;
+    setViewSettings((prev) => ({ ...prev, levelDisplayMode: mode }));
+    setSelection([]);
+    setSelectedLevelId(null);
+    syncAwaitSelection([]);
+  }
+
   function chooseTool(next: Tool) {
     if (!canEdit && next !== 'select') {
       setMessage('当前角色为查看者，无法使用绘制工具。');
@@ -1842,6 +1859,8 @@ export default function App({ initialAccountSection }: { initialAccountSection?:
       return;
     }
     const isStep = /\.(step|stp)$/i.test(file.name);
+    const isYdb = /\.ydb$/i.test(file.name);
+    const isYmd = /\.ymd$/i.test(file.name);
     setIsImporting(true);
     const report = (stage: string, percent: number | null) => {
       setImportProgress({
@@ -1851,7 +1870,20 @@ export default function App({ initialAccountSection }: { initialAccountSection?:
     };
     report('准备导入', 2);
     try {
-      if (isStep) {
+      if (isYmd) {
+        throw new Error('.ymd 是盈建科专有二进制格式，暂不支持。请在 YJK 中「另存为 .ydb」后再导入。');
+      } else if (isYdb) {
+        setMessage('正在解析 ydb 结构模型…');
+        report('读取文件', 5);
+        const buffer = (await readFileWithProgress(file, 'buffer', (ratio) => {
+          report('读取文件', 5 + ratio * 40);
+        })) as ArrayBuffer;
+        report('解析结构模型', null);
+        const { parseYdb } = await import('./import/ydb');
+        const result = await parseYdb(file.name, buffer);
+        setYdbPending(result);
+        setMessage(`已解析 ydb：${Object.values(result.stats).reduce((a, b) => a + b, 0)} 项，请确认导入。`);
+      } else if (isStep) {
         setMessage('正在解析 STEP 文件…');
         await importStepFile(file, report);
       } else {
@@ -1882,8 +1914,98 @@ export default function App({ initialAccountSection }: { initialAccountSection?:
     const pending = importPending;
     if (pending) disposeParts(pending.model.parts);
     setImportPending(null);
+    setYdbPending(null);
     setMessage(importQueueRef.current.length ? '已跳过这个模型，继续下一个…' : '已取消导入');
     continueImportQueue();
+  }
+
+  /** 确认 ydb 语义导入：把解析出的标高 / 网格 / 族类型 / 材质 / 构件一次性并入文档。 */
+  function confirmYdbImport() {
+    const result = ydbPending;
+    if (!result) return;
+    try {
+      const { patch } = result;
+      const addedIds = new Set(patch.elements.map((element) => element.id));
+      commit((document) => {
+        // 合并小集合（按 id 去重，保留已有项）
+        const mergeById = <T extends { id: string }>(existing: T[], incoming: T[]): T[] => {
+          const seen = new Set(existing.map((item) => item.id));
+          return [...existing, ...incoming.filter((item) => !seen.has(item.id))];
+        };
+
+        // ydb 每次导入都会用 createId() 生成全新的标高 / 类型 id。若只按 id 去重，
+        // 反复导入同一模型就会不断叠加同名标高（截图里 30 个标高的根因）。
+        // 因此按「名称 + 标高值」复用已有标高、按「类别 + 名称」复用已有类型，
+        // 再把新构件里的 levelId / topLevelId / typeId 重映射到复用后的真实 id。
+        const levelKey = (level: { name: string; elevation: number }) =>
+          `${level.name.trim()}|${level.elevation.toFixed(3)}`;
+        const levelIdMap = new Map<string, string>();
+        const existingLevelIds = new Map(document.levels.map((level) => [levelKey(level), level.id]));
+        const reusableLevels: typeof patch.levels = [];
+        for (const level of patch.levels) {
+          const key = levelKey(level);
+          const found = existingLevelIds.get(key) ?? reusableLevels.find((item) => levelKey(item) === key)?.id;
+          if (found) {
+            levelIdMap.set(level.id, found);
+          } else {
+            reusableLevels.push(level);
+            existingLevelIds.set(key, level.id);
+            levelIdMap.set(level.id, level.id);
+          }
+        }
+
+        const typeKey = (type: { category: string; name: string }) => `${type.category}|${type.name.trim()}`;
+        const typeIdMap = new Map<string, string>();
+        const existingTypeIds = new Map(document.types.map((type) => [typeKey(type), type.id]));
+        const reusableTypes: typeof patch.types = [];
+        for (const type of patch.types) {
+          const key = typeKey(type);
+          const found = existingTypeIds.get(key) ?? reusableTypes.find((item) => typeKey(item) === key)?.id;
+          if (found) {
+            typeIdMap.set(type.id, found);
+          } else {
+            reusableTypes.push(type);
+            existingTypeIds.set(key, type.id);
+            typeIdMap.set(type.id, type.id);
+          }
+        }
+
+        const remappedElements = patch.elements.map((element) => {
+          const levelId = levelIdMap.get(element.levelId) ?? element.levelId;
+          const typeId = typeIdMap.get(element.typeId) ?? element.typeId;
+          if ('topLevelId' in element) {
+            return {
+              ...element, levelId, typeId,
+              topLevelId: levelIdMap.get(element.topLevelId) ?? element.topLevelId,
+            };
+          }
+          return { ...element, levelId, typeId };
+        });
+
+        const next: ProjectDocument = {
+          ...document,
+          // 合并后按标高值整体排序，避免多次导入拼接出 0→9→18→3 的乱序
+          levels: [...mergeById(document.levels, reusableLevels)].sort(
+            (a, b) => a.elevation - b.elevation || a.name.localeCompare(b.name, 'zh-CN'),
+          ),
+          grids: mergeById(document.grids, patch.grids),
+          types: mergeById(document.types, reusableTypes),
+          materials: mergeById(document.materials, patch.materials),
+          elements: [...document.elements, ...remappedElements],
+        };
+        return next;
+      }, `已导入 ydb：${patch.elements.length} 个构件`);
+      setSelection([...addedIds]);
+      if (patch.elements.length) setFitElementId(patch.elements[0]!.id);
+      const total = patch.elements.length;
+      setMessage(`已导入 ${result.fileName}：${total} 个语义构件（柱 ${result.stats.columns} / 梁 ${result.stats.beams} / 墙 ${result.stats.walls} / 支撑 ${result.stats.braces} / 板 ${result.stats.slabs}）。`);
+    } catch (error) {
+      console.error('ydb 写入项目失败。', error);
+      setMessage(error instanceof Error ? `导入失败：${error.message}` : '导入失败。');
+    } finally {
+      setYdbPending(null);
+      continueImportQueue();
+    }
   }
 
   function confirmImport(transform: ImportTransform) {
@@ -1934,7 +2056,8 @@ export default function App({ initialAccountSection }: { initialAccountSection?:
   async function importFiles(files: File[]) {
     const usable = files.filter((file) => file.size > 0);
     if (!usable.length) return;
-    const isModel = (file: File) => Boolean(formatForFile(file.name)) || /\.(step|stp)$/i.test(file.name);
+    const isModel = (file: File) => Boolean(formatForFile(file.name))
+      || /\.(step|stp|ydb|ymd)$/i.test(file.name);
     const models = usable.filter(isModel);
     const sidecars = usable.filter((file) => !isModel(file));
     const primary = models.length ? models : usable.slice(0, 1);
@@ -2150,11 +2273,15 @@ export default function App({ initialAccountSection }: { initialAccountSection?:
   }
 
   function selectAllElements() {
-    const ids = projectRef.current.elements.filter((element) => element.visible).map((element) => element.id);
+    // 与视口显示保持一致：当前层模式下只选工作标高上的构件；全楼模式行为不变
+    const currentOnly = viewSettings.levelDisplayMode === 'current';
+    const ids = projectRef.current.elements
+      .filter((element) => element.visible && (!currentOnly || element.levelId === activeLevelId))
+      .map((element) => element.id);
     setSelectedLevelId(null);
     setSelection(ids);
     syncAwaitSelection(ids);
-    setMessage(`已选择全部 ${ids.length} 个可见构件`);
+    setMessage(`已选择当前视图中 ${ids.length} 个可见构件`);
   }
 
   function cutSelection() {
@@ -2516,7 +2643,42 @@ export default function App({ initialAccountSection }: { initialAccountSection?:
                 {viewKind === 'plan' ? '比例 1:100' : projection === 'parallel' ? '平行投影' : '透视投影'}
               </span>
             </div>
-            <div className="view-tools"><span className="tool-hint">{toolHint}</span></div>
+            <div className="view-tools">
+              <div className="level-control-group">
+                <span className="level-control-label">楼层</span>
+                <div className="level-display-switch" role="group" aria-label="楼层显示范围">
+                  <button
+                    className={viewSettings.levelDisplayMode === 'all' ? 'active' : ''}
+                    onClick={() => switchLevelDisplay('all')}
+                    title="显示所有楼层的构件"
+                  >全楼</button>
+                  <button
+                    className={viewSettings.levelDisplayMode === 'current' ? 'active' : ''}
+                    onClick={() => switchLevelDisplay('current')}
+                    title="仅显示当前标高上的构件"
+                  >当前层</button>
+                </div>
+                <select
+                  className="level-picker"
+                  value={activeLevelId}
+                  onChange={(event) => selectLevel(event.target.value)}
+                  title="切换当前工作标高"
+                  aria-label="当前工作标高"
+                >
+                  {orderedLevels.length === 0 ? (
+                    <option value="">无标高</option>
+                  ) : orderedLevels.map((level) => (
+                    <option key={level.id} value={level.id}>{level.name}（{level.elevation.toFixed(2)}m）</option>
+                  ))}
+                </select>
+                <button
+                  className="level-manage-button"
+                  onClick={() => setLevelsOpen(true)}
+                  title="楼层管理：新增 / 删除 / 重命名 / 调整标高 / 排序"
+                >⚙ 管理</button>
+              </div>
+              <span className="tool-hint">{toolHint}</span>
+            </div>
             <button
               className="zoom-all-button"
               onClick={() => {
@@ -2728,6 +2890,26 @@ export default function App({ initialAccountSection }: { initialAccountSection?:
           model={importPending.model}
           onCancel={cancelImport}
           onConfirm={confirmImport}
+        />
+      ) : null}
+
+      {ydbPending ? (
+        <YdbImportDialog
+          result={ydbPending}
+          onCancel={cancelImport}
+          onConfirm={confirmYdbImport}
+        />
+      ) : null}
+
+      {levelsOpen ? (
+        <LevelsDialog
+          project={project}
+          activeLevelId={activeLevelId}
+          readOnly={!canEdit}
+          onUpdate={commit}
+          onActivate={selectLevel}
+          onClose={() => setLevelsOpen(false)}
+          onToast={(text) => setMessage(text)}
         />
       ) : null}
 

@@ -2,7 +2,13 @@
  * 软件设置（视图与交互偏好）：保存在浏览器 localStorage，按用户/设备生效。
  * 不依赖服务端，本地模式同样可用；颜色统一用 #RRGGBB。
  */
+import type { ColorScheme } from './bim/colorScheme';
+
 export interface ViewSettings {
+  /** 楼层显示范围：all = 全楼显示；current = 仅显示工作标高上的构件（纯显示，不改文档） */
+  levelDisplayMode: 'all' | 'current';
+  /** 视图配色方案：只影响显示，不改动已导入的材质/图层数据 */
+  colorScheme: ColorScheme;
   /** 选中构件的高亮色 */
   highlightColor: string;
   /** 视口背景色 */
@@ -50,6 +56,8 @@ export const FONT_SCALES = [0.9, 1, 1.1, 1.25] as const;
 export const SETTINGS_STORAGE_KEY = 'strubrowser.settings.v1';
 
 export const DEFAULT_VIEW_SETTINGS: ViewSettings = {
+  levelDisplayMode: 'all',
+  colorScheme: 'revitSoft',
   highlightColor: '#2563eb',
   backgroundColor: '#0e1622',
   gridColor: '#68d3c1',
@@ -99,6 +107,11 @@ function snap(value: unknown, fallback: number): number {
 export function normalizeViewSettings(input: unknown): ViewSettings {
   const source = input && typeof input === 'object' ? input as Record<string, unknown> : {};
   return {
+    levelDisplayMode: source.levelDisplayMode === 'current' ? 'current' : 'all',
+    colorScheme: source.colorScheme === 'project' || source.colorScheme === 'revitGray'
+      || source.colorScheme === 'revitSoft' || source.colorScheme === 'yjk'
+      ? source.colorScheme
+      : DEFAULT_VIEW_SETTINGS.colorScheme,
     highlightColor: color(source.highlightColor, DEFAULT_VIEW_SETTINGS.highlightColor),
     backgroundColor: color(source.backgroundColor, DEFAULT_VIEW_SETTINGS.backgroundColor),
     gridColor: color(source.gridColor, DEFAULT_VIEW_SETTINGS.gridColor),

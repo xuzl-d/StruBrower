@@ -6,6 +6,7 @@ import {
   columnTypeOf,
   elementHeight,
   levelById,
+  linearLength,
   polygonArea,
   slabTypeOf,
   typeById,
@@ -93,6 +94,13 @@ export function buildSchedule(project: ProjectDocument): ScheduleRow[] {
       const area = polygonArea(element.points);
       row.area = area;
       if (slabType) row.volume = area * slabType.thickness;
+    } else if (element.category === 'beam' || element.category === 'brace') {
+      const type = typeById(project, element.typeId);
+      const length = linearLength(element);
+      row.length = length;
+      if (type && (type.category === 'beam' || type.category === 'brace')) {
+        row.volume = length * type.width * type.depth;
+      }
     }
     return row;
   });
