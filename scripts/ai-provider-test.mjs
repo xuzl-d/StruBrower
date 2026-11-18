@@ -5,6 +5,7 @@ import { dryRun, planWithRepair } from '../server/ai/repair.js';
 import { normalizeImages } from '../server/ai/vision.js';
 import { MAX_INSPECT_VIEWS, normalizeInspect } from '../server/ai/inspect.js';
 import { MAX_MEASURE_REQUESTS, normalizeMeasure } from '../server/ai/measure.js';
+import { MAX_DESCRIBE_COUNT, normalizeDescribe } from '../server/ai/describe.js';
 
 let passed = 0;
 let failed = 0;
@@ -198,6 +199,36 @@ const server = http.createServer((req, res) => {
         reply: '先切三个视角看一眼',
         ops: [],
         inspect: ['front', { azimuth: 200, elevation: 120 }, { view: 'bogus' }, { view: 'top' }],
+      }));
+      return;
+    }
+    if (req.url === '/python/chat/completions') {
+      // 脚本写法：对象带 note、纯字符串、空 code（应被丢掉）
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(toolReply({
+        reply: '先算点位',
+        ops: [],
+        python: [
+          { code: 'emit({"result": 1})', note: '算点位' },
+          'emit({"result": 2})',
+          { code: '' },
+        ],
+      }));
+      return;
+    }
+    if (req.url === '/describe/chat/completions') {
+      // 只想查特征树：ops 为空，describe 与 measure 同轮给出（含一个非法 type 应被丢掉）
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(toolReply({
+        reply: '先看完整特征定义',
+        ops: [],
+        describe: [
+          { type: 'element', target: '样车', from: 2, count: 999 },
+          { type: 'feature', feature: 3 },
+          { type: 'search', query: '镜座' },
+          { type: 'unknown' },
+        ],
+        measure: [{ type: 'bounds', feature: '车身' }],
       }));
       return;
     }
@@ -546,6 +577,26 @@ check('字符串写法也能认', normalizeInspect('back')[0]?.view === 'back', 
 check('最多 4 个视角', normalizeInspect(['front', 'back', 'left', 'right', 'top', 'bottom']).length === MAX_INSPECT_VIEWS);
 check('负方位角换算到 0–360', normalizeInspect([{ azimuth: -30, elevation: 0 }])[0]?.azimuth === 330, normalizeInspect([{ azimuth: -30, elevation: 0 }]));
 check('缺角度的对象被丢弃', normalizeInspect([{ view: 'nope' }, {}, 42, null]).length === 0, normalizeInspect([{ view: 'nope' }, {}, 42, null]));
+
+console.log('只读特征树查询（describe）');
+check('工具参数里有 describe 字段',
+  JSON.parse(requested[0].body).tools?.[0]?.function?.parameters?.properties?.describe?.type === 'array');
+const describeProvider = createProvider({ provider: 'openai', baseUrl: `${baseUrl}/describe`, model: 'm', apiKey: 'sk-test', timeoutMs: 5000, ready: true });
+const describePlan = await describeProvider.plan({ message: '查一下特征树', context: {} });
+check('解析出 describe 请求并把 count 夹到上限',
+  describePlan.describe?.length === 3 && describePlan.describe[0].count === MAX_DESCRIBE_COUNT, describePlan.describe);
+check('describe 与 measure 可以同轮出现', describePlan.measure?.length === 1, describePlan.measure);
+check('非法 type 被丢弃', describePlan.describe?.every((item) => item.type !== 'unknown'));
+
+console.log('Python 计算脚本（python）');
+check('工具参数里有 python 字段',
+  JSON.parse(requested[0].body).tools?.[0]?.function?.parameters?.properties?.python?.type === 'array');
+const pythonProvider = createProvider({ provider: 'openai', baseUrl: `${baseUrl}/python`, model: 'm', apiKey: 'sk-test', timeoutMs: 5000, ready: true });
+const pythonPlan = await pythonProvider.plan({ message: '算点位', context: {} });
+check('解析出 python 脚本（对象与纯字符串写法）',
+  pythonPlan.python?.length === 2 && pythonPlan.python[0].note === '算点位', pythonPlan.python);
+check('空 code 被丢弃', pythonPlan.python?.every((item) => item.code.length > 0));
+check('独立规范化也挡住超长 count', normalizeDescribe([{ type: 'element', count: 999 }])[0].count === MAX_DESCRIBE_COUNT);
 
 server.close();
 console.log(`\n${passed} 项通过${failed ? `，${failed} 项失败` : '，全部通过'}`);

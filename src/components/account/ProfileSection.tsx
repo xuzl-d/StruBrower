@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { isImeComposing } from '../../ime';
 import { ApiError, authApi } from '../../data';
 import type { AuthUser } from '../../data';
 
@@ -71,7 +72,7 @@ export default function ProfileSection({
                   placeholder="你的名字"
                   onChange={(event) => setName(event.target.value)}
                   onKeyDown={(event) => {
-                    if (event.key === 'Enter') void save();
+                    if (event.key === 'Enter' && !isImeComposing(event)) void save();
                   }}
                   disabled={mode === 'local'}
                 />

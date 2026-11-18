@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { isImeComposing } from '../ime';
 import { ApiError, versionsApi } from '../data';
 import type { VersionEntry } from '../data';
 import ModalShell from './ModalShell';
@@ -85,7 +86,7 @@ export default function VersionsDialog({ projectId, projectName, canWrite, onClo
                 maxLength={120}
                 placeholder="版本标签，例如：方案 A / 报审版"
                 onChange={(event) => setLabel(event.target.value)}
-                onKeyDown={(event) => { if (event.key === 'Enter') void createVersion(); }}
+                onKeyDown={(event) => { if (event.key === 'Enter' && !isImeComposing(event)) void createVersion(); }}
               />
               <button onClick={() => void createVersion()} disabled={busy}>保存当前版本</button>
             </div>

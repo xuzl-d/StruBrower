@@ -65,6 +65,7 @@ const NEW_SHAPES: Array<{ shape: SolidShape['shape']; label: string }> = [
   { shape: 'prism', label: '拉伸轮廓' },
   { shape: 'revolve', label: '旋转体' },
   { shape: 'sweep', label: '扫掠' },
+  { shape: 'ballPanels', label: '皮革拼球' },
 ];
 
 function defaultShape(shape: SolidShape['shape']): SolidShape {
@@ -85,6 +86,7 @@ function defaultShape(shape: SolidShape['shape']): SolidShape {
       profile: [[-0.02, -0.02], [0.02, -0.02], [0.02, 0.02], [-0.02, 0.02]],
       path: [[0, 0, 0], [0.1, 0.02, 0.06], [0.2, 0.05, 0.14]],
     };
+    case 'ballPanels': return { shape: 'ballPanels', radius: 0.12, layout: 'classic' };
     default: return { shape: 'box', width: 0.2, depth: 0.2, height: 0.1 };
   }
 }
@@ -639,6 +641,22 @@ export default function SolidDialog({
                     />
                   ))}
                 </div>
+                {material?.map ? (
+                  <div className="solid-material-hint">
+                    该特征带纹理贴图（约 {Math.round(material.map.length / 1024)} KB
+                    {material.mapMode ? ` · ${material.mapMode} 投影` : ''}
+                    {material.bumpMap ? ' · 凹凸缝线' : ''}）。颜色会与贴图相乘，
+                    选预设材质会替换掉贴图。
+                    <button
+                      className="solid-material-clear"
+                      disabled={readOnly}
+                      onClick={() => patchMaterial({
+                        map: undefined, mapMode: undefined, mapRepeat: undefined,
+                        bumpMap: undefined, bumpScale: undefined,
+                      })}
+                    >移除贴图</button>
+                  </div>
+                ) : null}
                 <div className="solid-material-hint">
                   金属件金属度 ≥ 0.85、粗糙度 0.15–0.4；塑料金属度 ≤ 0.1；玻璃把不透明度调到 25–45。
                   不填材质时跟随「材质浏览器」里指派的构件材质。

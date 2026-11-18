@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { isImeComposing, isImeSubmit } from '../../ime';
 import { adminApi, ApiError } from '../../data';
 import type { AdminUser, AuthUser } from '../../data';
 
@@ -207,6 +208,7 @@ export default function UsersSection({
             className="user-create"
             onSubmit={(event) => {
               event.preventDefault();
+              if (isImeSubmit(event)) return;
               void createUser();
             }}
           >
@@ -260,6 +262,7 @@ export default function UsersSection({
                           maxLength={40}
                           onChange={(event) => setRenameValue(event.target.value)}
                           onKeyDown={(event) => {
+                            if (isImeComposing(event)) return;
                             if (event.key === 'Enter') void submitRename(item);
                             if (event.key === 'Escape') setRenameTarget(null);
                           }}
@@ -289,6 +292,7 @@ export default function UsersSection({
                         placeholder="新密码（≥6 位）"
                         onChange={(event) => setResetValue(event.target.value)}
                         onKeyDown={(event) => {
+                          if (isImeComposing(event)) return;
                           if (event.key === 'Enter') void submitReset(item);
                           if (event.key === 'Escape') setResetTarget(null);
                         }}

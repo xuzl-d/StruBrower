@@ -18,6 +18,9 @@ export default function AiSection({ onToast }: AiSectionProps) {
   const [visionModel, setVisionModel] = useState('');
   const [visionBaseUrl, setVisionBaseUrl] = useState('');
   const [visionApiKey, setVisionApiKey] = useState('');
+  /** 文生图模型：留空 = 用内置程序化纹理，不依赖外部生图 API */
+  const [imageModel, setImageModel] = useState('');
+  const [imageBaseUrl, setImageBaseUrl] = useState('');
   const [apiKey, setApiKey] = useState('');
   const [timeoutMs, setTimeoutMs] = useState(60000);
   /** 0 = 按模型名自动推断（见 server/ai/budget.js） */
@@ -63,6 +66,8 @@ export default function AiSection({ onToast }: AiSectionProps) {
       setVisionEnabled(Boolean(data.visionEnabled));
       setVisionModel(data.visionModel ?? '');
       setVisionBaseUrl(data.visionBaseUrl ?? '');
+      setImageModel(data.imageModel ?? '');
+      setImageBaseUrl(data.imageBaseUrl ?? '');
       setTimeoutMs(data.timeoutMs);
       setContextTokens(data.contextTokens ?? 0);
       setApiKey('');
@@ -101,6 +106,8 @@ export default function AiSection({ onToast }: AiSectionProps) {
       visionEnabled,
       visionModel: visionEnabled ? visionModel.trim() : '',
       visionBaseUrl: visionEnabled ? visionBaseUrl.trim() : '',
+      imageModel: imageModel.trim(),
+      imageBaseUrl: imageBaseUrl.trim(),
       timeoutMs,
       contextTokens,
       ...(apiKey.trim() ? { apiKey: apiKey.trim() } : {}),
@@ -306,6 +313,29 @@ export default function AiSection({ onToast }: AiSectionProps) {
               填小了会提前压缩、问答更省；填大了容易撞到网关的长度上限。
             </em>
           </label>
+          <label className="account-field">
+            <span>文生图模型（可选）</span>
+            <input
+              type="text"
+              value={imageModel}
+              placeholder="留空 = 用内置程序化纹理"
+              onChange={(event) => setImageModel(event.target.value)}
+            />
+            <em>
+              填模型名后，AI 写 <code>material.map: "ai:提示词"</code> 会调该网关的
+              /images/generations 生成贴图；留空或生图失败时自动用内置青花纹理，离线也能出图。
+            </em>
+          </label>
+          <label className="account-field">
+            <span>生图接口地址（可选）</span>
+            <input
+              type="text"
+              value={imageBaseUrl}
+              placeholder="留空 = 复用主模型接口地址"
+              onChange={(event) => setImageBaseUrl(event.target.value)}
+            />
+            <em>独立生图服务才需要填；Key 默认复用主模型，也可用 STRU_AI_IMAGE_API_KEY 单独指定。</em>
+          </label>
         </div>
 
         {error ? <div className="account-error">{error}</div> : null}
@@ -325,7 +355,7 @@ export default function AiSection({ onToast }: AiSectionProps) {
         ) : null}
 
         <div className="account-note">
-          环境变量同样可配置（优先级更低）：STRU_AI_PROVIDER / STRU_AI_BASE_URL / STRU_AI_MODEL / STRU_AI_VISION_MODEL / STRU_AI_API_KEY。
+          环境变量同样可配置（优先级更低）：STRU_AI_PROVIDER / STRU_AI_BASE_URL / STRU_AI_MODEL / STRU_AI_VISION_MODEL / STRU_AI_IMAGE_MODEL / STRU_AI_IMAGE_API_KEY / STRU_AI_API_KEY。
           这里保存的设置优先级更高，保存后立即生效，无需重启服务端。
         </div>
       </section>

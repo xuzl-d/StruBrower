@@ -6,6 +6,8 @@
  * `"material": "aluminum"` 就能拿到一套自洽的颜色/粗糙度/金属度，而不用自己编数字。
  *
  * 色值统一 #rrggbb（小写）；opacity 与文档里的 Material 一致，0–100。
+ * 贴图（map）是特征级材质的一段内联 data URL，或 `ai:<提示词>` 生成占位；
+ * 后者在服务端 /ai/plan 返回前被换成真实图片，前端拿到的永远是前者。
  */
 
 /** 预设材质：键是 AI 可以填的 preset 名，值是完整的材质参数 */
@@ -40,6 +42,16 @@ export const SOLID_PATTERNS = {
 /** 默认材质参数（特征没写材质时，跟随构件材质，不用这些值） */
 export const SOLID_MATERIAL_DEFAULTS = { roughness: 0.62, metalness: 0.04, opacity: 100 };
 
+/** 内联贴图允许的最大字符数（约 450 KB 图片），防止把整个项目文档变成一段 base64 */
+export const SOLID_MAP_MAX_CHARS = 600_000;
+/** 贴图生成占位符的提示词长度上限 */
+export const SOLID_MAP_PROMPT_MAX = 300;
+/** UV 投影方式：绕 Z 柱面（回转体）/ 球面 / XY 平面 */
+export const SOLID_MAP_MODES = ['cylindrical', 'spherical', 'planar'];
+/** 凹凸幅度（世界单位，米）：皮革缝 0.002~0.006 就够，再大会出现假浮雕 */
+export const SOLID_BUMP_SCALE_MAX = 0.05;
+const MAP_DATA_URL = /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/i;
+
 /** #abc / #aabbcc → #aabbcc；非法返回 null */
 export function normalizeHexColor(value) {
   if (typeof value !== 'string') return null;
@@ -52,9 +64,45 @@ export function normalizeHexColor(value) {
   return null;
 }
 
+/**
+ * 凹凸图字段：内联 data URL，或 'auto'（服务端按同一提示词生成配套高度图）。
+ * 不允许 `ai:` 前缀——凹凸图必须是与颜色图严格对齐的灰度图，让模型自由描述会错位。
+ */
+export function normalizeSolidBumpMap(value) {
+  if (typeof value !== 'string') return null;
+  const text = value.trim();
+  if (text === 'auto') return 'auto';
+  const clean = text.replace(/\s+/g, '');
+  if (clean.length > SOLID_MAP_MAX_CHARS || !MAP_DATA_URL.test(clean)) return null;
+  return clean;
+}
+
 function unit(value) {
   // 越界直接当非法值：悄悄夹到 0–1 会让模型以为写对了，下次还错
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1 ? value : undefined;
+}
+
+/** 贴图字段归一化：内联 data URL、AI 生成占位符，其余一律判非法（返回 null） */
+export function normalizeSolidMap(value) {
+  if (typeof value !== 'string') return null;
+  const text = value.trim();
+  if (text.startsWith('ai:')) {
+    const prompt = text.slice(3).trim();
+    return prompt && prompt.length <= SOLID_MAP_PROMPT_MAX ? `ai:${prompt}` : null;
+  }
+  const clean = text.replace(/\s+/g, '');
+  if (clean.length > SOLID_MAP_MAX_CHARS || !MAP_DATA_URL.test(clean)) return null;
+  return clean;
+}
+
+/** 贴图可能是几百 KB 的 base64：分组 key 里只放短哈希，别拿整段字符串当 Map 键 */
+function shortHash(text) {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < text.length; i += 1) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return `${(hash >>> 0).toString(16)}:${text.length}`;
 }
 
 /**
@@ -136,6 +184,52 @@ export function resolveSolidMaterial(spec) {
   }
 
   // 只有 opacity 没有颜色也能用：透明是独立效果
+
+  if (source.map !== undefined) {
+    const map = normalizeSolidMap(source.map);
+    if (!map) {
+      errors.push(`material.map 必须是 data:image/png|jpeg|webp;base64,…（≤ ${SOLID_MAP_MAX_CHARS} 字符）`
+        + ` 或 ai:<提示词>（≤ ${SOLID_MAP_PROMPT_MAX} 字，由服务端生成图片）`);
+    } else {
+      material.map = map;
+    }
+  }
+
+  if (source.mapMode !== undefined) {
+    if (!SOLID_MAP_MODES.includes(source.mapMode)) {
+      errors.push(`material.mapMode 只支持 ${SOLID_MAP_MODES.join(' / ')}`);
+    } else {
+      material.mapMode = source.mapMode;
+    }
+  }
+
+  if (source.mapRepeat !== undefined) {
+    const repeat = source.mapRepeat;
+    const valid = Array.isArray(repeat) && repeat.length === 2
+      && repeat.every((v) => typeof v === 'number' && Number.isFinite(v) && v > 0 && v <= 32);
+    if (!valid) errors.push('material.mapRepeat 必须是 [u, v] 两个 0 ~ 32 的正数');
+    else material.mapRepeat = [repeat[0], repeat[1]];
+  }
+
+  if (source.bumpMap !== undefined) {
+    const bumpMap = normalizeSolidBumpMap(source.bumpMap);
+    if (!bumpMap) {
+      errors.push(`material.bumpMap 必须是 data:image/png|jpeg|webp;base64,…（≤ ${SOLID_MAP_MAX_CHARS} 字符）或 "auto"`);
+    } else {
+      material.bumpMap = bumpMap;
+    }
+  }
+
+  if (source.bumpScale !== undefined) {
+    const scale = Number(source.bumpScale);
+    if (!Number.isFinite(scale) || scale < 0 || scale > SOLID_BUMP_SCALE_MAX) {
+      errors.push(`material.bumpScale（凹凸幅度）必须是 0 ~ ${SOLID_BUMP_SCALE_MAX} 的数字`);
+    } else {
+      material.bumpScale = scale;
+    }
+  }
+
+  // 只有 opacity / 只有 map 也能用：透明与贴图都是独立效果
   if (!Object.keys(material).length && !errors.length) {
     return { material: null, errors };
   }
@@ -145,19 +239,25 @@ export function resolveSolidMaterial(spec) {
 /** 分组 key：取值相同的材质共用一个材质槽 */
 export function solidMaterialKey(material) {
   if (!material) return '';
-  const order = ['name', 'color', 'roughness', 'metalness', 'opacity'];
+  const order = ['name', 'color', 'roughness', 'metalness', 'opacity', 'mapMode', 'mapRepeat', 'map', 'bumpMap', 'bumpScale'];
   const parts = order
     .filter((key) => material[key] !== undefined)
-    .map((key) => `${key}:${material[key]}`);
+    .map((key) => {
+      const value = material[key];
+      if (key === 'map' || key === 'bumpMap') return `${key}:${shortHash(String(value))}`;
+      return `${key}:${Array.isArray(value) ? value.join(',') : value}`;
+    });
   // pattern 可能是对象，单独稳定序列化，保证不同色板不会合并到同一材质槽
   if (material.pattern !== undefined) parts.push(`pattern:${JSON.stringify(material.pattern)}`);
   return parts.join('|');
 }
 
-/** 界面显示名：有名字用名字，没名字退回色值 */
+/** 界面显示名：有名字用名字，其次贴图，最后退回色值 */
 export function solidMaterialLabel(material) {
   if (!material) return '跟随构件材质';
-  return material.name || (material.color ? material.color.toUpperCase() : '自定义材质');
+  if (material.name) return material.name;
+  if (material.map) return material.map.startsWith('ai:') ? 'AI 生成贴图' : '纹理贴图';
+  return material.color ? material.color.toUpperCase() : '自定义材质';
 }
 
 /** 预设反查：界面下拉框按「颜色 + 参数全等」判断当前用的是哪个预设 */

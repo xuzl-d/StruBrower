@@ -3,7 +3,8 @@
  *
  * 目的：造型内核（buildSolidModel）是纯 CPU 几何计算，不需要浏览器就能求值；
  * 但「看看它长什么样」需要一个能跑的渲染器。这里用 z-buffer 软光栅 + 透视投影，
- * 按 geometry.groups 的材质槽上色，输出 PNG（自带极简 PNG 编码，不引第三方依赖）。
+ * 按 geometry.groups 的材质槽上色，输出 PNG（自带极简 PNG 编解码，不引第三方依赖）。
+ * 材质带 map 时按 UV 透视校正插值采样贴图；非 PNG 或解码失败自动降级为纯色。
  *
  * 不做：阴影、抗锯齿（用 2× 超采样代替）、透明混合（玻璃按不透明处理）。
  */
@@ -12,6 +13,8 @@ import zlib from 'node:zlib';
 import { Box3, BufferGeometry, Matrix4, Sphere, Vector3 } from 'three';
 import type { SolidMaterial } from '../../src/bim/types';
 import { SOLID_PATTERNS } from '../../shared/materials.js';
+import { decodePng } from './png';
+import type { DecodedImage } from './png';
 
 export interface RasterView {
   name: string;
@@ -85,6 +88,13 @@ interface Tri {
   p: [Vector3, Vector3, Vector3];
   n: [Vector3, Vector3, Vector3];
   color: Rgb;
+  /** 每顶点 UV（造型内核按材质槽投影生成） */
+  uv?: Array<[number, number]>;
+  /** 该材质槽解码后的贴图；null = 纯色降级 */
+  texture?: DecodedImage | null;
+  /** 与贴图对齐的灰度高度图；用梯度做近似的缝阴影（浏览器里由 bumpMap 精确处理） */
+  bump?: DecodedImage | null;
+  bumpScale: number;
 }
 
 function hexToRgb(hex: string): Rgb {
@@ -180,6 +190,33 @@ function chunk(type: string, data: Buffer): Buffer {
   return Buffer.concat([head, body, crc]);
 }
 
+/** 双线性采样 + RepeatWrapping；v=1 对应 PNG 第一行（与 three 的 flipY 一致） */
+function sampleTexture(texture: DecodedImage, u: number, v: number): Rgb {
+  const { width, height, rgb } = texture;
+  const x = (u - Math.floor(u)) * width - 0.5;
+  const y = (1 - (v - Math.floor(v))) * height - 0.5;
+  const x0 = Math.floor(x);
+  const y0 = Math.floor(y);
+  const fx = x - x0;
+  const fy = y - y0;
+  const at = (px: number, py: number, channel: number): number => {
+    const cx = Math.min(width - 1, Math.max(0, ((px % width) + width) % width));
+    const cy = Math.min(height - 1, Math.max(0, py));
+    return rgb[(cy * width + cx) * 3 + channel] / 255;
+  };
+  return [0, 1, 2].map((channel) => {
+    const top = at(x0, y0, channel) * (1 - fx) + at(x0 + 1, y0, channel) * fx;
+    const bottom = at(x0, y0 + 1, channel) * (1 - fx) + at(x0 + 1, y0 + 1, channel) * fx;
+    return top * (1 - fy) + bottom * fy;
+  }) as Rgb;
+}
+
+/** 高度图取亮度：材质 bumpMap 是灰度 RGB，三通道相同 */
+function sampleHeight(texture: DecodedImage, u: number, v: number): number {
+  const rgb = sampleTexture(texture, u, v);
+  return (rgb[0] + rgb[1] + rgb[2]) / 3;
+}
+
 export function encodePng(width: number, height: number, rgb: Buffer): Buffer {
   const header = Buffer.alloc(13);
   header.writeUInt32BE(width, 0);
@@ -204,6 +241,7 @@ export function encodePng(width: number, height: number, rgb: Buffer): Buffer {
 function collectTriangles(geometry: BufferGeometry, materials: Array<SolidMaterial | null>): Tri[] {
   const position = geometry.getAttribute('position');
   const normal = geometry.getAttribute('normal');
+  const uvAttribute = geometry.getAttribute('uv');
   const index = geometry.index;
   const count = index ? index.count : position.count;
   const at = (i: number) => (index ? index.getX(i) : i);
@@ -211,20 +249,34 @@ function collectTriangles(geometry: BufferGeometry, materials: Array<SolidMateri
     ? geometry.groups
     : [{ start: 0, count, materialIndex: 0 }];
 
+  // 同一张 data URL 可能被多个材质槽引用，只解码一次
+  const textureCache = new Map<string, DecodedImage | null>();
+  const textureOf = (map: string): DecodedImage | null => {
+    if (!textureCache.has(map)) textureCache.set(map, decodePng(map));
+    return textureCache.get(map) ?? null;
+  };
+
   const tri: Tri[] = [];
   const v = [new Vector3(), new Vector3(), new Vector3()];
   const n = [new Vector3(), new Vector3(), new Vector3()];
   for (const group of groups) {
     const material = materials[group.materialIndex] ?? null;
-    const baseColor = hexToRgb(material?.color ?? '#d5dbe2');
+    // 带贴图又没写 color 时按白色相乘，否则贴图白底会被默认灰染脏
+    const color = hexToRgb(material?.color ?? (material?.map ? '#ffffff' : '#d5dbe2'));
+    const texture = material?.map ? textureOf(material.map) : null;
+    const bump = material?.bumpMap ? textureOf(material.bumpMap) : null;
+    const bumpScale = material?.bumpScale ?? 0.004;
+    // 程序化迷彩：有 pattern 时按面质心采样色板，覆盖底色（离线近似，真机逐像素）
     const hasCamo = !!material?.pattern;
     const end = Math.min(count, group.start + group.count);
     for (let i = group.start; i + 2 < end; i += 3) {
+      const uv: Array<[number, number]> = [];
       for (let k = 0; k < 3; k += 1) {
         const vi = at(i + k);
         v[k].set(position.getX(vi), position.getY(vi), position.getZ(vi));
         if (normal) n[k].set(normal.getX(vi), normal.getY(vi), normal.getZ(vi));
         else n[k].set(0, 0, 0);
+        uv.push(uvAttribute ? [uvAttribute.getX(vi), uvAttribute.getY(vi)] : [0, 0]);
       }
       if (!normal) {
         const face = new Vector3().subVectors(v[1], v[0]).cross(new Vector3().subVectors(v[2], v[0])).normalize();
@@ -234,13 +286,18 @@ function collectTriangles(geometry: BufferGeometry, materials: Array<SolidMateri
       }
       // 迷彩按面质心采样（离线近似：一个三角形一个色块）；
       // 真机 shader 逐像素采样，过渡更细。这里只用于验证斑块分布与配色。
-      const color = hasCamo
+      // 有 pattern 时用迷彩色覆盖底色；否则用含贴图感知的底色（贴图由 texture 单独采样）。
+      const triColor = hasCamo
         ? camoColorAt(material!.pattern!, new Vector3().addVectors(v[0], v[1]).add(v[2]).multiplyScalar(1 / 3))
-        : baseColor;
+        : color;
       tri.push({
         p: [v[0].clone(), v[1].clone(), v[2].clone()],
         n: [n[0].clone(), n[1].clone(), n[2].clone()],
-        color,
+        color: triColor,
+        uv,
+        texture,
+        bump,
+        bumpScale,
       });
     }
   }
@@ -368,10 +425,34 @@ function renderOne(
         const dotFill = Math.max(0, (nx * fill.x + ny * fill.y + nz * fill.z) / length);
         const shade = 0.34 + 0.72 * dotKey + 0.16 * dotFill;
 
+        // 贴图 / 高度图：与深度同样做透视校正插值，避免斜视角下花纹被拉歪
+        let albedo: Rgb = tri.color;
+        let u = 0;
+        let v = 0;
+        if (tri.uv && (tri.texture || tri.bump)) {
+          const [uv0, uv1, uv2] = tri.uv;
+          u = (w0 * uv0[0] / -a.z + w1 * uv1[0] / -b.z + w2 * uv2[0] / -c.z) * z;
+          v = (w0 * uv0[1] / -a.z + w1 * uv1[1] / -b.z + w2 * uv2[1] / -c.z) * z;
+        }
+        if (tri.texture && tri.uv) {
+          const texel = sampleTexture(tri.texture, u, v);
+          albedo = [tri.color[0] * texel[0], tri.color[1] * texel[1], tri.color[2] * texel[2]] as Rgb;
+        }
+        // 凹凸近似：高度梯度的两侧一明一暗，拼缝才有「凹进去」的立体感。
+        // 浏览器里由 MeshStandardMaterial.bumpMap 按真实光照算，这里只用于离线出图。
+        let bumpShade = 1;
+        if (tri.bump && tri.uv) {
+          const h0 = sampleHeight(tri.bump, u, v);
+          const hx = sampleHeight(tri.bump, u + 1 / tri.bump.width, v) - h0;
+          const hy = sampleHeight(tri.bump, u, v + 1 / tri.bump.height) - h0;
+          const strength = tri.bumpScale * 400;
+          bumpShade = Math.max(0.6, Math.min(1.4, 1 - (hx * 0.75 - hy * 0.55) * strength));
+        }
+        const lit = shade * bumpShade;
         const index = offset * 3;
-        color[index] = tri.color[0] * shade;
-        color[index + 1] = tri.color[1] * shade;
-        color[index + 2] = tri.color[2] * shade;
+        color[index] = albedo[0] * lit;
+        color[index + 1] = albedo[1] * lit;
+        color[index + 2] = albedo[2] * lit;
       }
     }
   }

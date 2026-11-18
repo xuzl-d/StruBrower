@@ -76,6 +76,12 @@ const SHAPE_FIELDS = {
   sweep: [],
   hull: [],
   loft: [],
+  ballPanels: [
+    ['radius', '球半径', 'length', MIN_SIZE, MAX_SIZE],
+    ['seam', '缝宽', 'length', 0.00002, MAX_SIZE / 2],
+    ['thickness', '皮革厚', 'length', 0.00005, MAX_SIZE / 2],
+    ['bulge', '块面鼓起', 'length', 0, MAX_SIZE / 2],
+  ],
   group: [],
 };
 
@@ -86,7 +92,12 @@ const MODIFIER_FIELDS = [
   ['offset', '曲面偏移', 'length', -MAX_SIZE / 4, MAX_SIZE / 4],
 ];
 
-/** 基本体字段（非特征树模型） */
+/**
+ * 基本体字段（非特征树模型）。
+ * segments 上限与 server/ai/solid.js 的 SOLID_LIMITS.segments 保持一致（64）：
+ * 以前这里写 128，参数面板能拖到 128，但前端内核只用到 32、特征树校验又拒收 64 以上，
+ * 同一个字段三套范围，AI 照着 128 写就会被服务端打回。基本体内核会再夹一次，不会因此变粗糙。
+ */
 const PRIMITIVE_FIELDS = {
   box: [
     ['width', '体量宽', 'length', MIN_SIZE, MAX_SIZE],
@@ -96,14 +107,14 @@ const PRIMITIVE_FIELDS = {
   cylinder: [
     ['radius', '体量半径', 'length', MIN_SIZE, MAX_SIZE],
     ['height', '体量高', 'length', MIN_SIZE, MAX_SIZE],
-    ['segments', '分段数', 'count', 3, 128, true],
+    ['segments', '分段数', 'count', 6, 64, true],
   ],
   sphere: [
     ['radius', '体量半径', 'length', MIN_SIZE, MAX_SIZE],
-    ['segments', '分段数', 'count', 6, 128, true],
+    ['segments', '分段数', 'count', 6, 64, true],
   ],
   extrude: [['height', '拉伸高度', 'length', MIN_SIZE, MAX_SIZE]],
-  revolve: [['segments', '旋转分段', 'count', 6, 128, true]],
+  revolve: [['segments', '旋转分段', 'count', 6, 64, true]],
   pyramid: [
     ['radius', '底面半径', 'length', MIN_SIZE, MAX_SIZE],
     ['height', '体量高', 'length', MIN_SIZE, MAX_SIZE],
@@ -292,7 +303,7 @@ function walkFeatures(features, prefix, groups, out) {
 const SHAPE_LABEL = {
   box: '长方体', roundedBox: '圆角盒', cylinder: '圆柱', tube: '圆管', capsule: '胶囊',
   sphere: '球', ellipsoid: '椭球', cone: '圆锥', torus: '圆环', prism: '拉伸轮廓',
-  revolve: '旋转体', loft: '放样', sweep: '扫掠', hull: '凸包', group: '子特征组',
+  revolve: '旋转体', loft: '放样', sweep: '扫掠', hull: '凸包', ballPanels: '皮革拼球', group: '子特征组',
 };
 
 /**

@@ -72,13 +72,20 @@ try {
   await run(process.execPath, ['scripts/ai-conversation-test.mjs']);
   await run(process.execPath, ['scripts/ai-attachments-test.mjs']);
   await run(process.execPath, ['scripts/ai-provider-test.mjs']);
+  await run(process.execPath, ['scripts/message-limits-test.mjs']);
+  await run(process.execPath, ['scripts/orchestrator-test.mjs']);
+  await run(process.execPath, ['scripts/role-context-test.mjs']);
+  await run(process.execPath, ['scripts/segments-test.mjs']);
+  await run(process.execPath, ['scripts/ai-texture-test.mjs']);
+  await run(process.execPath, ['scripts/python-runner-test.mjs']);
+  await run(process.execPath, ['scripts/ai-python-test.mjs']);
   await run(process.execPath, ['scripts/ai-memory-test.mjs']);
   await run(process.execPath, ['scripts/ai-budget-test.mjs']);
   await run(process.execPath, ['scripts/inspect-test.mjs']);
   await run(process.execPath, ['scripts/step-convert-test.mjs']);
 
   fs.mkdirSync(path.join(root, '.tmp'), { recursive: true });
-  for (const name of ['ai-stream-retry-test', 'client-repo-test', 'diff-test', 'step-decode-test', 'import-test', 'box-select-test', 'bim-edit-test', 'settings-test', 'snap-test', 'modify-test', 'ifc-schedule-test', 'layer-material-test', 'parameter-test', 'history-test', 'coordinate-test', 'viewport-test', 'agent-loop-test', 'agent-tools-test', 'input-history-test', 'measure-test', 'solid-test', 'template-test', 'parametric-test', 'constraint-test']) {
+  for (const name of ['ai-stream-retry-test', 'client-repo-test', 'diff-test', 'step-decode-test', 'import-test', 'box-select-test', 'bim-edit-test', 'settings-test', 'snap-test', 'modify-test', 'ifc-schedule-test', 'layer-material-test', 'parameter-test', 'history-test', 'coordinate-test', 'viewport-test', 'agent-loop-test', 'agent-tools-test', 'input-history-test', 'measure-test', 'assembly-test', 'ime-test', 'describe-test', 'solid-test', 'texture-test', 'ball-panels-test', 'template-test', 'parametric-test', 'constraint-test']) {
     const bundle = path.join(root, '.tmp', `${name}.mjs`);
     await esbuild.build({
       entryPoints: [path.join(root, 'scripts', `${name}.ts`)],

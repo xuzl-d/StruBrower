@@ -32,13 +32,13 @@ const column = project.elements.find((element) => element.category === 'column')
 const slab = project.elements.find((element) => element.category === 'slab')!;
 
 /* ------------------------------ 默认数据与迁移 ------------------------------ */
-check('示例项目自带 6 个默认图层与 5 种材质', project.layers?.length === 6 && project.materials.length === 5);
+check('示例项目自带完整默认图层与 5 种材质', project.layers?.length === defaultLayers().length && project.materials.length === 5);
 check('构件按类别自动归入对应图层',
   wall.layerId === 'layer-wall' && column.layerId === 'layer-column'
   && slab.layerId === 'layer-slab' && layerIdForCategory('mesh') === 'layer-import');
 check('类别替换默认全部可见',
   Object.values(defaultCategoryOverrides()).every((override) => override.visible));
-check('新项目也带图层表', createProject({ name: '空项目' }).layers?.length === 6);
+check('新项目也带图层表', createProject({ name: '空项目' }).layers?.length === defaultLayers().length);
 
 const legacy: ProjectDocument = {
   ...project,
@@ -52,7 +52,7 @@ const legacy: ProjectDocument = {
 };
 const migrated = migrateDocument(legacy);
 check('旧文档迁移：自动补图层并按类别指派构件',
-  migrated.layers?.length === 6 && migrated.elements.every((element) => Boolean(element.layerId)),
+  migrated.layers?.length === defaultLayers().length && migrated.elements.every((element) => Boolean(element.layerId)),
   migrated.layers?.length);
 check('ensureDocumentLayers 幂等（第二次返回同一引用）', ensureDocumentLayers(migrated) === migrated);
 check('layerById / layerOfElement 解析正确',
@@ -165,7 +165,8 @@ check('0 号默认材质不能删到空表', deleteMaterial({ ...project, materi
 check('新建图层与删除空图层', (() => {
   const added = addLayer(project);
   const newId = added.layers!.at(-1)!.id;
-  return added.layers!.length === 7 && deleteLayer(added, newId).layers!.length === 6;
+  const base = defaultLayers().length;
+    return added.layers!.length === base + 1 && deleteLayer(added, newId).layers!.length === base;
 })());
 check('0 号默认图层不可删除', deleteLayer(project, DEFAULT_LAYER_ID) === project);
 check('删除含构件的图层时构件回到 0 号图层', (() => {
@@ -183,7 +184,7 @@ check('图层使用统计与 appearanceSummary 一致', (() => {
   const counts = layerUsage(project);
   const summary = appearanceSummary(project);
   return Object.values(counts).reduce((sum, count) => sum + count, 0) === project.elements.length
-    && summary.layers === 6 && summary.hiddenLayers === 0 && summary.lockedLayers === 0;
+    && summary.layers === defaultLayers().length && summary.hiddenLayers === 0 && summary.lockedLayers === 0;
 })());
 check('重命名 / 颜色 / 透明度更新图层', (() => {
   const renamed = updateLayer(project, 'layer-wall', { name: '外墙', color: '#010203', transparency: 25 });
@@ -206,7 +207,7 @@ check('IFC 材质关联数量 = 有材质的构件数', (() => {
 
 const changedDoc = updateLayer(project, 'layer-wall', { visible: false, locked: true });
 const diff = diffDocuments(project, changedDoc);
-check('协作差分包含 layers 字段', Boolean(diff?.layers) && diff?.layers?.length === 6);
+check('协作差分包含 layers 字段', Boolean(diff?.layers) && diff?.layers?.length === defaultLayers().length);
 check('类别替换变更也进入差分', (() => {
   const withCategory = setCategoryOverride(project, 'slab', { visible: false, color: '#abcdef' });
   const categoryDiff = diffDocuments(project, withCategory);

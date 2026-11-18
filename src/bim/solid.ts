@@ -27,6 +27,7 @@ import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js
 import { ConvexGeometry } from 'three/examples/jsm/geometries/ConvexGeometry.js';
 import { ADDITION, Brush, Evaluator, INTERSECTION, SUBTRACTION } from 'three-bvh-csg';
 import { resolveSolidMaterial, solidMaterialKey } from '../../shared/materials.js';
+import { buildBallPanelParts, DEFAULT_PANEL_MATERIALS } from './ball-panels';
 import type { LoftSection, RoofAttachment, SolidFeature, SolidMaterial, SolidPattern, SolidShape, Vec2, Vec3 } from './types';
 
 /** 安全上限：防止 AI 生成过大的模型把浏览器卡死 */
@@ -1804,6 +1805,9 @@ function buildShape(shape: SolidShape, context?: ShapeContext): BufferGeometry {
       return buildHull(shape.points);
     case 'tiles':
       return buildTiles(shape);
+    case 'ballPanels':
+      // 皮革拼球要拆成三种材质槽，在 evaluateFeatures 里直接处理，不走单材质路径
+      return new BufferGeometry();
     case 'group':
       // 子装配不在这里展开：材质要逐个子特征保留，交给 evaluateFeatures 递归处理
       return new BufferGeometry();
@@ -2109,6 +2113,25 @@ function evaluateFeatures(
       continue;
     }
 
+    // 皮革拼球：一个特征同时产出「白皮革 / 黑皮革 / 缝底内胆」三种材质槽，
+    // 不能走单材质的 buildShape 路径，这里拆成多个 Part 分别挂槽。
+    // 它只用来「加」出整颗球，不参与 cut / intersect（拿缝制球当刀具没有意义）。
+    if (feature.shape.shape === 'ballPanels') {
+      bodies += 1;
+      if (bodies > SOLID_LIMITS.bodies) break;
+      const panels = feature.shape;
+      for (const part of buildBallPanelParts(panels)) {
+        if (!part.geometry) continue;
+        const spec = part.role === 'light' ? panels.light : part.role === 'dark' ? panels.dark : panels.core;
+        const slot = slotOf(table, spec ?? DEFAULT_PANEL_MATERIALS[part.role]);
+        const geometry = instanceOf(normalizeSolid(part.geometry), feature);
+        if (!geometry) continue;
+        if (!parts.length) parts = [{ geometry, material: slot }];
+        else parts.push({ geometry, material: slot });
+      }
+      continue;
+    }
+
     let shapeGeometry = normalizeSolid(buildShape(feature.shape, context));
     if (isBlank(shapeGeometry)) {
       shapeGeometry.dispose();
@@ -2154,6 +2177,80 @@ function evaluateFeatures(
 export interface SolidBuild {
   geometry: BufferGeometry;
   materials: Array<SolidMaterial | null>;
+}
+
+/**
+ * 给「带贴图的材质槽」补 UV。
+ *
+ * 为什么放在最后一步：normalizeSolid() 会删掉除 position/normal 外的所有属性，
+ * CSG 求值器也只保留这两个，而且 mergeGeometries 要求各分支属性集合完全一致
+ * ——逐形状补 UV 会让多材质合并直接退化成单材质。最终几何已是 non-indexed，
+ * groups 按材质槽分段、每 3 个顶点一个三角形，正好可以按槽投影，
+ * 再逐三角形把跨 0/1 接缝的 u 解卷（否则接缝处会被插值成整张图拉出一道竖条）。
+ *
+ * 没有贴图的材质槽也会写上 UV（纯色材质不读，值无意义），保证属性完整。
+ */
+export function applyTextureUv(build: SolidBuild): SolidBuild {
+  const { materials } = build;
+  // 只有 bumpMap 的材质槽同样需要 UV（凹凸图与颜色图共用同一套投影）
+  if (!materials.some((material) => material?.map || material?.bumpMap)) return build;
+  const source = build.geometry;
+  const geometry = source.index ? source.toNonIndexed() : source;
+  if (geometry !== source) source.dispose();
+  const position = geometry.getAttribute('position');
+  if (!position) return { geometry, materials };
+
+  geometry.computeBoundingBox();
+  const box = geometry.boundingBox ?? new Box3();
+  const size = box.getSize(new Vector3());
+  const center = box.getCenter(new Vector3());
+  const width = Math.max(1e-6, size.x);
+  const depth = Math.max(1e-6, size.y);
+  const height = Math.max(1e-6, size.z);
+  // 球面投影的半径要取包围盒最大半轴，不能取对角线半径：正球的对角线半径是 √3·R，
+  // 会把 v 压到 [0.30, 0.70]，一张球面展开图只用上中间一条，极区图案全被挤没了。
+  const radius = Math.max(1e-6, Math.max(width, depth, height) / 2);
+  const uv = new Float32Array(position.count * 2);
+  const ranges = geometry.groups.length
+    ? geometry.groups
+    : [{ start: 0, count: position.count, materialIndex: 0 }];
+
+  for (const range of ranges) {
+    const material = materials[range.materialIndex ?? 0] ?? null;
+    const mode = material?.mapMode ?? 'cylindrical';
+    const repeat = material?.mapRepeat ?? [1, 1];
+    const end = Math.min(position.count, range.start + range.count);
+    for (let i = range.start; i < end; i += 1) {
+      const x = position.getX(i);
+      const y = position.getY(i);
+      const z = position.getZ(i);
+      let u: number;
+      let v: number;
+      if (mode === 'planar') {
+        u = (x - box.min.x) / width;
+        v = (y - box.min.y) / depth;
+      } else if (mode === 'spherical') {
+        u = Math.atan2(y - center.y, x - center.x) / (Math.PI * 2) + 0.5;
+        v = 1 - Math.acos(clamp((z - center.z) / radius, -1, 1)) / Math.PI;
+      } else {
+        u = Math.atan2(y - center.y, x - center.x) / (Math.PI * 2) + 0.5;
+        v = (z - box.min.z) / height;
+      }
+      uv[i * 2] = u * repeat[0];
+      uv[i * 2 + 1] = v * repeat[1];
+    }
+    // 柱面 / 球面的 u=0↔1 在模型背面：跨缝三角形必须解卷，配合 RepeatWrapping 才无缝
+    for (let i = range.start; i + 2 < end; i += 3) {
+      const values = [uv[i * 2], uv[(i + 1) * 2], uv[(i + 2) * 2]];
+      if (Math.max(...values) - Math.min(...values) > 0.5) {
+        for (let k = 0; k < 3; k += 1) {
+          if (uv[(i + k) * 2] < 0.5) uv[(i + k) * 2] += 1;
+        }
+      }
+    }
+  }
+  geometry.setAttribute('uv', new Float32BufferAttribute(uv, 2));
+  return { geometry, materials };
 }
 
 function triangleCountOf(geometry: BufferGeometry): number {
@@ -2249,7 +2346,7 @@ export function buildSolidModel(features: SolidFeature[]): SolidBuild {
   const roofs = new Map<string, RoofSurface>();
   collectRoofs(features, roofs);
   const context: ShapeContext = { roof: (id: string) => roofs.get(id) ?? null };
-  return assembleParts(evaluateFeatures(features, 0, table, -1, context), table);
+  return applyTextureUv(assembleParts(evaluateFeatures(features, 0, table, -1, context), table));
 }
 
 /** 按特征树求值出实体几何（局部坐标，Z-up，单位米）。不需要材质时用这个。 */
@@ -2324,6 +2421,7 @@ export const SOLID_SHAPE_LABELS: Record<SolidShape['shape'], string> = {
   sweep: '扫掠',
   hull: '凸包',
   tiles: '瓦面',
+  ballPanels: '皮革拼球',
   group: '子装配',
 };
 
@@ -2452,6 +2550,15 @@ export function solidFeatureGroups(feature: SolidFeature): SolidFieldGroup[] {
         lengthField('shape.sag', '板瓦内凹', finite(shape.sag, 0.012), 0),
         lengthField('shape.cornerLift', '角部起翘', finite(shape.cornerLift, 0), 0),
         { key: 'shape.cornerOut', label: '角部外挑', value: finite(shape.cornerOut, 0), min: 0, step: 0.02, unit: '' },
+      );
+      break;
+    case 'ballPanels':
+      size.push(
+        lengthField('shape.radius', '球半径', shape.radius),
+        lengthField('shape.seam', '缝宽', finite(shape.seam, shape.radius * 0.02), 0.00002),
+        lengthField('shape.thickness', '皮革厚', finite(shape.thickness, shape.radius * 0.028), 0.00005),
+        lengthField('shape.bulge', '块面鼓起', finite(shape.bulge, finite(shape.thickness, shape.radius * 0.028) * 0.8), 0),
+        countField('shape.segments', '每边分段', finite(shape.segments, 12), 6, SOLID_LIMITS.segments),
       );
       break;
     case 'group':

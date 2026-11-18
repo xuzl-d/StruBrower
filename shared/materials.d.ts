@@ -12,8 +12,20 @@ export declare const SOLID_PATTERNS: Record<string, { scale: number; colors: str
 /** 缺省 PBR 参数 */
 export declare const SOLID_MATERIAL_DEFAULTS: { roughness: number; metalness: number; opacity: number };
 
+/** 内联贴图字符上限 / AI 提示词上限 / 允许的 UV 投影方式 / 凹凸幅度上限 */
+export declare const SOLID_MAP_MAX_CHARS: number;
+export declare const SOLID_MAP_PROMPT_MAX: number;
+export declare const SOLID_MAP_MODES: string[];
+export declare const SOLID_BUMP_SCALE_MAX: number;
+
 /** #abc / #aabbcc → #aabbcc；非法返回 null */
 export declare function normalizeHexColor(value: unknown): string | null;
+
+/** data URL / ai: 提示词归一化，非法返回 null */
+export declare function normalizeSolidMap(value: unknown): string | null;
+
+/** 凹凸图：data URL 或 'auto'，非法返回 null */
+export declare function normalizeSolidBumpMap(value: unknown): string | null;
 
 /** 归一化材质描述（字符串预设或对象），返回 { material, errors } */
 export declare function resolveSolidMaterial(spec: unknown): { material: SolidMaterial | null; errors: string[] };

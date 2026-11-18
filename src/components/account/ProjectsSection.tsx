@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { isImeComposing } from '../../ime';
 import type { ProjectSummary } from '../../bim/document';
 
 interface ProjectsSectionProps {
@@ -124,6 +125,7 @@ export default function ProjectsSection({
                         maxLength={60}
                         onChange={(event) => setDraftName(event.target.value)}
                         onKeyDown={(event) => {
+                          if (isImeComposing(event)) return;
                           if (event.key === 'Enter') void commitRename(item.id);
                           if (event.key === 'Escape') setEditingId(null);
                         }}

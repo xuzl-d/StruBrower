@@ -58,6 +58,14 @@ export function resolveAiConfig(env = process.env) {
       baseUrl: (env.STRU_AI_VISION_BASE_URL ?? '').replace(/\/+$/, ''),
       apiKey: env.STRU_AI_VISION_API_KEY ?? '',
     },
+    // 文生图：填了模型名才调 /images/generations；地址与 Key 默认复用主模型。
+    // 留空时 AI 写 `material.map: "ai:…"` 会走内置程序化纹理，离线也能出图。
+    image: {
+      model: (env.STRU_AI_IMAGE_MODEL ?? '').trim(),
+      baseUrl: (env.STRU_AI_IMAGE_BASE_URL ?? '').replace(/\/+$/, ''),
+      apiKey: env.STRU_AI_IMAGE_API_KEY ?? '',
+      size: env.STRU_AI_IMAGE_SIZE ?? '1024x1024',
+    },
     // mock 永远可用；真实提供方需要 key
     ready: provider === 'mock' || Boolean(apiKey),
   };
@@ -1492,6 +1500,61 @@ function createMockProvider() {
   };
   return provider;
 }
+
+/**
+ * 角色编排辅助（供 server/ai/orchestrator.js 使用）：从模型输出里取严格的 JSON，
+ * mock 模式下用调用方给的脚本，离线也能跑通整条编排链。与 agent 工具循环无关。
+ */
+export function parseRoleJson(text) {
+  const raw = String(text ?? '').trim();
+  if (!raw) return null;
+  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1] ?? raw;
+  const start = fenced.indexOf('{');
+  const end = fenced.lastIndexOf('}');
+  if (start < 0 || end <= start) return null;
+  for (const candidate of [fenced.slice(start, end + 1), fenced.slice(start)]) {
+    try {
+      const parsed = JSON.parse(candidate);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
+    } catch {
+      // 再试下一种截法
+    }
+  }
+  return null;
+}
+
+export async function callRoleJson(config, { role, system, user, images = [], mock = null }) {
+  if (config.provider === 'mock') {
+    if (typeof mock !== 'function') throw new Error(`mock 模式没有「${role}」角色的脚本`);
+    return mock(role, { system, user });
+  }
+  const content = images.length
+    ? [...images.map((image) => ({
+      type: 'image_url',
+      image_url: { url: typeof image === 'string' ? image : image?.dataUrl ?? '' },
+    })), { type: 'text', text: String(user) }]
+    : String(user);
+  const messages = [
+    { role: 'system', content: String(system) },
+    { role: 'user', content },
+  ];
+  const payload = {
+    model: config.model,
+    messages,
+    temperature: 0.2,
+    ...(config.reasoningEffort ? { reasoning_effort: config.reasoningEffort } : {}),
+  };
+  const data = await requestCompletion(config, payload);
+  const message = data?.choices?.[0]?.message;
+  const text = typeof message?.content === 'string' && message.content.trim()
+    ? message.content
+    : message?.tool_calls?.[0]?.function?.arguments ?? '';
+  const parsed = parseRoleJson(text);
+  if (!parsed) throw new Error(`「${role}」角色没有返回可解析的 JSON：${String(text).slice(0, 200)}`);
+  return parsed;
+}
+
+export { prepareImages as prepareRoleImages };
 
 export function createProvider(config) {
   const provider = config.provider === 'mock' ? createMockProvider() : createOpenAiProvider(config);
