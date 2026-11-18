@@ -217,11 +217,13 @@ function primitiveSpecs(spec: PrimitiveSpec): ParameterKeySpec[] {
     ({ key: `primitive.${key}`, label, unit: 'count', min, max, integer: true });
   switch (spec.kind) {
     case 'box': return [length('width', '体量宽'), length('depth', '体量深'), length('height', '体量高')];
-    case 'cylinder': return [length('radius', '体量半径'), length('height', '体量高'), count('segments', '分段数', 3, 128)];
-    case 'sphere': return [length('radius', '体量半径'), count('segments', '分段数', 6, 128)];
+    // segments 上限与 server/ai/solid.js 的 SOLID_LIMITS.segments（64）对齐；
+    // 基本体内核会再夹到自己的上限，参数面板不再给出会被服务端拒绝的 128。
+    case 'cylinder': return [length('radius', '体量半径'), length('height', '体量高'), count('segments', '分段数', 6, 64)];
+    case 'sphere': return [length('radius', '体量半径'), count('segments', '分段数', 6, 64)];
     case 'extrude': return [length('height', '拉伸高度')];
     case 'decal': return [length('width', '贴花宽'), length('height', '贴花高')];
-    case 'revolve': return [count('segments', '旋转分段', 6, 128)];
+    case 'revolve': return [count('segments', '旋转分段', 6, 64)];
     case 'pyramid': return [length('radius', '底面半径'), length('height', '体量高'), count('sides', '边数', 3, 64)];
     // 特征实体的尺寸在「任意造型」对话框里按特征编辑，不进参数表
     case 'solid': return [];

@@ -130,6 +130,20 @@ check('Mock 模式说明自己不读图', String(imageOnly.data?.reply ?? '').in
 const streamedImage = await streamPlan(`/api/projects/${projectId}/ai/plan/stream`, { images: [{ dataUrl: TINY_PNG }] }, { token });
 check('流式通道同样接受图片', streamedImage.status === 200 && streamedImage.events.some((event) => event.type === 'result'), streamedImage.events.map((event) => event.type).join(','));
 
+console.log('自检回执长度（以前会误报“需求描述过长”）');
+// 自检闭环第 2 步发回来的是 stepPrompt + describe 工具结果，量级 1 万字符以上。
+// 这段文本不是用户写的需求，不能按 4000 字拒，否则用户什么都没输入也会看到「需求描述过长」。
+const longInternal = await api('POST', planPath, { token, body: { message: 'x'.repeat(12000), internal: true } });
+check('internal 轮 1.2 万字符回执被放行', longInternal.status === 200, longInternal.data);
+const longInternalStream = await streamPlan(`/api/projects/${projectId}/ai/plan/stream`, { message: 'x'.repeat(12000), internal: true }, { token });
+check('流式通道同样放行 internal 长回执', longInternalStream.status === 200 && longInternalStream.events.some((event) => event.type === 'result'), longInternalStream.events.map((event) => event.type).join(','));
+const longUser = await api('POST', planPath, { token, body: { message: 'x'.repeat(4001) } });
+check('用户自己写超长需求仍然是 400', longUser.status === 400 && String(longUser.data?.error ?? '').includes('需求描述过长'), longUser.data);
+const hugeInternal = await api('POST', planPath, { token, body: { message: 'x'.repeat(40000), internal: true } });
+check('internal 轮也有硬上限，且报错说明怎么翻页',
+  hugeInternal.status === 400 && String(hugeInternal.data?.error ?? '').includes('from/count'),
+  hugeInternal.data);
+
 console.log('应用方案');
 const applied1 = await api('POST', applyPath, { token, body: { ops: plan1.data.ops, message: '建房间' } });
 check('apply 200 且 rev=2', applied1.status === 200 && applied1.data.rev === 2, applied1.data.rev);

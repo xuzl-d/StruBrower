@@ -24,17 +24,19 @@ import {
   PMREMGenerator,
   Quaternion,
   Raycaster,
+  RepeatWrapping,
   Scene,
   Sphere,
   SphereGeometry,
   SRGBColorSpace,
   DoubleSide,
+  TextureLoader,
   Vector2,
   Vector3,
   WebGLRenderer,
   ACESFilmicToneMapping,
 } from 'three';
-import type { Object3D } from 'three';
+import type { Object3D, Texture } from 'three';
 import type { ViewSettings } from './settings';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
@@ -148,8 +150,12 @@ function snap(value: number, step: number): number {
 function disposeMaterial(material: Mesh | Line) {
   const list = Array.isArray(material.material) ? material.material : [material.material];
   for (const item of list) {
-    const mapped = item as typeof item & { map?: { dispose?: () => void } | null };
+    const mapped = item as typeof item & {
+      map?: { dispose?: () => void } | null;
+      bumpMap?: { dispose?: () => void } | null;
+    };
     mapped.map?.dispose?.();
+    mapped.bumpMap?.dispose?.();
     item.dispose();
   }
 }
@@ -227,10 +233,33 @@ function previewMaterial(): MeshStandardMaterial {
 }
 
 /**
+ * 特征级贴图 → Texture。只接受内联 data URL；`ai:<提示词>` 是服务端占位符，
+ * 不该走到这里，忽略它比让浏览器拿提示词当图片地址发请求安全。
+ * 每次 project 变化都会全量重建材质，因此这里不缓存 Texture —— disposeMaterial()
+ * 会连 map 一起释放，缓存反而会留下已 dispose 的对象。
+ */
+function solidMapTexture(
+  map: string | undefined,
+  repeat?: [number, number],
+  { srgb = true }: { srgb?: boolean } = {},
+): Texture | null {
+  if (!map || !map.startsWith('data:image/')) return null;
+  const texture = new TextureLoader().load(map);
+  // 颜色图走 sRGB；高度图是线性数据，标成 sRGB 会把缝的深浅算错
+  if (srgb) texture.colorSpace = SRGBColorSpace;
+  texture.wrapS = RepeatWrapping;
+  texture.wrapT = RepeatWrapping;
+  texture.anisotropy = 4;
+  if (repeat) texture.repeat.set(repeat[0], repeat[1]);
+  return texture;
+}
+
+/**
  * 特征材质 → MeshStandardMaterial。
  * - entry 为空（null）表示这一个零件跟随构件材质（材质浏览器指派的那个）；
  * - 图层颜色替换 / 类别颜色替换打开时 lockedColor 为真，颜色让位给替换色，
  *   但粗糙度 / 金属度仍然按零件走，这样「看颜色找构件」和「看质感」两件事不打架。
+ * - 有 map 时贴图乘在 color 上；没显式写 color 就改成白色，避免被构件灰染暗。
  */
 function featureMaterial(
   entry: SolidMaterial | null,
@@ -238,14 +267,27 @@ function featureMaterial(
   lockedColor: boolean,
 ): MeshStandardMaterial {
   const opacity = Math.min(1, Math.max(0.04, ((entry?.opacity ?? 100) / 100) * surface.opacity));
-  return new MeshStandardMaterial({
+  const map = !lockedColor && entry?.map ? solidMapTexture(entry.map, entry.mapRepeat) : null;
+  const bumpMap = !lockedColor && entry?.bumpMap
+    ? solidMapTexture(entry.bumpMap, entry.mapRepeat, { srgb: false })
+    : null;
+  const params: ConstructorParameters<typeof MeshStandardMaterial>[0] = {
     color: !lockedColor && entry?.color ? entry.color : surface.color,
     roughness: entry?.roughness ?? surface.roughness,
     metalness: entry?.metalness ?? surface.metalness,
     transparent: opacity < 0.999,
     opacity,
     depthWrite: opacity >= 0.999,
-  });
+  };
+  if (map) {
+    params.map = map;
+    if (!lockedColor && !entry?.color) params.color = '#ffffff';
+  }
+  if (bumpMap) {
+    params.bumpMap = bumpMap;
+    params.bumpScale = entry?.bumpScale ?? 0.004;
+  }
+  return new MeshStandardMaterial(params);
 }
 
 /**

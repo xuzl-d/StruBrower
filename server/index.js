@@ -22,9 +22,13 @@ import { buildProjectContext } from './ai/context.js';
 import { describeOpsBrief, compactConversation, maybeSummarize } from './ai/memory.js';
 import { contextWindowOf, describeUsage, estimateTokens } from './ai/budget.js';
 import { createProvider, defaultReasoningEffort, resolveAiConfig } from './ai/provider.js';
+import { planAssembly } from './ai/orchestrator.js';
 import { planWithRepair } from './ai/repair.js';
+import { generateTexture, resolveTextureOps, slimOpsForHistory } from './ai/textures.js';
+import { pythonStatus, runPythonTool } from './ai/python-runner.js';
 import { ImageInputError, listModels, normalizeImages, quickMainSupportsImages } from './ai/vision.js';
 import { applyAttachments, describeAttachments, parseAttachments } from './ai/attachments.js';
+import { messageTooLong } from './ai/message-limits.js';
 import { createSecretBox } from './crypto.js';
 import { createRateLimiter } from './limits.js';
 import { createStore } from './store.js';
@@ -130,6 +134,13 @@ function loadAiConfig() {
       baseUrl: String(store.getSetting('ai.visionBaseUrl') ?? envConfig.vision.baseUrl ?? '').trim().replace(/\/+$/, ''),
       apiKey: (storedVisionKey ? secretBox.open(storedVisionKey) : '') || envConfig.vision.apiKey,
     },
+    // 文生图：只需要一个模型名，接口地址与 Key 默认复用主模型（也可用 IMAGE_* 环境变量独立指定）
+    image: {
+      model: String(store.getSetting('ai.imageModel') ?? envConfig.image.model ?? '').trim(),
+      baseUrl: String(store.getSetting('ai.imageBaseUrl') ?? envConfig.image.baseUrl ?? '').trim().replace(/\/+$/, ''),
+      apiKey: envConfig.image.apiKey,
+      size: envConfig.image.size,
+    },
     ready: normalizedProvider === 'mock' || Boolean(apiKey),
   };
 }
@@ -140,6 +151,39 @@ let aiProvider = createProvider(aiConfig);
 function refreshAi() {
   aiConfig = loadAiConfig();
   aiProvider = createProvider(aiConfig);
+}
+
+/**
+ * 模型这一轮要跑的 Python 脚本：服务端执行，结果文字回灌给下一轮，
+ * 产出的 ops 已经过 applyOps dry-run，图片只走 python:N 占位符、不进回执正文。
+ * 普通 / 流式两个入口共用，避免两条链路行为漂移。
+ */
+async function withPythonTool(planned, resolved, { document, onEvent, signal } = {}) {
+  const python = await runPythonTool(planned.result?.python, {
+    document,
+    ops: resolved.ops,
+    onEvent,
+    signal,
+  });
+  const textures = [
+    ...resolved.textures,
+    ...python.images.map((image) => ({
+      prompt: image.name,
+      source: 'python',
+      model: '',
+      width: 0,
+      height: 0,
+      bytes: Buffer.byteLength(image.dataUrl, 'utf8'),
+      chars: image.dataUrl.length,
+    })),
+  ];
+  return {
+    ...planned.result,
+    ops: python.ops,
+    textures,
+    pythonText: python.text,
+    pythonReport: python.report,
+  };
 }
 
 /** STEP -> 网格转换器（Python + OCP）可用性探测，用于保留 occt-import-js 回退路径。 */
@@ -610,6 +654,10 @@ function aiSettingsView() {
     contextTokens: aiConfig.contextTokens ?? 0,
     /** 实际生效的窗口：前端据此显示「用了多少 / 总共多少」 */
     contextWindow: contextWindowOf(aiConfig.model, aiConfig.contextTokens),
+    /** 文生图：填了模型名就调 /images/generations，留空用内置程序化纹理 */
+    imageModel: aiConfig.image?.model ?? '',
+    imageBaseUrl: aiConfig.image?.baseUrl ?? '',
+    imageEnabled: Boolean(aiConfig.image?.model && aiConfig.apiKey),
     hasKey: Boolean(aiConfig.apiKey),
     keyHint: aiConfig.apiKey ? `****${aiConfig.apiKey.slice(-4)}` : '',
     ready: aiConfig.ready,
@@ -621,6 +669,7 @@ function aiSettingsView() {
       visionBaseUrl: stored['ai.visionBaseUrl'] ? 'db' : (process.env.STRU_AI_VISION_BASE_URL ? 'env' : 'none'),
       visionApiKey: stored['ai.visionApiKey'] ? 'db' : (process.env.STRU_AI_VISION_API_KEY ? 'env' : 'none'),
       apiKey: stored['ai.apiKey'] ? 'db' : (process.env.STRU_AI_API_KEY || process.env.OPENAI_API_KEY ? 'env' : 'none'),
+      imageModel: stored['ai.imageModel'] ? 'db' : (process.env.STRU_AI_IMAGE_MODEL ? 'env' : 'none'),
     },
   };
 }
@@ -1080,6 +1129,13 @@ async function handleApi(ctx) {
     if (body.visionModel !== undefined && typeof body.visionModel !== 'string') {
       throw new HttpError(400, 'visionModel 必须是字符串（留空表示不启用）');
     }
+    if (body.imageModel !== undefined && typeof body.imageModel !== 'string') {
+      throw new HttpError(400, 'imageModel 必须是字符串（留空表示用内置纹理）');
+    }
+    if (body.imageBaseUrl !== undefined) {
+      const value = String(body.imageBaseUrl).trim();
+      if (value && !/^https?:\/\//.test(value)) throw new HttpError(400, '生图接口地址必须以 http:// 或 https:// 开头');
+    }
     if (body.visionBaseUrl !== undefined) {
       const value = String(body.visionBaseUrl).trim();
       if (value && !/^https?:\/\//.test(value)) throw new HttpError(400, '视觉模型接口地址必须以 http:// 或 https:// 开头');
@@ -1124,6 +1180,16 @@ async function handleApi(ctx) {
       store.setSetting('ai.visionApiKey', secretBox.seal(body.visionApiKey.trim()), admin.id);
     }
     if (body.clearVisionKey === true) store.deleteSetting('ai.visionApiKey');
+    if (body.imageModel !== undefined) {
+      const imageModel = String(body.imageModel).trim();
+      if (imageModel) store.setSetting('ai.imageModel', imageModel, admin.id);
+      else store.deleteSetting('ai.imageModel');
+    }
+    if (body.imageBaseUrl !== undefined) {
+      const imageBaseUrl = String(body.imageBaseUrl).trim().replace(/\/+$/, '');
+      if (imageBaseUrl) store.setSetting('ai.imageBaseUrl', imageBaseUrl, admin.id);
+      else store.deleteSetting('ai.imageBaseUrl');
+    }
     if (body.timeoutMs !== undefined) store.setSetting('ai.timeoutMs', String(Math.round(Number(body.timeoutMs))), admin.id);
     if (typeof body.apiKey === 'string' && body.apiKey.trim()) {
       store.setSetting('ai.apiKey', secretBox.seal(body.apiKey.trim()), admin.id);
@@ -1286,12 +1352,54 @@ async function handleApi(ctx) {
       contextWindow: contextWindowOf(aiConfig.model, aiConfig.contextTokens),
       ready: aiConfig.ready,
       mock: aiProvider.id === 'mock',
+      /** 贴图生成：model 为空时走内置程序化纹理，任何环境都能用 */
+      texture: {
+        enabled: true,
+        model: aiConfig.image?.model ?? '',
+        procedural: !aiConfig.image?.model,
+      },
+      /** Python 工具：容器模式才是硬隔离，restricted 只是受限进程 */
+      python: pythonStatus(),
       ops: ['addLevel', 'addGrid', 'addWall', 'addColumn', 'addSlab', 'addSolid', 'addFeature', 'editFeature', 'deleteFeature', 'updateElement', 'setTypeProperty', 'deleteElement'],
     });
   }
 
-  if ((match = pathname.match(/^\/api\/projects\/([^/]+)\/ai\/plan$/)) && method === 'POST') {
+  /** 独立生图入口：给材质编辑器 / 自动化脚本直接用，返回可写进 material.map 的 data URL */
+  if (pathname === '/api/ai/texture' && method === 'POST') {
+    const user = requireUser(ctx);
+    enforceLimit(aiLimiter, user, 'AI');
+    const body = await readJson(req, 256 * 1024);
+    const prompt = typeof body.prompt === 'string' ? body.prompt.trim().slice(0, 300) : '';
+    if (!prompt) throw new HttpError(400, 'prompt 不能为空（最多 300 字）');
+    const generated = await generateTexture(aiConfig, prompt);
+    store.audit(null, user.id, 'ai.texture', {
+      source: generated.source,
+      model: generated.model ?? '',
+      bytes: generated.bytes,
+      prompt: prompt.slice(0, 100),
+    });
+    return sendJson(res, 200, {
+      image: generated.dataUrl,
+      prompt,
+      source: generated.source,
+      model: generated.model ?? '',
+      width: generated.width,
+      height: generated.height,
+      bytes: generated.bytes,
+      chars: generated.dataUrl.length,
+      ...(generated.bumpDataUrl ? {
+        bumpImage: generated.bumpDataUrl,
+        bumpScale: 0.004,
+      } : {}),
+      ...(generated.warning ? { warning: generated.warning } : {}),
+    });
+  }
+
+  // /ai/assemble 是 /ai/plan 的「分零件建模」版本：同一套鉴权/会话/落库，
+  // 只是把生成函数换成多角色编排。也可用 /ai/plan + body.mode:'assemble' 走同一条路。
+  if ((match = pathname.match(/^\/api\/projects\/([^/]+)\/ai\/(plan|assemble)$/)) && method === 'POST') {
     const projectId = match[1];
+    const assemble = match[2] === 'assemble';
     const user = requireUser(ctx);
     requireProjectRole(projectId, user.id, 'read');
     enforceLimit(aiLimiter, user, 'AI');
@@ -1299,11 +1407,16 @@ async function handleApi(ctx) {
       throw new HttpError(503, 'AI 未配置：设置 STRU_AI_API_KEY（或 STRU_AI_PROVIDER=mock 使用本地模拟）');
     }
     const body = await readJson(req, MAX_AI_BODY_BYTES);
+    const useAssembly = assemble || body.mode === 'assemble';
     const images = parseImageBody(body);
     // 文本附件（txt / md / json / csv / 代码…）先解析：只给文件不写字时还要靠它补一句默认需求
     const attachments = parseAttachments(body.attachments);
     const typed = aiMessageOf(body, images, attachments);
-    if (typed.length > 4000) throw new HttpError(400, '需求描述过长');
+    // 自检轮（第 2 步起）的 message 是 stepPrompt 拼出来的回执 + 工具结果，不是用户写的需求；
+    // 按 4000 字拦会把 describe 的正常输出误判成「需求描述过长」，所以内部轮单独给上限
+    const internal = body.internal === true;
+    const tooLong = messageTooLong(typed, internal);
+    if (tooLong) throw new HttpError(400, tooLong);
     const message = applyAttachments(typed, attachments);
     const stored = store.getDocument(projectId);
     if (!stored) throw new HttpError(404, '项目文档不存在');
@@ -1319,7 +1432,7 @@ async function handleApi(ctx) {
       message,
       thumbs: parseThumbs(body.imageThumbs),
       shots: Number(body.imageShots) || 0,
-      internal: body.internal === true,
+      internal,
       requestId: parseRequestId(body),
     });
     let result;
@@ -1330,7 +1443,14 @@ async function handleApi(ctx) {
     const memory = session?.memory ?? '';
     try {
       const planned = await planWithRepair({
-        run: (args) => aiProvider.plan(args),
+        run: useAssembly
+          ? (args) => planAssembly({
+            ...args,
+            config: aiConfig,
+            document: stored.document,
+            options: body.assembly,
+          })
+          : (args) => aiProvider.plan(args),
         message,
         context,
         history,
@@ -1338,7 +1458,9 @@ async function handleApi(ctx) {
         images,
         document: stored.document,
       });
-      result = planned.result;
+      // 把 material.map 里的 `ai:<提示词>` 换成真实图片（失败自动降级为内置纹理）
+      const resolved = await resolveTextureOps(planned.result?.ops, aiConfig);
+      result = await withPythonTool(planned, resolved, { document: stored.document });
       repaired = planned.repaired ?? 0;
       warning = planned.warning ?? '';
     } catch (error) {
@@ -1353,10 +1475,12 @@ async function handleApi(ctx) {
     const ops = Array.isArray(result.ops) ? result.ops : [];
     const inspect = Array.isArray(result.inspect) ? result.inspect : [];
     const measure = Array.isArray(result.measure) ? result.measure : [];
+    const describe = Array.isArray(result.describe) ? result.describe : [];
+    const textures = Array.isArray(result.textures) ? result.textures : [];
     const summary = summarizeOps(ops);
     const saved = saveAssistantMessage(session, {
       reply: result.reply ?? '',
-      ops,
+      ops: slimOpsForHistory(ops),
       summary,
       model: aiConfig.model,
       ms: Date.now() - planStarted,
@@ -1368,15 +1492,20 @@ async function handleApi(ctx) {
     });
     // 会话变长后压缩更早的消息（后台跑，不影响这次响应）
     void maybeSummarize({ store, provider: aiProvider, session });
-    store.audit(projectId, user.id, 'ai.plan', {
+    store.audit(projectId, user.id, useAssembly ? 'ai.assemble' : 'ai.plan', {
       provider: aiProvider.id,
       message: message.slice(0, 200),
       ms: Date.now() - planStarted,
       degraded: Boolean(result.degraded),
       repaired,
+      mode: useAssembly ? 'assemble' : 'plan',
       images: images.length,
       vision: result.vision?.model,
       inspect: inspect.length,
+      describe: describe.length,
+      textures: textures.length,
+      python: (result.python ?? []).length,
+      pythonMode: result.pythonReport?.mode ?? '',
       attachments: describeAttachments(attachments),
       conversationId: session?.id ?? null,
       context: result.context ? describeUsage(result.context) : '',
@@ -1386,6 +1515,7 @@ async function handleApi(ctx) {
       ops,
       inspect,
       measure,
+      describe,
       done: result.done === true,
       summary,
       provider: aiProvider.id,
@@ -1396,6 +1526,11 @@ async function handleApi(ctx) {
       warning,
       vision: result.vision ?? null,
       context: result.context ?? null,
+      assembly: result.assembly ?? null,
+      textures,
+      python: Array.isArray(result.python) ? result.python : [],
+      pythonText: result.pythonText ?? '',
+      pythonReport: result.pythonReport ?? null,
       conversationId: session?.id ?? null,
       messageId: saved?.id ?? null,
       userMessageId: session?.userMessageId ?? null,
@@ -1404,8 +1539,9 @@ async function handleApi(ctx) {
 
   // 流式版：把模型的思考过程、输出草稿、特征树生成进度实时推给前端（SSE）。
   // thinking 模型一次请求要几十秒到几分钟，没有中间过程用户只会以为卡死。
-  if ((match = pathname.match(/^\/api\/projects\/([^/]+)\/ai\/plan\/stream$/)) && method === 'POST') {
+  if ((match = pathname.match(/^\/api\/projects\/([^/]+)\/ai\/(plan|assemble)\/stream$/)) && method === 'POST') {
     const projectId = match[1];
+    const assemble = match[2] === 'assemble';
     const user = requireUser(ctx);
     requireProjectRole(projectId, user.id, 'read');
     enforceLimit(aiLimiter, user, 'AI');
@@ -1413,11 +1549,16 @@ async function handleApi(ctx) {
       throw new HttpError(503, 'AI 未配置：设置 STRU_AI_API_KEY（或 STRU_AI_PROVIDER=mock 使用本地模拟）');
     }
     const body = await readJson(req, MAX_AI_BODY_BYTES);
+    const useAssembly = assemble || body.mode === 'assemble';
     const images = parseImageBody(body);
     // 文本附件（txt / md / json / csv / 代码…）先解析：只给文件不写字时还要靠它补一句默认需求
     const attachments = parseAttachments(body.attachments);
     const typed = aiMessageOf(body, images, attachments);
-    if (typed.length > 4000) throw new HttpError(400, '需求描述过长');
+    // 自检轮（第 2 步起）的 message 是 stepPrompt 拼出来的回执 + 工具结果，不是用户写的需求；
+    // 按 4000 字拦会把 describe 的正常输出误判成「需求描述过长」，所以内部轮单独给上限
+    const internal = body.internal === true;
+    const tooLong = messageTooLong(typed, internal);
+    if (tooLong) throw new HttpError(400, tooLong);
     const message = applyAttachments(typed, attachments);
     const stored = store.getDocument(projectId);
     if (!stored) throw new HttpError(404, '项目文档不存在');
@@ -1433,7 +1574,7 @@ async function handleApi(ctx) {
       message,
       thumbs: parseThumbs(body.imageThumbs),
       shots: Number(body.imageShots) || 0,
-      internal: body.internal === true,
+      internal,
       // 前端自动重试时复用同一个 requestId：不重复插用户消息，并清掉上一轮的失败气泡
       requestId: parseRequestId(body),
     });
@@ -1458,6 +1599,7 @@ async function handleApi(ctx) {
       model: aiConfig.model,
       mock: aiProvider.id === 'mock',
       images: images.length,
+      mode: useAssembly ? 'assemble' : 'plan',
     });
     // 上游是逐 token 吐的，一个汉字一帧 SSE 太浪费：按 100ms 合并成一批再推
     let pendingReasoning = '';
@@ -1495,7 +1637,16 @@ async function handleApi(ctx) {
     };
     try {
       const planned = await planWithRepair({
-        run: (args) => aiProvider.planStream({ ...args, signal: cancel.signal, onEvent }),
+        run: useAssembly
+          ? (args) => planAssembly({
+            ...args,
+            config: aiConfig,
+            document: stored.document,
+            options: body.assembly,
+            signal: cancel.signal,
+            onEvent,
+          })
+          : (args) => aiProvider.planStream({ ...args, signal: cancel.signal, onEvent }),
         message,
         context,
         history,
@@ -1505,16 +1656,27 @@ async function handleApi(ctx) {
         // 修正轮也要把「在改什么」推给前端，否则用户会以为模型卡住重来了一次
         onEvent,
       });
-      const result = planned.result;
+      // 把 material.map 里的 `ai:<提示词>` 换成真实图片；进度通过 SSE status 推给前端
+      const resolved = await resolveTextureOps(planned.result?.ops, aiConfig, {
+        signal: cancel.signal,
+        onEvent,
+      });
+      const result = await withPythonTool(planned, resolved, {
+        document: stored.document,
+        onEvent,
+        signal: cancel.signal,
+      });
       flushDeltas(true);
       const ops = Array.isArray(result.ops) ? result.ops : [];
       const inspect = Array.isArray(result.inspect) ? result.inspect : [];
       const measure = Array.isArray(result.measure) ? result.measure : [];
+      const describe = Array.isArray(result.describe) ? result.describe : [];
+      const textures = Array.isArray(result.textures) ? result.textures : [];
       const summary = summarizeOps(ops);
       dropStaleMessages(session);
       const saved = saveAssistantMessage(session, {
         reply: result.reply ?? '',
-        ops,
+        ops: slimOpsForHistory(ops),
         summary,
         model: aiConfig.model,
         ms: Date.now() - planStarted,
@@ -1525,16 +1687,21 @@ async function handleApi(ctx) {
         context: result.context ?? null,
       });
       void maybeSummarize({ store, provider: aiProvider, session });
-      store.audit(projectId, user.id, 'ai.plan', {
+      store.audit(projectId, user.id, useAssembly ? 'ai.assemble' : 'ai.plan', {
         provider: aiProvider.id,
         message: message.slice(0, 200),
         ms: Date.now() - planStarted,
         degraded: Boolean(result.degraded),
         stream: true,
+        mode: useAssembly ? 'assemble' : 'plan',
         repaired: planned.repaired ?? 0,
         images: images.length,
         vision: result.vision?.model,
         inspect: inspect.length,
+        describe: describe.length,
+        textures: textures.length,
+        python: (result.python ?? []).length,
+        pythonMode: result.pythonReport?.mode ?? '',
         attachments: describeAttachments(attachments),
         conversationId: session?.id ?? null,
         context: result.context ? describeUsage(result.context) : '',
@@ -1545,6 +1712,7 @@ async function handleApi(ctx) {
         ops,
         inspect,
         measure,
+        describe,
         done: result.done === true,
         summary,
         provider: aiProvider.id,
@@ -1556,6 +1724,11 @@ async function handleApi(ctx) {
         warning: planned.warning ?? '',
         vision: result.vision ?? null,
         context: result.context ?? null,
+        assembly: result.assembly ?? null,
+        textures,
+        python: Array.isArray(result.python) ? result.python : [],
+        pythonText: result.pythonText ?? '',
+        pythonReport: result.pythonReport ?? null,
         conversationId: session?.id ?? null,
         messageId: saved?.id ?? null,
         userMessageId: session?.userMessageId ?? null,

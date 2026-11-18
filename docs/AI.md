@@ -18,11 +18,16 @@ AI 助手输入区的「常用命令」按创建、调整、检查分类，可�
 
 ```
 用户在 AI 面板输入 → POST /api/projects/:id/ai/plan/stream（只读，SSE）
+  ↳ 勾选「分零件建模」时首轮改走 /api/projects/:id/ai/assemble/stream，服务端跑多角色链（见下文），
+    产物仍是同构的 result；后续自检轮自动回到普通 plan
   → 服务端把项目摘要 + 需求发给模型 → 模型流式返回思考过程 + 工具调用参数
   → 面板实时显示：阶段提示 / 思考过程 / 输出草稿 / 特征树生成进度 / 已用时间
   → 服务端对 ops 做一次 dry-run（applyOps 只算不写）：不过就把错误回灌给模型自动改一轮
-  → 结束时推送 result 事件：{ reply, ops, inspect, summary, repaired?, warning? }
-  → 若 inspect 非空（模型想先看看模型）：前端转视角、截图，再把图发回模型续一轮（只续一轮）
+  → 若 ops 里写了 material.map: "ai:…"，服务端先生成图片并内联，再推送 result
+  → 结束时推送 result 事件：{ reply, ops, inspect, measure, describe, python?, pythonText?, summary, textures?, pythonReport?, repaired?, warning? }
+  → 若 inspect / measure / describe / python 非空：前端转视角截图、对当前特征树求值 / 取原始定义，
+    Python 脚本已在服务端执行完，结果随 pythonText 一起回灌（见「Python 计算工具」），
+    把图和文字一起发回模型续一轮（自检循环默认最多 5 步）
   → 面板展示“将要执行的指令 + 数量统计”
 用户点「应用到模型」→ POST /api/projects/:id/ai/apply（需要写入权限）
   → applyOps 逐条校验并生成新文档 → 保存新 rev + 审计
@@ -37,15 +42,15 @@ thinking 模型一次请求要几十秒到几分钟，一次性请求会让界�
 
 | 事件 | 含义 |
 | --- | --- |
-| `start` | 开始（带 provider / model / images） |
-| `status` | 阶段提示：连接中、正在识别图片、模型不支持工具调用正在降级… |
+| `start` | 开始（带 provider / model / images / mode，分零件模式为 `assemble`） |
+| `status` | 阶段提示：连接中、正在识别图片、模型不支持工具调用正在降级；分零件模式还会推六个阶段 |
 | `vision` | 图片识别完成：`{ model, object, parts }`（识别出的物体与零件数） |
 | `reasoning` | 思考过程增量（`reasoning_content`），前端只保留尾部 6000 字 |
 | `content` | 正文增量（走纯 JSON 兜底时才有） |
 | `tool` | 模型决定调用 `apply_bim_ops` |
 | `plan` | 工具参数累计长度，用来显示「正在生成特征树（N 字符）」 |
 | `retry` | 连接中断后自动重试：`{ attempt, total, delayMs, reason }`，前端据此清掉上一轮半截草稿 |
-| `result` | 成功：`{ reply, ops, inspect, summary, ms, repaired, warning, vision }` |
+| `result` | 成功：`{ reply, ops, inspect, measure, describe, python?, pythonText?, summary, ms, repaired, warning, vision, assembly?, textures?, pythonReport? }` |
 | `error` | 失败：可读的错误信息 |
 
 管理员可在 AI 设置选择思考强度（不指定 / 低 / 中 / 高），对应主模型请求的 `reasoning_effort`；不指定时不发送该参数。`cc.yjk.cn` 上的 `gpt-6-astra` 在未显式配置时默认使用高强度，其他组合默认不指定。也可通过环境变量 `STRU_AI_REASONING_EFFORT` 设置 `low`、`medium`、`high` 或空值，数据库设置优先。非支持此参数的模型应选择「不指定」；启用可能增加耗时和费用。
@@ -59,7 +64,8 @@ AI 设置会读取已保存网关的 `/models` 列表，支持下拉选择、搜
 - 上游逐 token 吐帧，服务端按 100 ms 合并 `reasoning/content` 增量再推送，避免一帧一个汉字；
 - 用**空闲超时**（默认 180 s 无任何字节）而不是总超时，thinking 模型可以连续思考几分钟；
 - 客户端断开（点「停止」/关页面）会中止上游请求，不白烧 token；
-- 非流式接口 `/ai/plan` 保留，供脚本与旧客户端使用；服务端没有流式路由时前端自动退回它。
+- 非流式接口 `/ai/plan`、`/ai/assemble` 保留，供脚本与旧客户端使用；服务端没有流式路由时前端自动退回它
+  （降级时把 `mode:'assemble'` 放进 body，老服务端也能识别）。
 
 ### 连接中断的自动重试
 
@@ -195,6 +201,8 @@ AI 面板支持**上传 / 粘贴 / 拖入图片**（最多 4 张，单张 4 MB�
 - **气泡只显示文件条**（文件名 + 字数，点开才展开正文）：正文是给模型看的，聊天区不该被刷成一份日志。
   前端用同一条块头规则（`[[附件 n/m：名字]]`）把历史里的块重新折起来，改格式要两边一起改。
 - **用户正文仍限 4000 字**：附件不吃这 4000 的额度，但一定要有一句话（或图 / 文件）说明要做什么。
+  自检闭环第 2 步起代发的回执（`internal: true`，正文里是 `describe` / `measure` 的结果）不算「用户正文」，
+  按 32000 字上限单独校验，见「自检闭环」一节的第 4 条护栏。
 
 ## 让 AI 看自己的成品（视口截图回灌）
 
@@ -223,18 +231,20 @@ AI 面板支持**上传 / 粘贴 / 拖入图片**（最多 4 张，单张 4 MB�
 通用处理顺序是：识别目标与参考视角，标记尺度和遮挡的不确定性；先定主轴、轮廓转折和关键部件关系，再选择可表达凹凸的轮廓或曲面；逐轮比较整体比例、零件位置、连接与细节，优先修正影响最大的差异。修改之后应重新截图核对。截图只是目视依据，当前 `inspect` 不提供射线测量、碰撞检测或客观相似度评分，不能把估计当成实测。
 
 ```
-需求 ──▶ 模型给 ops / inspect / done
+需求 ──▶ 模型给 ops / inspect / measure / describe / done
           │
-          ├─ ops   → 立刻写入模型（不需要点确认），等几何重建
-          ├─ inspect → 真转视口 + 截图，把图回灌给它
-          └─ done  → 收工
+          ├─ ops      → 立刻写入模型（不需要点确认），等几何重建
+          ├─ inspect  → 真转视口 + 截图，把图回灌给它
+          ├─ measure  → 对当前特征树求值，把测量结果文字回灌
+          ├─ describe → 取回未裁剪的原始特征定义，把文字回灌
+          └─ done     → 收工
           ▲                │
           └──── 下一轮 ◀────┘   （默认最多 5 步）
 ```
 
 ### 协议
 
-工具参数（`server/ai/provider.js`）里一轮可以同时给三样东西：
+工具参数（`server/ai/provider.js`）里一轮可以同时给六样东西：
 
 ```jsonc
 {
@@ -244,11 +254,16 @@ AI 面板支持**上传 / 粘贴 / 拖入图片**（最多 4 张，单张 4 MB�
     { "view": "iso" },                                        // 整机：核对整体比例
     { "view": "right", "focus": "夹头", "zoom": 2.5 }         // 特写：凑近看咬合
   ],
+  "measure": [ { "type": "gap", "a": "夹头", "b": "握把" } ],
+  "describe": [ { "type": "feature", "target": "螺丝刀", "feature": 3 } ],
+  "python": [ { "code": "import math\nemit({'result': …})", "note": "算圆周点位" } ],
   "done": false
 }
 ```
 
-- **`ops` 与 `inspect` 可以同轮出现**，顺序固定：先应用 ops，再切视角截图。
+- **六者可以同轮出现**，顺序固定：先应用 ops，再执行 Python 脚本 / 查询 / 测量 / 截图，最后把结果一起回灌。
+  `measure` 最多 6 条、`describe` 最多 4 条、`python` 最多 2 段、`inspect` 最多 4 个视角。
+  Python 的结果要下一轮才能用，所以「先算再按结果写 ops」必须拆成两轮。
   「改完马上看结果」写在一轮里，比拆两轮省一半时间。
 - `inspect` 的视角是 `iso / front / back / left / right / top / bottom` 或 `{ azimuth, elevation }`，
   **最多 4 个**；`normalizeInspect` 会丢认得不对的项、把方位角归一化到 0–360、仰角夹到 ±88°
@@ -260,7 +275,7 @@ AI 面板支持**上传 / 粘贴 / 拖入图片**（最多 4 张，单张 4 MB�
   - `zoom`：取景倍数，`1` = 框满，`2` = 推进一倍，`0.5` = 退远看整体关系。服务端夹到 `0.4–4`，
     一位小数；透视下相机不会近于包围球半径的 1/3（再近就穿进模型拍背面）。
   - label 会写成 `右视 · 聚焦「夹头」 × 2.5`，用户从截图卡片上就能看出这一张不是整机图。
-- `done: true` 表示它核对完认为已满足需求，此时 ops 与 inspect 都应为空。
+- `done: true` 表示它核对完认为已满足需求，此时 ops / inspect / measure / describe / python 都应为空。
 - 早期版本的约束「只要 inspect 非空，ops 必须为空」**已经取消**。
 
 提示词里给了一条策略：怀疑没咬合 / 穿模 / 螺纹没做出来 / 孔位偏了 / 薄壁不对时才用特写，
@@ -269,7 +284,7 @@ AI 面板支持**上传 / 粘贴 / 拖入图片**（最多 4 张，单张 4 MB�
 ### 循环怎么走（`src/ai/agentLoop.ts`）
 
 纯逻辑，不碰 React 也不碰 WebGL：`plan` / `apply` / `inspect` / `stopped` 都由调用方注入，
-所以能在 Node 里整套跑（`scripts/agent-loop-test.ts`，52 项）。
+所以能在 Node 里整套跑（`scripts/agent-loop-test.ts`，59 项）。
 
 ```ts
 const run = await runAgentLoop(firstRound, {
@@ -298,6 +313,15 @@ const run = await runAgentLoop(firstRound, {
 2. **打转检测**：连续两轮 `inspect` 指纹相同且没有 ops → `repeated`。指纹归一化方向，并区分不同聚焦对象和缩放倍数。
 3. **应用被拒就自己改**：`/ai/apply` 的 4xx（尺寸越界等）不中断闭环，错误原文回灌给模型，让它按提示改，
    最多重试 2 次；仍是同样的问题才停。
+4. **回执长度单独限，不混用「需求长度」**：第 2 步起发回来的 message 是 `stepPrompt` 拼出来的回执，
+   里面带 `describe` / `measure` 的工具结果——青花瓷瓶 7 个顶层特征一次 `element` 查询就是 1.2 万字符。
+   - `describe` 自己在源头按**总预算** 1.6 万字输出（`MAX_TOTAL_CHARS`）：第一条吃掉的越多，后面的请求可用额度越少；
+     预算耗尽时不是留空，而是明写「这条没有执行，下一轮单独查」；
+   - 前端再兜一层，按行边界裁剪（不切半个特征 JSON）：`describe` 2 万字、`measure` 6000 字，
+     并在结尾注明原文总长、让模型用 `from/count` 翻页（`clipToolText`）；
+   - 服务端对 `internal: true` 的请求按 32000 字上限，**只有用户自己写的正文才按 4000 字拦**
+     （`server/ai/message-limits.js`）。
+   两处以前都按 4000 拦，结果是自检第 2 步必挂，而报错写着「需求描述过长」——用户其实一个字都没输入。
 
 ### 前端做的事（`AiPanel`）
 
@@ -333,10 +357,211 @@ const run = await runAgentLoop(firstRound, {
 - 只测量不改也算有效动作；同样的测量重复要会按 `repeated` 打转处理。测量发现悬浮 / 穿插应先修再复测。
 - 提示词里的建模顺序：先假设主体曲面并用大块体量建立整体轮廓与比例 → 再按参考图挂附属件 → 用 measure 核对附属件位置 → 最后细化。
 
+### 只读特征树查询（`describe`）
+
+项目上下文为了装进模型窗口只列前 48 个特征，复杂 `shape` 会退化成 `shapeDataOmitted`。
+模型改一个 loft 截面、核对某个 `pattern` / `material` 的原始字段，或找被裁掉的构件时，
+可以用 `describe`（最多 4 条）把**未裁剪的原始定义**取回来。它只读当前文档，不求值几何、
+不写任何数据，结果以文字回灌下一轮；和 `measure` 共用「查询 → 回灌 → 继续」的闭环通道。
+
+| type | 字段 | 返回 |
+| --- | --- | --- |
+| `element` | `target?` `from?` `count?` | 按序号分页列出该构件的完整特征定义（默认 from=1、count=24，上限 24） |
+| `feature` | `target?` `feature` | 单个特征的完整原始定义，含完整 `shape` |
+| `search` | `query` `target?` | 按关键词检索构件与特征，返回名字、id、序号 |
+
+- 请求规范化在 `server/ai/describe.js`（白名单、上限、参数夹取），求值在 `src/ai/describe.ts`；
+  序号从 1 起，与上下文 `features[].index`、`setDimensions` 的 `f1/f2` 路径一致，可直接用于 `editFeature`。
+- `target` / `feature` 可用构件名、id、或从 1 起的序号；只有一个造型构件时 `target` 可省略。
+- 输出的是**当前文档里的原值**，不是估计；改过模型后要重新查。解析不到目标时逐条写清原因，不打断整轮。
+- 单条输出约 20k 字符封顶，超长时会写明「用 from 继续查」或「用 feature 单查」，不会静默截断半个 JSON。
+- 只查询不改也算有效动作；同样的查询反复要且没有任何 ops，会被 `repeated` 打转检测停掉。
+
+### Python 计算工具（`python`）
+
+**解决的是「算不准」，不是「读不到」。** 上下文窗口再大，让模型心算 200 个母线控制点、
+沿双曲面摆贴片、按参考图拟合轮廓，还是会错。现在模型可以写一段脚本，由服务端在受限沙箱里
+算出精确数值，`emit()` 的结果以文字回灌下一轮，再据此写 ops。模型写 Python 的训练语料远多于
+这套自定义特征树 JSON，循环生成 200 个特征也比手写 200 行嵌套 JSON 可靠得多。
+
+**契约**（`server/ai/python.js` + `server/ai/python/bootstrap.py`）：
+
+```python
+import numpy as np
+from PIL import Image
+# 必须用 emit(对象) 提交结果；print 只进 logs
+emit({
+  "result": {"points": [[0.1, 0.0], [0.092, 0.02]], "count": 2},  # 任意 JSON，回灌给模型
+  "ops": [{ "op": "addSolid", … }],                                  # 可选：过 dry-run 后合入本轮 ops
+  "images": [{ "name": "青花贴图", "dataUrl": "data:image/png;base64,…" }],  # 可选：python:N 引用
+})
+```
+
+- 一轮最多 2 段、每段 ≤8000 字符、默认超时 8s、结果 ≤12000 字符。语法错、越权、超时、
+  运行异常都变成一段可回灌的错误文字，**不打断整轮建模**，模型按提示改脚本即可。
+- `ops` 必须和模型自己写的 ops 走同一道 `applyOps` 校验，脚本不能绕过校验直接改文档；
+  校验失败时只摘掉脚本那部分 ops，模型写的照常保留。
+- `images` 只收合规的 PNG/JPEG/WebP data URL（≤600000 字符）。本轮 ops 里写
+  `material.map: "python:1"` 即可贴上，服务端在 dry-run **之前**替换占位符（顺序反了会被
+  `materialSpec` 判成非法 map）。图片本体不进回执文字、不进会话历史；**引用仅本轮有效**，
+  跨轮要重新生成。
+- 可用：`math / numpy / scipy / PIL / OCP / cadquery` 及常规标准数学库。
+  脚本禁止文件 IO、网络、子进程、`eval/exec/open`、dunder 反射（AST 静态检查 + 运行期 import 钩子）；
+  进程还带 CPU / 内存 / 文件 / fd 的 `RLIMIT` 限额与空环境变量、临时 cwd。
+
+**两个执行后端**（`server/ai/python-runner.js`，`GET /api/ai/status` 里的 `python` 会如实上报）：
+
+| mode | 隔离 | 说明 |
+| --- | --- | --- |
+| `container` | **硬隔离** | Docker：`--network none`、只读根、`--tmpfs /tmp`、非 root、CPU 1 核 / 内存 512M / 进程数 64。需先 `docker build -t stru-python-sandbox:latest server/ai/python`（见该目录 Dockerfile）。 |
+| `restricted` | **不是安全沙箱** | 本机 Python 子进程的 AST / import / rlimit 限制，适合本地开发与可信环境；状态里 `isolated: false` 且带警告。**对外服务必须启用 Docker 后端**，不要用这个模式执行不可信脚本。 |
+
+`mode: auto`（默认）在镜像可用时自动走容器，否则降级到 restricted。相关环境变量见「方式二」。
+
+**依赖**：复用 STEP 转换器的 venv `server/convert/.venv`（本机是 Python 3.9.6，已装
+`cadquery-ocp 7.7.2`），再装 `numpy / Pillow / scipy` 即可：
+
+```bash
+server/convert/.venv/bin/pip install numpy Pillow scipy
+# 或：node scripts/setup-python-sandbox.mjs（会复用现有 venv，只补缺的包）
+```
+
+**与长度闸门的关系**：这是第四条工具结果。三段回灌按
+`measure 6k → describe 20k → python 12k` 顺序共享 `TOOL_TOTAL_CLIP = 28000` 总预算，
+保证加上回执本体仍低于服务端内部轮 32000 上限——否则又会退回「需求描述过长」。
+`python` 也计入闭环的「有效动作」与打转签名：只查不改、反复同一段脚本会被 `repeated` 停掉。
+
+**实测样例**：`diagnostics/blue-white-vase.python.mjs` 用 Pillow 画一张 1024×640 无缝柱面
+青花贴图（回纹带 / 三色缠枝 / 八瓣莲 / 仰莲 / 高斯晕染），一次 `emit()` 直接产出
+`addSolid`；`blue-white-vase.python.ops.json` 可喂 `npm run query`，配
+`VASE_OPS=… VASE_PREFIX=python` 用 `blue-white-vase.textured.view.ts` 出图。
+1 条指令 / 3168 面，纹样完整包住瓶身且无接缝。
+
+### 多 Agent 分工建模：零件 / 拼接 / 合并
+
+上面那套 `measure` 是给**应用内 AI 自检**用的（浏览器里对当前文档求值）。另有一条给外部
+Agent（子 Agent / 离线脚本）用的链路：位置与接缝只由一个「拼接 Agent」负责，零件 Agent
+不知道整车位置，避免每个零件各自拍脑袋摆坐标导致镜座、灯罩悬浮或埋进车身。
+
+| 角色 | 只做什么 | 产物 |
+| --- | --- | --- |
+| 零件 Agent | 只在自己的局部坐标系里建模，声明包围盒与连接点（如镜座根部） | `parts[]` manifest |
+| 拼接 Agent | 只决定每个零件的 `translate / rotate / scale / mirror / array`，**不改零件内部几何** | `placements[]` |
+| 合并代码 | 校验 + 预算 + 包 `group` + 套变换 + 排切除 → **唯一一条 `addSolid`** | `ops.json` |
+
+两个 CLI（都只读输入，不碰数据库）：
+
+```bash
+# 零件 + 摆放 → 1 条 addSolid；不给输出路径时只校验并打印报告
+npm run merge -- scripts/lib/assembly.example.json out.ops.json
+
+# 只读几何查询：任意射线 / 表面采样 / 接触穿插 / 世界坐标包围盒
+npm run query -- out.ops.json '[{"type":"parts"},
+  {"type":"gap","a":"车身主体","b":"右后视镜"},
+  {"type":"sample","axis":"z","grid":{"a":[-2,2,9],"b":[-0.8,0.8,5]}}]'
+```
+
+装配说明的完整字段见 `scripts/lib/assembly.example.json`，核心实现是 `scripts/lib/assembly.ts`
+（合并）与 `scripts/lib/query.ts`（查询），回归测试 `scripts/assembly-test.ts`（已挂 `npm test`）。
+
+查询类型（`runQueries`，单条失败不影响其它条，输出 JSON 可直接喂给 Agent）：
+
+| type | 字段 | 返回 |
+| --- | --- | --- |
+| `parts` | — | 每个零件的世界坐标包围盒清单 |
+| `bounds` | `part?` `frame?` | 包围盒 / 尺寸 / 中心 |
+| `ray` | `origin` `direction` `part?` | 任意射线与表面的交点、法向、距离、命中零件 |
+| `surface` | `axis` `at:[a,b]` `part?` | 沿轴从外侧向内命中的表面点与法线 |
+| `gap` | `a` `b` | 最近距离 + `gap / contact / intersect` 判断 |
+| `sample` | `axis` `at:[[a,b]…]` 或 `grid` | 一批采样点 + 命中点 + 法线，交给贴合件按曲面生成 |
+
+`frame` 默认 `world`（含构件 `elevation / offset / rotation / scale / flip`），
+`"root"` 切回特征树局部坐标，数值可直接写回 `feature.translate`。结果来自射线与采样，
+是估算而非拓扑精确碰撞检测。
+
+**必须分两阶段**：先由主体 Agent 做车身 / 轮子等独立件 → 用 `sample` / `grid` 把车身曲面采样点
+与截面数据交给贴合件 Agent → 灯罩、后视镜这类零件按曲面生成。拼接 Agent 只能挪动，不能改形；
+不知道车身形状就先造出来的贴合件，怎么摆都不贴。
+
+其它约定（合并器强制校验）：
+
+- **配额**：顶层总特征 ≤ 96（含每个零件的 group 外壳）、group 子特征 ≤ 48、嵌套 ≤ 2 层；
+  `quota` 可提前给每个零件分配预算，`budget.reserved` 给后续切除留额度，超了点名哪个零件超支。
+  零件内部若已用满 2 层 group，合并器会拒绝再包外壳；`assemblyFromOps` 会自动退化成 `scope:'root'` 直通。
+- **切除顺序**：组内保证「切之前有材料」（开头的 cut 会挪到第一个 add 之后），但**不会**把所有切除
+  挪到末尾 —— 挖孔后紧跟内衬/填充件是有意设计，一律排后会把它切掉。跨零件切除用 `cuts[]`
+  或 `scope:'root'` 零件，坐标必须是整车根坐标，合并器统一排在所有 group 之后
+  （内核的顶层 `cut` 会切之前所有零件，组内的 `cut` 只切自己组）。
+- **命名 / 材质**：`id` 用 slug（决定 `part-<id>` 与特征 id 前缀，返工全靠它），特征名全局唯一；
+  `material` 用预设名或材质对象，挂在 group 上作子特征默认值；缺材质会进报告警告。
+- 合并结果会先过 `normalizeFeatures`（形状白名单、尺寸、材质、96 上限、2 层嵌套），
+  等于入库前先干跑一遍；产出可直接 `applyOps` 落库，也可用 `model-query` 复核接缝。
+
+### 应用内编排（`server/ai/orchestrator.js`）
+
+上一节是给外部 Agent / 离线脚本用的 CLI。普通用户在界面里勾上 **「分零件建模」** 后，
+首轮请求改走服务端的多角色链路，产物与 `plan` 同构（`reply / ops / inspect / measure / describe / done`），
+后面的自检闭环仍用普通模型微调，因此不改动应用、落库、会话与权限逻辑。
+
+**HTTP 接口**（与 `/ai/plan` 共用鉴权、限流、会话、审计、`planWithRepair`）：
+
+| 端点 | 说明 |
+| --- | --- |
+| `POST /api/projects/:id/ai/assemble` | 一次性返回，响应多一个 `assembly` 报告 |
+| `POST /api/projects/:id/ai/assemble/stream` | SSE：`start.mode='assemble'`，中途推多个 `status` 阶段事件，`result.assembly` 带报告 |
+| `POST /api/projects/:id/ai/plan` + `body.mode:'assemble'` | 老客户端的兼容入口，同一条链 |
+| `body.assembly` | 可选：`{ maxParts: 2–8, budgetTotal: 24–96, concurrency: 1–6, refinements: 0–2 }` |
+
+`assembly` 报告含 `report`（零件清单、特征数/上限、摆放、连接点）、`stages`、`placements`、
+`seams`（每个零件与主体的 `gap / contact / intersect` 与最近距离）、`samplePoints`、`roleContext`、`warnings`。
+
+**角色能看到现有模型**（`server/ai/role-context.js`）：以前是 `clip(JSON.stringify(context), 2500)`，
+前 2500 字符全是项目 / 标高 / 类型，`elements` 里的特征树根本没进提示词，还会切在半个括号上。
+现在从**原始 document** 取选中构件的 `primitive.features`（不经过 48 特征裁剪），生成完整 JSON：
+
+- 规划角色拿详细版（默认 4000 token）：整棵特征树的骨架全列，前 N 个特征带完整 `shapeData`
+  与变换 / 材质；其余标 `shapeOmitted` 并给形状摘要。降档顺序是「先少给完整 shape → 再少列特征
+  → 再砍其它构件清单」，每一档都是完整对象，绝不切字符串。
+- 其余角色拿精简版（默认 700 token）：只有序号 / 名字 / 形状类型，够对齐坐标系、比例与命名约定。
+- 没选中构件时退回第一个造型构件；省略量写进 `omitted`，用量写进 `assembly.roleContext`
+  （`detailedTokens / briefTokens / detailedFeatureLimit / detailedShapeLimit / overBudget`）。
+- 上下文明确标注 `readOnly`：本链路产出的是一条**新的 addSolid**，角色不该用 `editFeature` 去改已有构件。
+  要改视图里已有的模型，用普通模式（项目上下文 + `describe`），不要勾「分零件建模」。
+
+**六个阶段**（`server/ai/provider.js` 的 `callRoleJson` 复用同一套上游配置、超时、重试与读图预处理）：
+
+1. **规划 Agent**：拆成 2–8 个零件，定统一命名与材质约定，给每个零件分 `quota`；产物一律重新洗一遍，
+   id / 类型 / 配额都不信模型。
+2. **零件 Agent（主体 + 独立件，有限并发）**：只写自己局部坐标的 `features / anchors / bbox`；
+   服务端强制剥掉自写的 `id / label`（由合并器统一生成），并用 `mergeAssembly` 单件干跑校验，
+   不合法就把错误原文回灌，最多重出 3 版。
+3. **曲面采样**：把主体零件合并成临时 ops，用 `runQueries` 做 `parts` 包围盒 + 三轴 `sample` 网格
+   （默认 49 个点，含命中点与法线），交给贴合件 Agent。**这是两阶段的关键接口**。
+4. **贴合件 Agent**：按曲面点与法线生成外形（loft / prism / sweep / hull），不是先造方块再挪。
+5. **拼接 Agent**：只拿 `parts / bounds / gap` 查询，输出 `placements`（可含 `mirror` 或 `array`）；
+   合并后再查一遍接缝，出现明显 `gap`（> 0.05 m）时把复核结果回灌，最多修 1 轮。
+6. **合并器**：`fitSpec` 在预算/嵌套冲突时按「后加的附属件优先牺牲」降级，随后输出唯一
+   `addSolid`，`applyOps` dry-run 通过才返回；`done=false` + 三视角 `inspect`，交给前端自检闭环。
+
+**Node 侧几何内核**：`server/index.js` 是纯 ESM JS、不经过打包，`server/ai/kernel.js` 会在进程内
+首次用到时用 esbuild 把 `scripts/lib/kernel-entry.ts`（连同 `three`、`server/ai/ops.js` 校验器）
+打成 `.tmp/ai-kernel.mjs` 并缓存。所以这里和 CLI、浏览器渲染用的是同一套造型内核，
+改 `assembly.ts` / `query.ts` 后重启进程即生效，不需要额外构建或提交产物。
+`esbuild` 是 vite 的依赖；若部署环境裁剪了 devDependencies，需显式装一份。
+
+**失败与降级**：某个角色三次不过校验 → 整轮报错但会点名是哪个角色、哪一步；贴面采样查不到包围盒
+→ 贴合件退回按拆件计划生成并写进 `warnings`；mock 提供方走 `mockRole` 确定性脚本，
+因此整条链（含真实射线求值与合并）在 `npm test` 里离线可测。
+
 ### 成本
 
 一次闭环 = 最多 5 次模型请求 + 每次最多 4 张 1024px JPEG。比「生成一次就交差」贵，但省掉的是
 用户自己看出问题、再描述一遍、再等一轮的来回。觉得贵就把「自动改并自检」关掉，或者中途点停止。
+
+「分零件建模」只在**首轮**多花模型请求：1 次规划 + 每零件 1 次（默认最多 6 个，并发 3）
++ 贴合件各 1 次 + 1～2 次拼接 ≈ 8–10 次上游调用，另加若干次本地射线求值（不花钱、通常 < 1 秒）。
+零件多、接缝要求高时值得；简单的墙柱板模型别开，普通 `plan` 更快。
+可用 `body.assembly.maxParts / refinements` 调小，或把 `concurrency` 调低减轻网关压力。
 
 ### 离屏版：同一套闭环，不依赖 WebGL
 
@@ -396,6 +621,9 @@ renderSheet(geometry, materials, [
 2. 元素按「选中 → 造型实体 → 其它」装填；
 3. 装不下时先降特征数（48 → 24 → 12 → 6），再按顺序少列构件；
 4. 省略量写进 `omitted: { elements, features, note }`，模型知道「还有没列出来的」，不会凭空猜 id。
+
+**裁剪不是死路**：模型需要被省略的部分时，用 `describe`（见「只读特征树查询」一节）取回某个构件 / 特征的完整原始定义；
+在视图里先选中要改的构件，也能让 `selected` 优先拿到完整信息。这两条比放宽 48 特征上限更省 token。
 
 历史单条超过 1500 token 会被截断并标注；助手消息回灌时自动附一行
 `[本轮指令] addSolid(电动螺丝刀)、editFeature(机身)`——历史里只存了自然语言回复，不补这一行模型
@@ -458,6 +686,7 @@ renderSheet(geometry, materials, [
 
 `plan` / `plan/stream` 还接受 `attachments: [{ name, text }]`（文本附件，见上节）：服务端校验后拼在需求后面，
 随用户消息一起落库；用户正文仍受 4000 字限制，附件不吃这个额度。
+`internal: true` 的自检回执放宽到 32000 字（见「自检闭环」第 4 条护栏），否则带 `describe` 结果的第 2 步会被误判成需求过长。
 
 ## 支持的指令（BIM ops）
 
@@ -579,10 +808,15 @@ renderSheet(geometry, materials, [
 | `sweep` | `profile`, `path?:[[x,y,z]…]`, `onRoof?:{surface,…}`, `taper?:[起,止]` | 沿 3D 路径扫掠：弯管、锥形机臂、线缆；给了 `onRoof` 就跟着瓦面走 |
 | `hull` | `points:[[x,y,z]…]` | 点集凸包：机头整流罩、不规则实体 |
 | `tiles` | `rings:[{z,radius}…]`, `sides?`, `rows?`, `courses?`, `crown?`, `thickness?`, `lift?`, `cornerLift?`, `cornerOut?`, `board?`, `showTiles?` | **瓦面**：坡屋面上逐片铺板瓦 + 筒瓦（叠压 / 错缝 / 瓦当 / 滴水 / 角部起翘）；`board` 一并出瓦下衬板 |
+| `ballPanels` | `radius`, `layout?`, `seam?`, `thickness?`, `bulge?`, `segments?`, `rings?`, `darkCount?`, `light?`, `dark?`, `core?` | **球面皮革拼块**：逐块生成有厚度的球面壳、块间留真实空隙、缝底是内胆球；足球 / 篮球 / 排球的缝不是贴图。详见下节 |
 | `group` | `features:[特征…]` | 子装配（整体阵列 / 变换） |
 
 曲面（圆柱 / 圆角盒 / 放样 / 扫掠 / 旋转体）都带平滑法线；盒体类形状保留硬棱。
-`segments` 缺省 32，曲面件建议 32–48。
+`segments` 缺省 32（`revolve` 缺省 48），**合法范围 6 ~ 64 的整数**，曲面件建议 32–48。
+它只决定网格细分的圆滑程度、不改变几何：服务端按 6~64 夹取（早期版本会直接拒绝整轮指令），
+前端造型内核也是同一套夹取，所以写 96 / 128 与写 64 的渲染结果完全一致。
+花瓶、瓶体、轮毂这类 `revolve` 不要按通用 3D 习惯写 128，也不要写 3~5 做低多边形；
+`tubeSegments`、`fillet.segments` 同此规则，`editFeature` 的 patch 里也一样。
 
 每个特征还可以带：`label`、`mode`（`add` 合并 / `cut` 切除 / `intersect` 相交）、
 `material`、`translate`、`rotate`（度）、`scale`、`pattern`
@@ -797,6 +1031,145 @@ renderSheet(geometry, materials, [
 视口侧（`src/ModelViewport.tsx`）：每个材质槽建一个 `MeshStandardMaterial`，并加了 `RoomEnvironment`
 环境贴图 + ACES 色调映射 —— 没有环境反射时金属材质只能渲染成一片死黑，这是「灰模感」的另一个来源。
 
+### 球面皮革拼块：`ballPanels`（真几何缝制球）
+
+贴图 + `bumpMap` 的缝**永远是画上去的**：颜色图烘焙明暗、高度图扰动法线，但块与块之间
+没有真实空隙，掠射角看不到断面，缝也不会投下阴影。足球 / 篮球 / 排球这种「一块块皮革
+缝起来」的球用 `ballPanels`，一个特征直接长出真几何：
+
+```json
+{
+  "op": "addSolid",
+  "name": "缝制足球",
+  "features": [{
+    "label": "皮革拼球",
+    "shape": {
+      "shape": "ballPanels",
+      "radius": 0.12,
+      "layout": "classic",
+      "light": "#f1eee5",
+      "dark": "#191c22",
+      "core": "#0b0d10"
+    }
+  }]
+}
+```
+
+| 字段 | 缺省 | 说明 |
+| --- | --- | --- |
+| `radius` | 必填 | 皮革外缘球半径（米），块中心最高点是 `radius + bulge` |
+| `layout` | `pentagons` | `pentagons` = 12 块全五边形（黑白都是五边形）；`classic` = 真实足球 12 黑五 + 20 白六 |
+| `seam` | `radius×0.02` | 缝宽（米，沿球面弧长）。每块皮朝自己中心内缩半个缝宽，相邻块因此留出**真实空隙** |
+| `thickness` | `radius×0.028` | 皮革厚度 = 缝深。外缘到内表面是一段真实侧壁 |
+| `bulge` | `thickness×0.8` | 块心鼓起量，模拟充气皮革；外表面半径 `radius + bulge(1 - t²)`，法线按斜率偏转 |
+| `segments` | `12` | 每条多边形边的球面细分数，6~64（纯画质，服务端夹取） |
+| `rings` | `5` | 块心到边界的径向分层数，2~16 |
+| `darkCount` | `3` | 仅 `pentagons`：黑块数 0~12。正十二面体最多只有 3 个面能互不相邻，多写必然连片 |
+| `light` / `dark` / `core` | 白 / 黑 / 深灰 | 白皮、黑皮、缝底内胆的颜色；可写 `"#f1eee5"`、预设名或 `{color, roughness}` |
+
+**几何构造**（`src/bim/ball-panels.ts`）：
+
+1. 面划分用加权球面 Voronoi，`score(d) = dot(d, n)/h` 最大者获胜，等价于从球心沿方向
+   `d` 先打到哪块皮；三个面等分的方向就是多边形角点，边界天然连成完整网格。
+   `classic` 的 20 个六边形法向直接从二十面体三角面中心算，`h5/h6 = 1.0264`。
+2. 每块皮沿球面内缩 `seam/2`，角点按绕面法向的极角排序，逐边细分后仍落在球面上。
+3. 外表面是中心鼓起的球面片（外表面 + 侧壁 + 内表面组成封闭薄壳）；侧壁法线由球面径向
+   渐变到切向，缝口有一道 bevel。侧壁与内表面跟**这块皮同色**——若把整条缝涂黑，
+   缝就又变回「画上去的一条线」了。
+4. 缝底是一颗半径 `radius - thickness` 的内胆球，从真实空隙里看得见，形成深度。
+5. 输出 `light` / `dark` / `core` 三个材质槽，全部是 non-indexed 的 `position + normal`，
+   与 `normalizeSolid` / `mergeGeometries` 的属性约定一致，不会退化成单材质。
+
+`ballPanels` 只用来「加」出整颗球，不参与 `cut` / `intersect`。改配色用
+`editFeature` 的 `patch: { "shape": { "light": "#..." } }`；它不支持 `map` / `bumpMap`
+（形状级材质在服务端就剥掉贴图字段，避免 base64 混进会话历史）。
+
+> 拓扑说明：只用五边形铺满球面，最多就是正十二面体的 12 块，所以 `pentagons` 的块
+> 明显比真实足球大；真实足球的白色块其实是六边形（`classic`）。两种都给，按需要选。
+
+### 纹理贴图（逐特征 `map` / AI 生图）
+
+> 球类拼块优先用上面的 `ballPanels` 真几何；`ai:黑白足球…` 贴图保留为降级方案
+> （没有几何能力、或只需要远看的花纹时用）。下面是其它「几何做不出来」的外观。
+
+花纹、木纹、拉丝、砖墙、标牌这类「几何做不出来」的外观，用特征级 `material.map`，
+**不要再堆几百片薄几何**。材质字段新增三个（`shared/materials.js` 校验，前端/服务端共用）：
+
+| 字段 | 取值 | 说明 |
+| --- | --- | --- |
+| `map` | `data:image/png\|jpeg\|webp;base64,…`（≤ 600,000 字符）或 `ai:<提示词>`（≤ 300 字） | 图片内联进文档；`ai:` 是占位符，服务端生成后替换 |
+| `mapMode` | `cylindrical`（默认）/ `spherical` / `planar` | UV 投影：绕 Z 柱面（瓶/罐/柱/轮毂）/ 球面 / XY 平面（板/立面） |
+| `mapRepeat` | `[u, v]`，各 0–32，缺省 `[1,1]` | 平铺次数；`wrapS/wrapT = RepeatWrapping` |
+
+```json
+{
+  "op": "addSolid",
+  "name": "青花缠枝莲纹瓶",
+  "features": [{
+    "label": "薄壁瓶胎·青花釉",
+    "shape": { "shape": "revolve", "profile": [[0,0], [0.12,0.14], [0.07,0.32]], "segments": 48 },
+    "material": {
+      "name": "甜白釉·青花",
+      "roughness": 0.14,
+      "metalness": 0.02,
+      "map": "ai:青花缠枝莲纹，钴蓝浓淡分水，甜白釉底，口沿回纹与下腹仰莲瓣",
+      "mapMode": "cylindrical"
+    }
+  }]
+}
+```
+
+**AI 生成图片**：模型只输出短占位符，`server/ai/textures.js` 在 `/ai/plan` 返回前替换：
+
+```
+material.map: "ai:…"  →  /images/generations（配了图像模型时）
+                      →  内置程序化纹理（未配置 / 超时 / 返回不合规时兜底）
+                      →  data:image/png;base64,… 内联进 ops → 前端 apply 落库
+```
+
+- 图像模型在「账户中心 → AI 设置 → 文生图模型」填模型名即可，接口地址与 Key 默认复用主模型；
+  也可用 `STRU_AI_IMAGE_MODEL` / `STRU_AI_IMAGE_BASE_URL` / `STRU_AI_IMAGE_API_KEY` / `STRU_AI_IMAGE_SIZE` 单独指定。
+- 未提供图像模型时走 `server/ai/texture-pattern.js`，**按提示词三选一**：
+  命中 `足球 / soccer / football / 黑白五边形 / 皮革拼块` → 768×384 黑白足球球面展开图
+  （配 `mapMode:"spherical"`），其中默认 `pentagons` 拼法是 12 块球面正五边形、黑白都是五边形；
+  提示词写明 `经典 32 面 / 白六边形` 才是 `classic` 拼法（12 黑五边形 + 20 白六边形）。
+  其余 → 896×560 青花缠枝莲柱面展开图（缠枝莲 / 回纹 / 仰莲瓣 / 弦纹）。**内置图案只有这三种**，
+  所以没配图像模型时反复换提示词只会拿到同一张青花，`textures[].warning` 会明确写出这个事实。
+- 足球拼块用「面法向 + 面到球心距离」划球面：`score = dot(d, n)/h` 取最大者，等价于从球心
+  沿该方向先打到哪块皮，边界天然连成完整网格。经典拼法的 `h5/h6 = 1.0264` 来自截角二十面体
+  外接球几何；六边形面法向直接从二十面体的三角面中心算，不能混用另一套十二面体坐标
+  （两套「标准」坐标差 90°，会让黑五边形挤成菱形）。
+- **凹陷缝**：足球图案同时产出一张对齐的灰度高度图 `bumpDataUrl`（块面高、沟底低、缝边 bevel），
+  `resolveTextureOps` 自动写进 `material.bumpMap` 并给 `bumpScale: 0.004`；颜色图里也烘焙了
+  沟底暗芯与缝边高光，离线渲染器同样看得出凹感。模型可以显式写 `"bumpMap":"auto"` 请求配套高度图
+  （图像模型生成的贴图没有，auto 会被忽略），`bumpScale` 取 0~0.05。前端用
+  `MeshStandardMaterial.bumpMap`（线性色彩空间，不标 sRGB），`mini-render.ts` 用高度梯度做近似。
+- 会话历史里内联图片被换成 `[贴图已生成·历史省略…]` 标记，凹凸图则直接删掉（永远跟着颜色图走）。
+  历史标记不是提示词：模型照抄回 ops 时 `resolveTextureOps` 会识别并删掉 `map` / `bumpMap` 字段
+  （沿用已有贴图、不重复生图），因此变空的 `editFeature` op 也会被剔除，避免 dry-run 报
+  「没有要修改的字段」。旧版写成 `ai:贴图已生成…` 会被当成新提示词，每轮重新生成一张青花——
+  「改了五轮还是青花」就是这个原因。
+- 独立生图入口 `POST /api/ai/texture { "prompt": "…" }` 返回
+  `{ image, source, model, bytes, chars, bumpImage?, bumpScale? }`，`image` 可直接写进 `material.map`；
+  需要登录，与 plan 共用限流。
+- plan / plan-stream / assemble 的结果都带 `textures[]` 报告（提示词、来源、体积、图案、拼法、
+  bumpChars、warning，不含图片本体），AI 面板气泡里会显示生成出来的贴图缩略图；
+  会话历史里图片本体被换成短标记，不撑大数据库。
+
+**UV 怎么来的**：`normalizeSolid()` 与 CSG 求值器只保留 `position/normal`，逐形状补 UV 会让
+`mergeGeometries` 属性不一致而退化成单材质，所以 `src/bim/solid.ts` 的 `applyTextureUv()` 在
+**最终几何**上按 `geometry.groups` 的材质槽统一投影，并把跨 u=0↔1 接缝的三角形做解卷（否则瓶身
+会有一条竖条被拉成整张图）。只有材质里出现 `map` 时才添加 `uv` 属性，纯色模型零回归。
+
+**渲染**：视口 `featureMaterial()` 用 `TextureLoader` + `SRGBColorSpace` + `RepeatWrapping`
+建 `map`，有贴图且没写 `color` 时自动用白色相乘（否则白釉会被构件灰染脏）；
+`disposeMaterial()` 会连 map 一起释放。离屏 `scripts/lib/mini-render.ts` 自带 PNG 解码
+（`scripts/lib/png.ts`，8-bit truecolor / filter 0–4）+ 透视校正 UV 双线性采样，
+非 PNG 或解码失败自动降级为纯色。
+
+边界：UV 是**整体包围盒投影**，一个构件上多个零件共用同一套参数；没有法线贴图 / 粗糙度贴图 /
+置换（真凹凸仍要几何特征），贴图也不参与玻璃折射。照片 → 3D 重建 / 从参考图抠真实材质仍未接。
+
 ### 贴花（涂装 / 文字 / logo）
 
 `addDecal` 生成的是**独立构件**（`primitive.kind: 'decal'`，`source: '贴花'`），不参与布尔、
@@ -896,7 +1269,8 @@ renderSheet(geometry, materials, [
 1. **倒圆只对凸体成立。** 带凹口 / 槽 / 孔的非凸件会被跳过（内核不会毁形，但也不会偷偷近似）。
    融合式翼梢、垂尾根部的变半径整流罩仍然做不到——那需要 B-rep 级的曲面圆角，不是滚球能替代的。
 2. **没有 2D 轮廓倒圆。** 凹多边形 `prism` 的平面角只能靠手写 `profile` 点或改用 `roundedBox`。
-3. **没有贴图材质**，只有独立平面的贴花 → 蒙皮分缝、铆钉排、真实涂装分界线仍做不出来。
+3. **贴图只有颜色通道。** 特征级 `material.map` 已能包裹曲面（见「纹理贴图」），但 UV 是整体投影、
+   没有法线 / 粗糙度 / 置换通道，蒙皮分缝的凹凸、真实笔触厚度仍然做不出来。
 4. **布尔之后没有倒角。** `fillet` 作用在特征自己的几何上，切出来的新棱是尖的；
    要圆就得把 `fillet` 写在切除之前，或者对切除结果单独建一个特征。
 
@@ -1020,6 +1394,11 @@ renderSheet(geometry, materials, [
 3. 在 `shared/library.js` 的导入清单里加一行（注册，不是建模逻辑）；
 4. 跑 `npm test`：`template-test` 会把每份文档按真实链路落库求值，`parametric-test` 会检查绑定表自洽。
 
+`blue-white-vase`（青花瓷瓶·几何纹样）是第 11 份库模型：7 个顶层 / 35 个全树特征、4 档青花料，
+由 `diagnostics/blue-white-vase.gen.mjs` 同时产出 ops 与库文档（改了生成器要重跑并重新提交 JSON）。
+它演示的是**没有贴图时**怎么把纹样做成薄几何；同一器型的贴图版在
+`diagnostics/blue-white-vase.textured.ops.json`（1 个特征 + 一张 `material.map`），两者可以直接对比。
+
 `scripts/template-test.ts` 会把每份文档都走一遍 `applyOps`（`library`）→ `buildElementModel`，
 断言「能落库 / 有面 / 特征数在**分层**上限内（总数 96、group 子特征 48、嵌套 2 层）/ 尺寸合理 /
 亭子与履带吊底面贴地」，再加上各案例的专项断言（柱数、瓦片、翼角、履带镜像、臂是锥形箱型节、臂仰角、双液压缸…）——
@@ -1139,6 +1518,7 @@ B-rep 级别的拓扑命名 + 雅可比 + 牛顿迭代，而且和「特征树�
 - 形状白名单：未知形状直接 400，不会静默生成一个错的东西
 - 尺寸 1 mm ~ 500 m；坐标 ≤ 20 km；角度 ≤ 3600°
 - 单实体特征 ≤ 96、子组嵌套 ≤ 2 层、分段 ≤ 64、轮廓点 ≤ 192、凸包点 ≤ 64、阵列 ≤ 192
+  （分段是纯画质参数，越界**夹到边界**而不是报错；尺寸 / 坐标 / 点数越界仍直接拒绝）
 - 倒圆半径 ≤ min(width, depth)/2：只受这两条平面边约束，**height（板厚）不参与** ——
   6 mm 厚、300×300 的顶盖可以放心用 20 mm 圆角；反过来说 12 mm 窄的镜片最多只有 6 mm，
   窄边窄就只能是更小的圆角（上限小于 1 mm 时直接报错，提示改用 box）、
@@ -1157,6 +1537,12 @@ B-rep 级别的拓扑命名 + 雅可比 + 牛顿迭代，而且和「特征树�
 - 不通过 → 把错误原文作为【服务端校验反馈】回灌给模型，让它自己改一轮（只改 1 轮，避免烧 token）；
   改对了返回 `repaired: 1`，面板显示「已自动修正参数」；
 - 还是不通过 → 保留这次的指令但带 `warning`，面板禁用「应用到模型」并给一个「让 AI 修正」按钮。
+
+**分段数不进这条链路**：`segments` / `tubeSegments` / `fillet.segments` 只影响曲面细分，
+前端内核本来就会夹到 6~64，服务端因此同样夹取而非拒绝。早期版本用严格范围校验，
+模型在自检闭环里用 `editFeature` 把花瓶分段从 48 调到 96/128 时整轮指令被打回，
+屏幕上就反复出现「参数没通过校验（特征 1.segments 超出允许范围（6 ~ 64）），正在自动修正…」——
+为一个渲染结果完全相同的值白烧一次上游调用。现在模型提示词里也写明了 32~48 足够。
 
 `apply` 阶段失败（例如文档刚被协作者改过）时，错误条里同样出现「让 AI 修正」按钮，
 把错误原文一键交回模型，不用手动复制粘贴。
@@ -1215,6 +1601,14 @@ export STRU_AI_API_KEY=ollama
 | `STRU_AI_VISION_MODEL` | 空 | 独立视觉模型名；填了才算启用（界面上对应「启用独立视觉模型」勾选） |
 | `STRU_AI_VISION_BASE_URL` | 空 | 视觉模型的接口地址；留空复用主模型地址 |
 | `STRU_AI_VISION_API_KEY` | 空 | 视觉模型自己的 Key；留空复用主模型 Key |
+| `STRU_AI_IMAGE_MODEL` | 空 | 文生图模型名；填了才调 `/images/generations`，留空用内置程序化纹理（界面「文生图模型」同字段） |
+| `STRU_AI_IMAGE_BASE_URL` | 空 | 生图接口地址；留空复用主模型地址 |
+| `STRU_AI_IMAGE_API_KEY` | 空 | 生图 Key；留空复用主模型 Key |
+| `STRU_AI_IMAGE_SIZE` | `1024x1024` | 生图尺寸 |
+| `STRU_AI_PYTHON_MODE` | `auto` | Python 工具后端：`auto` / `container`（Docker 硬隔离）/ `restricted`（受限进程）/ `off` |
+| `STRU_AI_PYTHON_TIMEOUT_MS` | `8000` | 单段脚本超时（毫秒，1000–60000） |
+| `STRU_AI_PYTHON_IMAGE` | `stru-python-sandbox:latest` | 容器镜像名；`docker build -t … server/ai/python` 生成 |
+| `STRU_PYTHON` | 空 | 覆盖 Python 解释器路径；默认用 `server/convert/.venv`（STEP 转换器共用的那个） |
 | `STRU_AI_API_KEY` | 空 | 仅存服务端；也可以用 `OPENAI_API_KEY` |
 | `STRU_AI_TIMEOUT_MS` | `180000` | 单次请求超时 |
 | `STRU_AI_CONTEXT_TOKENS` | `0` | 上下文窗口；0 = 按模型名自动推断（见「上下文压缩」），私有模型可显式指定 |
@@ -1247,16 +1641,47 @@ npm test
 - `scripts/inspect-test.mjs`（32 项）：巡检视角解析——预设/自定义角度的 label、`focus` 与 `zoom` 的夹取
   （0.4–4、一位小数、`scale` 别名、非法值当没给、focus 截到 40 字、空白丢弃）、认不出的项丢弃、
   最多 4 个、「整机 + 特写」混排。
-- `scripts/agent-loop-test.ts`（52 项）：闭环编排——一步收工、改完没要求复核时交回用户、完整
+- `scripts/agent-loop-test.ts`（88 项）：闭环编排——一步收工、改完没要求复核时交回用户、完整
   「改→看→改→看→确认」的顺序断言（apply 在 inspect 之前）、用户中止（每轮开始 / 截图后都能停）、
   步数上限、打转检测（同视角两次 / 应用一直失败）、截不到图、done 与 inspect 同轮先看图、
   首轮改完就自称完成时补拍默认视角、`stepPrompt` 文本（需求复述、视角序号、最后一步提示）、
-  视角指纹归一（`400°` = `40°`）、需求截断。
-- `scripts/ai-provider-test.mjs`（65 项）：配置解析、OpenAI 工具调用解析、content JSON 兜底、非 2xx 错误、
+  视角指纹归一（`400°` = `40°`）、需求截断、工具结果按行裁剪与回执总长、
+  第四个工具结果（`python`）触发下一轮 / 结果回灌 / 打转检测 / 三段结果共享 28000 字总预算。
+- `scripts/orchestrator-test.mjs`（40 项）：角色 JSON 解析、mock 全链路六阶段顺序与唯一 `addSolid`、
+  材质/预算/命名/接缝/曲面采样、几何内核按需打包与缓存、OpenAI 兼容桩服务下的角色请求（不带 tools、
+  显式 `stream:false`、用户停止立即中断）、`/ai/assemble` 与 `/ai/assemble/stream` 两条新端点、
+  `mode=assemble` 兼容入口、普通 `plan` 不受影响；已挂 `npm test`。
+- `scripts/assembly-test.ts`（50 项）：合并器契约与查询内核的往返一致性（见上一节）。
+- `scripts/describe-test.ts`（28 项）：只读特征树查询——请求白名单与上限、`from/count` 夹取、完整 `shape` 不被裁剪、
+  分页与单特征查询、关键词检索、目标解析失败文字、4 条大请求的总输出预算与「这条没执行」提示，
+  以及自检闭环里的结果回灌与打转检测。
+- `scripts/message-limits-test.mjs`（11 项）：需求长度闸门——用户正文 4000 字、`internal` 自检回执 32000 字、
+  超限文案区分（不再把工具结果说成「需求描述过长」）并给出 `from/count` 翻页办法。
+- `scripts/role-context-test.mjs`（12 项）：编排角色上下文——完整可解析 JSON、选中构件的完整 `shape` 与变换、
+  精简版不含原始数据、预算降档先保骨架再减完整 shape、只读标注、无选中退回第一个造型构件、
+  超大 shape 只给摘要、无 document 时安全返回空。
+- `scripts/segments-test.mjs`（25 项）：分段数契约——`addSolid` / `editFeature` / `replaceFeature` /
+  `fillet.segments` / `tubeSegments` 的 128、96、3、字符串等值都夹到 6~64、缺省值与形状其它字段不变；
+  非数字仍拒绝、尺寸字段仍严格、`dryRun` 不再因分段触发自动修正；基本体参数表上限统一、主提示词与编排角色提示词写明范围。
+- `scripts/texture-test.ts`（64 项）：贴图字段校验与材质槽分组、程序化纹理的 PNG 编解码（filter 1/2）、
+  青花瓷入库后的真实求值、按材质槽生成 UV 与柱面接缝解卷、无贴图零回归、
+  `applyOps → buildElementModel → renderSheet` 的贴图采样像素对比、
+  `ai:` 占位符替换 / 去重 / 历史瘦身，以及 `/images/generations` 桩服务与失败降级。
+- `scripts/ai-texture-test.mjs`（27 项）：独立生图端点（鉴权、体积、来源）、普通 / 流式 plan 的占位符替换与
+  `textures[]` 报告、460 KB 贴图 ops 落库、会话历史不存图片本体、SSE 生图进度事件。
+- `scripts/python-runner-test.mjs`（35 项）：请求规范化（字符串 / 对象 / 上限 / 截断）、纯计算与 `print`、
+  无 `emit` 提示、九类逃逸尝试（`os` / `subprocess` / `socket` / `open` / `eval` / `exec` / dunder /
+  `__globals__` / `global`）全被拒、语法与运行异常可回灌、死循环超时、超大结果截断、
+  脚本 ops 的 dry-run 通过 / 拒绝、PIL 图片与 `python:1` 占位符替换、numpy / OCP 可用性、状态报告。
+- `scripts/ai-python-test.mjs`（21 项）：`status` 声明后端与隔离级别、普通 / 流式 plan 的 `python` 请求 →
+  `pythonText` / `pythonReport` 回灌、SSE 执行进度事件、未登录 401、不请求脚本时不触发沙箱且贴图链路零回归。
+- `scripts/ai-provider-test.mjs`（91 项）：配置解析、OpenAI 工具调用解析、content JSON 兜底、非 2xx 错误、
   thinking 模型拒绝 `tools` 时的自动降级（首次带 tools / 降级不带 tools / 去掉 temperature / 附加 JSON 指令 /
   结果带 `degraded` 标记），401 等认证错误不触发重试；看图链路（未启用视觉模型时报可操作错误、
   独立视觉模型用自己的 Key、规格注入建模消息、主模型能读图时内联直传且只发一次请求）；
-  生成阶段预校验与自动修正；视角巡检（工具参数含 inspect、归一化、上限 4 个、非法项丢弃、角度夹取）。
+  生成阶段预校验与自动修正；视角巡检（工具参数含 inspect、归一化、上限 4 个、非法项丢弃、角度夹取）；
+  只读特征树查询（工具参数含 describe、与 measure 同轮解析、非法 type 丢弃、count 夹到上限）；
+  Python 脚本请求（工具参数含 python、对象与纯字符串写法解析、空 code 丢弃）。
 
 - `scripts/ai-conversation-test.mjs`（28 项）：会话创建/列表/详情/重命名/删除、消息落库（用户 + 助手、
   seq 递增、缩略图过滤）、标题取自首句需求、第二轮累计、已应用标记回写、他人与他项目均 404/400、
@@ -1299,7 +1724,10 @@ npm test
 - 闭环的质量取决于模型能不能真的「看图判断」。视觉能力弱的模型容易看一眼就 `done`，或者在同一个地方反复改；
   前端会在**第一轮改完就自称完成**时补拍一组默认视角，但它看图后仍然判断不出问题，就只能靠人兜。
 - 还没做：「平面图 → 墙线/房间」的专用提取（现在走同一套特征树，偏“体量”而不是“施工图”）；
-  照片贴图 / 材质采样（图生 3D）也还没接。
+  照片材质采样 / 图生 3D 重建也还没接（贴图生成与赋材质已支持，见「纹理贴图」）。
+- **Python 工具在没启动 Docker 时不是安全沙箱**：`restricted` 模式靠 AST / import / rlimit 挡住常见越权，
+  不构成对蓄意绕过的硬隔离；对外服务必须先构建镜像并设 `STRU_AI_PYTHON_MODE=container`。
+  `python:N` 图片引用只在本轮有效，脚本本身不落库、不能跨会话复用；模型仍需自己把算出的数值写进 ops。
 - 参数化只覆盖模型文档里带 `params` + `bindings` 的那几份（当前是支架）。**任意特征树的可调性由约束层解决**
   （见「通用约束」）；两者不重叠：绑定表能连带派生字段一起重算，约束层只能驱动特征字段本身。
 - 约束是单向的：改派生尺寸会在下一次重算时被覆盖（与 Revit 公式参数一致）。

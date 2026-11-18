@@ -21,9 +21,12 @@
     "pavilion": "esbuild scripts/pavilion-demo.ts --bundle --platform=node --format=esm --outfile=.tmp/pavilion.mjs --log-level=warning && node .tmp/pavilion.mjs",
     "crane": "esbuild scripts/crane-demo.ts --bundle --platform=node --format=esm --outfile=.tmp/crane.mjs --log-level=warning && node .tmp/crane.mjs",
     "modifiers": "esbuild scripts/modifiers-demo.ts --bundle --platform=node --format=esm --outfile=.tmp/modifiers.mjs --log-level=warning && node .tmp/modifiers.mjs",
-    "constraint": "esbuild scripts/constraint-demo.ts --bundle --platform=node --format=esm --outfile=.tmp/constraint.mjs --log-level=warning && node .tmp/constraint.mjs"
+    "constraint": "esbuild scripts/constraint-demo.ts --bundle --platform=node --format=esm --outfile=.tmp/constraint.mjs --log-level=warning && node .tmp/constraint.mjs",
+    "merge": "esbuild scripts/merge-parts.ts --bundle --platform=node --format=esm --outfile=.tmp/merge-parts.mjs --log-level=warning && node .tmp/merge-parts.mjs",
+    "query": "esbuild scripts/model-query.ts --bundle --platform=node --format=esm --outfile=.tmp/model-query.mjs --log-level=warning && node .tmp/model-query.mjs"
   },
   "dependencies": {
+    "esbuild": "^0.28.2",
     "occt-import-js": "^0.0.23",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",

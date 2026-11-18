@@ -31,16 +31,18 @@ import quadcopter from './models/quadcopter.json' with { type: 'json' };
 import screwdriver from './models/screwdriver.json' with { type: 'json' };
 import gear from './models/gear.json' with { type: 'json' };
 import vase from './models/vase.json' with { type: 'json' };
+import blueWhiteVase from './models/blue-white-vase.json' with { type: 'json' };
 import pipe from './models/pipe.json' with { type: 'json' };
 import bracket from './models/bracket.json' with { type: 'json' };
 import crawlerCrane from './models/crawler-crane.json' with { type: 'json' };
+import football from './models/football.json' with { type: 'json' };
 import { evaluateFormula } from './formula.js';
 import { writeDimension } from './dimensions.js';
 
 const clamp = (value, min, max) => Math.min(Math.max(Number.isFinite(value) ? value : min, min), max);
 
 /** 库里的顺序 = 界面上的顺序（先建筑/复杂件，再零件） */
-const RAW_DOCUMENTS = [pavilionHex, pavilionOct, aircraftA350, crawlerCrane, quadcopter, screwdriver, gear, vase, pipe, bracket];
+const RAW_DOCUMENTS = [pavilionHex, pavilionOct, aircraftA350, crawlerCrane, quadcopter, screwdriver, gear, vase, blueWhiteVase, football, pipe, bracket];
 
 function deepFreeze(value) {
   if (!value || typeof value !== 'object' || Object.isFrozen(value)) return value;

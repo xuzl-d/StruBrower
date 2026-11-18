@@ -1,0 +1,40 @@
+{
+  "id": "football",
+  "name": "缝制足球（真几何皮革）",
+  "summary": "32 块皮革逐片缝成的球：12 块黑五边形 + 20 块白六边形，每块都是独立的加厚球面壳，块间留真实空隙，缝底是内胆球；缝会随光照变深浅，不是贴图",
+  "features": [
+    {
+      "id": "fb-01",
+      "label": "皮革拼球",
+      "mode": "add",
+      "shape": {
+        "shape": "ballPanels",
+        "radius": 0.12,
+        "layout": "classic",
+        "seam": 0.0024,
+        "thickness": 0.00336,
+        "bulge": 0.00269,
+        "segments": 12,
+        "rings": 5,
+        "light": {
+          "name": "白色皮革",
+          "color": "#f1eee5",
+          "roughness": 0.82,
+          "metalness": 0
+        },
+        "dark": {
+          "name": "黑色皮革",
+          "color": "#191c22",
+          "roughness": 0.8,
+          "metalness": 0
+        },
+        "core": {
+          "name": "缝底内胆",
+          "color": "#0b0d10",
+          "roughness": 0.95,
+          "metalness": 0
+        }
+      }
+    }
+  ]
+}

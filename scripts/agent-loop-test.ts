@@ -3,7 +3,7 @@
  * 以及什么时候必须停下来（用户中止 / 步数上限 / 打转 / 没动作）。
  * 纯逻辑，不需要浏览器也没有 WebGL：模型、应用、截图全是假的。
  */
-import { clipGoal, MAX_AGENT_STEPS, runAgentLoop, stepPrompt, viewSignature } from '../src/ai/agentLoop';
+import { clipGoal, clipToolText, MAX_AGENT_STEPS, PYTHON_TEXT_CLIP, runAgentLoop, stepPrompt, TOOL_TEXT_CLIP, TOOL_TOTAL_CLIP, viewSignature } from '../src/ai/agentLoop';
 import type { AgentDecision, AgentRound, AgentShot } from '../src/ai/agentLoop';
 
 let failed = 0;
@@ -492,6 +492,86 @@ function scripted(decisions: AgentDecision[]) {
     stopped: () => false,
   });
   check('done 与 measure 同轮：先量完再收工', mixedRun.reason === 'done' && mixedRun.steps === 2, mixedRun);
+}
+
+// ── 工具结果回灌的长度上限 ────────────────────────────────────
+{
+  // describe 一次能吐 1 万多字符：4 条请求叠起来就是 8 万，
+  // 服务端以前按「需求描述」的 4000 字拦，于是自检第 2 步直接报「需求描述过长」
+  const describeLines = Array.from(
+    { length: 400 },
+    (_, i) => `   ${i + 1}) {"label":"特征${i}","shape":{"shape":"prism","profile":[[0,0],[0.01,0.02]]}}`,
+  );
+  const longDescribe = ['[特征树查询结果]', ...describeLines].join('\n');
+  const longMeasure = Array.from({ length: 600 }, (_, i) => `- 间隙 ${i}: 0.00${i} m`).join('\n');
+  check('长度阈值本身够小，说明这个用例真的超了预算', longDescribe.length > TOOL_TEXT_CLIP, longDescribe.length);
+
+  const standalone = clipToolText(longDescribe, 2000);
+  const kept = standalone.slice(0, standalone.indexOf('\n…（以上只是前'));
+  const origin = new Set(longDescribe.split('\n'));
+  check('裁剪只切在行边界，不把一条特征 JSON 切成两半', kept.split('\n').every((line) => origin.has(line)), kept.slice(-80));
+  check('裁剪后带上原文总长度与翻页提示', /共 \d+ 字/.test(standalone) && /from\/count 分页/.test(standalone), standalone.slice(-120));
+  check('没超预算时原样返回', clipToolText('短结果', 100) === '短结果');
+
+  const prompt = stepPrompt({
+    step: 2,
+    maxSteps: 5,
+    goal: '按参考图改青花瓷瓶的纹样',
+    shots: [{ label: '前视' }],
+    measureText: longMeasure,
+    describeText: longDescribe,
+  });
+  check('自检回执整体压在服务端内部轮上限以内', prompt.length < 32000, prompt.length);
+  check('describe 超预算时被截断', prompt.includes('工具结果共'));
+  check('measure 结果同样限长', prompt.includes('工具结果共') && !prompt.includes(longMeasure.slice(-40)), prompt.length);
+}
+
+// ── 第四个工具结果：Python 脚本 ───────────────────────────────
+{
+  const longPython = Array.from({ length: 900 }, (_, i) => `  ${i}) {"r": ${(i / 100).toFixed(3)}, "z": ${(i / 50).toFixed(3)}}`).join('\n');
+  const longDescribe = Array.from({ length: 400 }, (_, i) => `   ${i + 1}) {"label":"特征${i}"}`).join('\n');
+  const longMeasure = Array.from({ length: 600 }, (_, i) => `- 间隙 ${i}: 0.00${i} m`).join('\n');
+  check('Python 用例确实超过单段预算', longPython.length > PYTHON_TEXT_CLIP, longPython.length);
+
+  const prompt = stepPrompt({
+    step: 2,
+    maxSteps: 5,
+    goal: '按参考图做青花瓷瓶',
+    shots: [{ label: '前视' }],
+    measureText: longMeasure,
+    describeText: longDescribe,
+    pythonText: longPython,
+  });
+  check('三段工具结果合计仍压在服务端内部轮上限内', prompt.length < 32000 && prompt.length <= TOOL_TOTAL_CLIP + 2000, prompt.length);
+  check('总预算不会被 describe 一家吃光', prompt.includes('Python') || prompt.includes('总预算'), prompt.slice(-220));
+  check('pythonText 短结果原样回灌', stepPrompt({ step: 2, maxSteps: 5, goal: 'g', shots: [], pythonText: '【Python 1】 42' }).includes('【Python 1】 42'));
+
+  const calls: AgentRound[] = [];
+  const stages: string[] = [];
+  const py = scripted([
+    { reply: '先算点位', python: [{ code: 'emit({"result":1})' }], pythonText: '【Python 1】 计算结果：42' },
+    { reply: '按结果改完', done: true },
+  ]);
+  const run = await runAgentLoop(first, {
+    goal: first.text,
+    plan: async (round) => { calls.push(round); return py.plan(round); },
+    apply: async () => ({ note: 'ok' }),
+    inspect: async () => [],
+    stopped: () => false,
+    onStage: (stage) => { stages.push(stage.type); },
+  });
+  check('python 请求触发下一轮（不是 no-action）', run.reason === 'done' && run.steps === 2, run);
+  check('Python 结果回灌进下一轮正文', Boolean(calls[1]?.text.includes('【Python 1】 计算结果：42')), calls[1]?.text.slice(0, 200));
+  check('播报了 python 阶段', stages.includes('python'), stages);
+
+  const spin = await runAgentLoop(first, {
+    goal: first.text,
+    plan: async () => ({ reply: '再算一遍', python: [{ code: 'emit({"result":1})' }], pythonText: '同样的结果' }),
+    apply: async () => ({ note: 'ok' }),
+    inspect: async () => [],
+    stopped: () => false,
+  });
+  check('反复同一段脚本判定为打转', spin.reason === 'repeated', spin);
 }
 
 console.log(failed === 0 ? '\n自检闭环测试全部通过' : `\n自检闭环测试失败：${failed} 项`);

@@ -6,7 +6,7 @@
  * 与 src/bim/solid.ts 的 SOLID_LIMITS 保持一致；服务端只收紧不放松。
  */
 import crypto from 'node:crypto';
-import { resolveSolidMaterial, solidMaterialKey, solidMaterialLabel } from '../../shared/materials.js';
+import { normalizeHexColor, resolveSolidMaterial, solidMaterialKey, solidMaterialLabel } from '../../shared/materials.js';
 import { OpsError } from './errors.js';
 
 export const SOLID_LIMITS = {
@@ -42,6 +42,7 @@ const SHAPE_KINDS = new Set([
   'sweep',
   'hull',
   'tiles',
+  'ballPanels',
   'group',
 ]);
 
@@ -61,6 +62,7 @@ const SHAPE_LABELS = {
   sweep: '扫掠',
   hull: '凸包',
   tiles: '瓦面',
+  ballPanels: '皮革拼球',
   group: '子特征组',
 };
 
@@ -181,10 +183,21 @@ function profile(value, label, { min = 3, closed = true } = {}) {
   return points;
 }
 
+/**
+ * 曲面分段：只决定网格细分的圆滑程度，不改变几何语义。
+ *
+ * 前端造型内核（src/bim/solid.ts 的 segments）本来就 clamp 到 6 ~ SOLID_LIMITS.segments，
+ * 所以 96 / 128 这类「想让花瓶更圆滑」的值在渲染上和 64 完全等价，3 这种低模值则等价于 6。
+ * 以前这里用 num() 直接拒绝，模型在自检闭环里用 editFeature 调分段时整轮指令被拒，
+ * 于是反复弹「参数没通过校验，正在自动修正…」，为一个无害的画质值白烧一次上游调用。
+ * 现在与前端内核对齐：夹取即可；尺寸、坐标、点数等真正影响几何的字段仍严格校验。
+ */
 function segments(value, label, fallback = 24) {
-  return value === undefined || value === null
-    ? fallback
-    : num(value, label, { min: 6, max: SOLID_LIMITS.segments, integer: true });
+  if (value === undefined || value === null) return fallback;
+  // 模型偶尔会把数字写成 JSON 字符串（"48"），这类纯画质字段一并容错
+  const parsed = typeof value === 'string' && value.trim() ? Number(value) : value;
+  if (typeof parsed !== 'number' || !Number.isFinite(parsed)) fail(`${label} 必须是数字`);
+  return Math.min(SOLID_LIMITS.segments, Math.max(6, Math.round(parsed)));
 }
 
 /**
@@ -198,6 +211,33 @@ function materialSpec(value, label) {
   if (!material) return undefined;
   if (!solidMaterialKey(material)) return undefined;
   return material;
+}
+
+/** 皮革拼球三块材质的默认色；与前端 DEFAULT_PANEL_MATERIALS 保持一致 */
+const PANEL_MATERIAL_DEFAULTS = {
+  light: { name: '白色皮革', color: '#f1eee5', roughness: 0.82, metalness: 0 },
+  dark: { name: '黑色皮革', color: '#191c22', roughness: 0.8, metalness: 0 },
+  core: { name: '缝底内胆', color: '#0b0d10', roughness: 0.95, metalness: 0 },
+};
+
+/**
+ * 皮革拼球的颜色材质：接受 "#f1eee5" / "rubber" / { color, roughness }。
+ * 只保留颜色与 PBR 标量 —— 形状级材质不允许带 map / bumpMap，
+ * 否则几百 KB 的内联图片会绕过会话历史的瘦身规则混进上下文。
+ */
+function panelMaterial(value, label, fallback) {
+  if (value === undefined || value === null) return { ...fallback };
+  const source = typeof value === 'string' && normalizeHexColor(value) ? { color: value } : value;
+  const { material, errors } = resolveSolidMaterial(source);
+  if (errors.length || !material) {
+    fail(`${label} 不合法：${errors.join('；') || '无法解析为材质'}`);
+  }
+  return {
+    name: typeof material.name === 'string' ? material.name.slice(0, 40) : fallback.name,
+    color: material.color || fallback.color,
+    roughness: material.roughness ?? fallback.roughness,
+    metalness: material.metalness ?? fallback.metalness,
+  };
 }
 
 function normalizePattern(value, label) {
@@ -538,6 +578,29 @@ function normalizeShape(shape, label, depth, counter) {
         showTiles: shape.showTiles !== false,
       };
     }
+    case 'ballPanels': {
+      const radius = size(shape.radius, `${label}.radius`);
+      const panelNumber = (value, field, min, max, hint, integer = false) =>
+        value === undefined || value === null
+          ? undefined
+          : num(value, `${label}.${field}`, { min, max, hint, integer });
+      return {
+        shape: 'ballPanels',
+        radius,
+        layout: shape.layout === 'classic' ? 'classic' : 'pentagons',
+        seam: panelNumber(shape.seam, 'seam', 0.00002, radius * 0.2, '缝宽不超过球半径的 20%'),
+        thickness: panelNumber(shape.thickness, 'thickness', 0.00005, radius * 0.3, '皮革厚度不超过球半径的 30%'),
+        bulge: panelNumber(shape.bulge, 'bulge', 0, radius * 0.12, '鼓起量不超过球半径的 12%'),
+        segments: shape.segments === undefined || shape.segments === null
+          ? undefined
+          : segments(shape.segments, `${label}.segments`, 12),
+        rings: panelNumber(shape.rings, 'rings', 2, 16, '', true),
+        darkCount: panelNumber(shape.darkCount, 'darkCount', 0, 12, '', true),
+        light: panelMaterial(shape.light, `${label}.light`, PANEL_MATERIAL_DEFAULTS.light),
+        dark: panelMaterial(shape.dark, `${label}.dark`, PANEL_MATERIAL_DEFAULTS.dark),
+        core: panelMaterial(shape.core, `${label}.core`, PANEL_MATERIAL_DEFAULTS.core),
+      };
+    }
     case 'group': {
       if (depth >= 2) fail(`${label} 子特征组最多嵌套 2 层`);
       const features = normalizeFeatures(shape.features, `${label}.features`, depth + 1, counter);
@@ -707,6 +770,8 @@ export function describeShape(shape) {
       return `hull(${shape.points?.length ?? 0}点凸包)`;
     case 'tiles':
       return `瓦面(${shape.rings?.length ?? 0}站,每面${shape.rows ?? 9}列×${shape.courses ?? 12}层)`;
+    case 'ballPanels':
+      return `皮革拼球(r${fixed(shape.radius)},${shape.layout === 'classic' ? '32面' : '12五边形'},缝${fixed(shape.seam ?? shape.radius * 0.02)})`;
     case 'group':
       return `group(${shape.features?.length ?? 0}子特征)`;
     default:

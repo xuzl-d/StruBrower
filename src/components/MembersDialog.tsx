@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { isImeComposing } from '../ime';
 import { ApiError, membersApi } from '../data';
 import type { MemberEntry } from '../data';
 import ModalShell from './ModalShell';
@@ -104,7 +105,7 @@ export default function MembersDialog({ projectId, currentUserId, isAdmin, onClo
                 value={email}
                 placeholder="已注册用户的邮箱"
                 onChange={(event) => setEmail(event.target.value)}
-                onKeyDown={(event) => { if (event.key === 'Enter') void addMember(); }}
+                onKeyDown={(event) => { if (event.key === 'Enter' && !isImeComposing(event)) void addMember(); }}
               />
               <select value={role} onChange={(event) => setRole(event.target.value as MemberEntry['role'])}>
                 <option value="viewer">查看者</option>

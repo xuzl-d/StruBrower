@@ -308,6 +308,37 @@ export type SolidShape =
   /** 子特征组：把多个特征合成一个实体，再整体变换 / 阵列（用于螺旋桨这类子装配） */
   | { shape: 'group'; features: SolidFeature[] }
   /**
+   * 球面皮革拼块：把缝制球做成**真几何**，而不是贴图上的假缝。
+   *
+   * 每一块皮都是独立的封闭薄壳（微微鼓起的球面片 + 有厚度的侧壁 + 内表面），
+   * 相邻块之间留出真实空隙，缝底是一颗半径更小的内胆球；光照下缝会真的变深浅。
+   * 面划分用加权球面 Voronoi，pentagons = 12 块全五边形，classic = 12 黑五边形 + 20 白六边形。
+   * light / dark / core 是三块皮革各自的颜色材质（纯色，不接受贴图）。
+   */
+  | {
+    shape: 'ballPanels';
+    /** 皮革外缘球半径（米）；块中心最高点是 radius + bulge */
+    radius: number;
+    /** pentagons（默认，黑白都是五边形）/ classic（经典 32 面） */
+    layout?: 'pentagons' | 'classic';
+    /** 缝宽（米，沿球面弧长），缺省 radius × 0.02 */
+    seam?: number;
+    /** 皮革厚度 = 缝深（米），缺省 radius × 0.028 */
+    thickness?: number;
+    /** 每块皮中心的鼓起量（米），缺省 thickness × 0.8 */
+    bulge?: number;
+    /** 每条边的球面细分数 6~64，缺省 12 */
+    segments?: number;
+    /** 块心到边界的径向分层数 2~16，缺省 5 */
+    rings?: number;
+    /** pentagons 布局下黑色块数 0~12，缺省 3（正十二面体最多 3 个面互不相邻） */
+    darkCount?: number;
+    /** 白皮 / 黑皮 / 缝底内胆的材质（只取颜色与 PBR 标量） */
+    light?: SolidMaterial;
+    dark?: SolidMaterial;
+    core?: SolidMaterial;
+  }
+  /**
    * 瓦面：在多边形 / 圆形坡屋面上**逐片**铺瓦（板瓦凹弧 + 筒瓦半圆 + 逐层叠压 + 瓦当滴水）。
    *
    * 和「截面带波浪的放样」的区别：放样做出来是一条条圆脊（波纹），这里每一片瓦都是
@@ -393,6 +424,22 @@ export interface SolidMaterial {
   metalness?: number;
   /** 不透明度 0–100，缺省 100 */
   opacity?: number;
+  /**
+   * 纹理贴图：`data:image/png|jpeg|webp;base64,…`，或 `ai:<提示词>`（服务端生成后替换）。
+   * 贴图只影响外观；UV 由造型内核在最终几何上按 mapMode 投影生成。
+   */
+  map?: string;
+  /** UV 投影方式，缺省 cylindrical（绕 Z 轴，回转体专用） */
+  mapMode?: 'cylindrical' | 'spherical' | 'planar';
+  /** 贴图重复次数 [u, v]，缺省 [1, 1]；需要 RepeatWrapping 才生效 */
+  mapRepeat?: [number, number];
+  /**
+   * 凹凸高度图：与 map 共用 UV，灰度越亮越高。内联 data URL，
+   * 或 'auto'（服务端按同一提示词生成与颜色图严格对齐的高度图后替换）。
+   */
+  bumpMap?: string;
+  /** 凹凸幅度（米），0 ~ 0.05，缺省 0.004 */
+  bumpScale?: number;
 }
 
 /**

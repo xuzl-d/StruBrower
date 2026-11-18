@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from 'react';
 import { aiApi, ApiError } from '../data';
-import type { AiContextUsage, AiConversationSummary, AiInspectView, AiPlan, AiStatus, AiStoredMessage } from '../data';
+import type { AiContextUsage, AiConversationSummary, AiInspectView, AiPlan, AiPythonReport, AiStatus, AiStoredMessage, AiTextureInfo } from '../data';
 import type { ProjectDocument } from '../bim/types';
 import type { ViewLookRequest } from '../ModelViewport';
 import { MAX_AGENT_STEPS, runAgentLoop } from '../ai/agentLoop';
 import { runMeasure } from '../ai/measure';
+import { runDescribe } from '../ai/describe';
+import { isImeComposing, isImeSubmit } from '../ime';
 import type { AgentRound, AgentRun, AgentShot } from '../ai/agentLoop';
 
 /**
@@ -67,6 +69,51 @@ interface ChatMessage {
   vision?: { model: string; object: string; parts: number } | null;
   /** 落库后的消息 id：应用成功时用它回写「已应用」 */
   dbId?: string;
+  /** 本轮 AI 生成并贴到材质上的贴图报告 */
+  textures?: AiTextureInfo[];
+  /** 从 ops 里挑出来的贴图预览（data URL，最多 2 张） */
+  texturePreviews?: string[];
+  /** 本轮 Python 沙箱执行报告 */
+  python?: AiPythonReport | null;
+}
+
+/** 从 ops 里挑出本轮生成的贴图，用于气泡里预览（去重、最多 2 张） */
+function collectTexturePreviews(ops: Array<Record<string, unknown>> | undefined): string[] {
+  const found: string[] = [];
+  const walk = (value: unknown): void => {
+    if (Array.isArray(value)) {
+      for (const item of value) walk(item);
+      return;
+    }
+    if (!value || typeof value !== 'object') return;
+    for (const [key, child] of Object.entries(value)) {
+      if (key === 'map' && typeof child === 'string' && child.startsWith('data:image/')) {
+        if (!found.includes(child) && found.length < 2) found.push(child);
+      } else {
+        walk(child);
+      }
+    }
+  };
+  walk(ops);
+  return found;
+}
+
+/** 指令预览：内联贴图换成短标记，否则前 4000 字符全是 base64 */
+function previewOpsJson(ops: Array<Record<string, unknown>>): string {
+  const scrub = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(scrub);
+    if (!value || typeof value !== 'object') return value;
+    const out: Record<string, unknown> = {};
+    for (const [key, child] of Object.entries(value)) {
+      if (key === 'map' && typeof child === 'string' && child.startsWith('data:image/')) {
+        out[key] = `<内联贴图 ${Math.round(child.length / 1024)} KB>`;
+      } else {
+        out[key] = scrub(child);
+      }
+    }
+    return out;
+  };
+  return JSON.stringify(scrub(ops), null, 2).slice(0, 4000);
 }
 
 /** 一条待发送的附件：图片走视觉模型，文本文件拼进需求当参考资料 */
@@ -340,6 +387,8 @@ function newId(): string {
 
 /** 「自动应用」开关记忆：默认开——AI 自己改完再看，才叫 agent */
 const AUTO_APPLY_KEY = 'strubrowser.ai.autoApply';
+/** 「分零件建模」开关：默认关，和普通单模型生成互不干扰 */
+const ASSEMBLE_KEY = 'strubrowser.ai.assemble';
 
 function readUiBool(key: string, fallback: boolean): boolean {
   try {
@@ -569,6 +618,10 @@ export default function AiPanel({
   const [showView, setShowView] = useState(true);
   /** 自动应用：AI 改完立刻写进模型，才能自己转视角核对（关掉就只给建议，用户手动应用） */
   const [autoApply, setAutoApply] = useState(() => readUiBool(AUTO_APPLY_KEY, true));
+  /** 分零件建模：首轮走服务端多角色编排，后续自检轮仍用普通模型做微调 */
+  const [assembleMode, setAssembleMode] = useState(() => readUiBool(ASSEMBLE_KEY, false));
+  const assembleRef = useRef(assembleMode);
+  assembleRef.current = assembleMode;
   const conversationRef = useRef<string | null>(null);
   conversationRef.current = conversationId;
 
@@ -1035,6 +1088,7 @@ export default function AiPanel({
     history: Array<{ role: string; content: string }>,
     label: string,
     internal = false,
+    assemble = false,
   ) => {
     const startedAt = Date.now();
     const initial: AiProgress = {
@@ -1059,6 +1113,7 @@ export default function AiPanel({
     };
     const plan = await aiApi.planStream(projectId, round.text, selectedIds, history, {
       signal: controller.signal,
+      assemble,
       onEvent: (event) => {
         const current = progressRef.current;
         if (!current) return;
@@ -1144,9 +1199,35 @@ export default function AiPanel({
       repaired: plan.repaired,
       warning: plan.warning,
       vision: plan.vision ?? null,
+      textures: plan.textures ?? [],
+      texturePreviews: collectTexturePreviews(plan.ops),
+      python: plan.pythonReport ?? null,
       step: step > 1 ? step : undefined,
-      done: Boolean(plan.done && !plan.ops?.length && !plan.inspect?.length && !plan.measure?.length),
+      done: Boolean(plan.done && !plan.ops?.length && !plan.inspect?.length && !plan.measure?.length && !plan.describe?.length && !plan.python?.length),
     }]);
+    if (plan.pythonReport?.scripts) {
+      const info = plan.pythonReport;
+      const mode = info.isolated ? 'Docker 容器隔离' : '受限进程（非硬隔离）';
+      const lines = [
+        `Python 工具：${info.ok}/${info.scripts} 段成功，${mode}，${info.ms} ms`
+          + `，产出 ${info.opsCount} 条指令 / ${info.images} 张图片。`,
+        info.errors.length ? `脚本错误：${info.errors.join('；')}` : '',
+        info.warning ? `提示：${info.warning}` : '',
+      ].filter(Boolean).join('\n');
+      setMessages((current) => [...current, { id: newId(), role: 'system', text: lines }]);
+    }
+    if (plan.assembly) {
+      const info = plan.assembly;
+      const lines = [
+        `分工装配：${info.report.parts.length} 个零件（${info.report.parts.map((part) => part.name).join('、')}），`
+          + `${info.report.featureCount}/${info.report.limit} 个特征，${info.samplePoints} 个曲面采样点。`,
+        info.seams.length
+          ? `接缝复核：${info.seams.map((seam) => `${seam.b} ${seam.relation}（${seam.distance} m）`).join('；')}`
+          : '',
+        info.warnings.length ? `提示：${info.warnings.join('；')}` : '',
+      ].filter(Boolean).join('\n');
+      setMessages((current) => [...current, { id: newId(), role: 'system', text: lines }]);
+    }
   };
 
   /** 这一轮的指令已经自己落地了：把气泡从「待应用」改成「已应用」 */
@@ -1356,7 +1437,7 @@ export default function AiPanel({
       // （viewer 自动应用会 403，闭环只会把「没权限」当成模型改错了，白跑几轮）
       if (!autoApply || !canEdit) {
         roundNo = 1;
-        pushPlan(await runRound(firstRound, history, ''), 0);
+        pushPlan(await runRound(firstRound, history, '', false, assembleRef.current), 0);
         return;
       }
 
@@ -1367,7 +1448,7 @@ export default function AiPanel({
         plan: async (round) => {
           roundNo += 1;
           const label = roundNo > 1 ? `自检第 ${roundNo}/${MAX_AGENT_STEPS} 步 · ` : '';
-          const plan = await runRound(round, roundNo === 1 ? history : [], label, roundNo > 1);
+          const plan = await runRound(round, roundNo === 1 ? history : [], label, roundNo > 1, roundNo === 1 && assembleRef.current);
           pushPlan(plan, roundNo);
           return plan;
         },
@@ -1386,9 +1467,18 @@ export default function AiPanel({
           await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
           return runMeasure(docRef.current, requests);
         },
+        describe: async (requests) => {
+          setPhase(`第 ${roundNo} 步：正在读取完整特征树…`);
+          await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+          return runDescribe(docRef.current, requests);
+        },
         onStage: (stage) => {
           if (stage.type === 'measure') {
             setPhase(`第 ${stage.step} 步：已完成 ${stage.count} 项测量，正在判断…`);
+          } else if (stage.type === 'describe') {
+            setPhase(`第 ${stage.step} 步：已取回 ${stage.count} 项特征定义，正在判断…`);
+          } else if (stage.type === 'python') {
+            setPhase(`第 ${stage.step} 步：服务端已执行 ${stage.count} 段 Python 脚本，正在按结果建模…`);
           } else if (stage.type === 'apply-failed') {
             setPhase(`第 ${stage.step} 步：参数被服务端拒绝，让 AI 自己改…`);
           } else if (stage.type === 'inspect') {
@@ -1586,6 +1676,7 @@ export default function AiPanel({
                     onChange={(event) => setRenameText(event.target.value)}
                     onBlur={() => void commitRename(item.id)}
                     onKeyDown={(event) => {
+                      if (isImeComposing(event)) return;
                       if (event.key === 'Enter') {
                         event.preventDefault();
                         void commitRename(item.id);
@@ -1719,6 +1810,42 @@ export default function AiPanel({
                   {message.vision?.parts ? ` · ${message.vision.parts} 个零件` : ''}
                 </div>
               ) : null}
+              {message.python?.scripts ? (
+                <div className="ai-vision-note">
+                  Python：{message.python.ok}/{message.python.scripts} 段成功 · {message.python.isolated ? '容器隔离' : '受限进程'}
+                  {message.python.opsCount ? ` · 产出 ${message.python.opsCount} 条指令` : ''}
+                  {message.python.images ? ` · ${message.python.images} 张图片` : ''}
+                  {message.python.failed ? ` · ${message.python.failed} 段失败` : ''}
+                </div>
+              ) : null}
+              {message.texturePreviews?.length ? (
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', margin: '6px 0' }}>
+                  {message.texturePreviews.map((src, index) => {
+                    const info = message.textures?.[index];
+                    const fromModel = info?.source === 'model';
+                    const fromPython = info?.source === 'python';
+                    return (
+                      <figure key={index} style={{ margin: 0 }}>
+                        <img
+                          src={src}
+                          alt="AI 生成的材质贴图"
+                          style={{
+                            width: 176,
+                            height: 'auto',
+                            display: 'block',
+                            borderRadius: 4,
+                            border: '1px solid rgba(128,128,128,.35)',
+                          }}
+                        />
+                        <figcaption style={{ fontSize: 11, opacity: 0.75, marginTop: 2 }}>
+                          {fromModel ? `AI 生图 · ${info?.model ?? ''}` : fromPython ? `Python 脚本 · ${info?.prompt ?? ''}` : '内置程序化纹理'}
+                          {info?.bytes ? ` · ${Math.round(info.bytes / 1024)} KB` : ''}
+                        </figcaption>
+                      </figure>
+                    );
+                  })}
+                </div>
+              ) : null}
               {message.ops?.length ? (
                 <div className="ai-ops">
                   <div className="ai-op-summary">
@@ -1733,7 +1860,7 @@ export default function AiPanel({
                   </div>
                   <details>
                     <summary>查看 {message.ops.length} 条指令</summary>
-                    <pre>{JSON.stringify(message.ops, null, 2).slice(0, 4000)}</pre>
+                    <pre>{previewOpsJson(message.ops)}</pre>
                   </details>
                   {message.warning ? (
                     <div className="ai-warning">
@@ -1817,6 +1944,8 @@ export default function AiPanel({
         }}
         onSubmit={(event) => {
           event.preventDefault();
+          // 少数输入法把「候选词上屏」解释成表单隐式提交；明确点了发送按钮的提交不受影响
+          if (isImeSubmit(event)) return;
           void send();
         }}
         onDragOver={(event) => {
@@ -1916,10 +2045,12 @@ export default function AiPanel({
               void addFiles(files);
             }}
             onKeyDown={(event) => {
-              if (event.key === 'Enter' && !event.shiftKey) {
-                event.preventDefault();
-                void send();
-              }
+              if (event.key !== 'Enter' || event.shiftKey) return;
+              // 输入法正在组词时，回车是把候选词「填进输入框」，不是发送。
+              // 不 preventDefault，把这一下完整交还给输入法处理。
+              if (isImeComposing(event)) return;
+              event.preventDefault();
+              void send();
             }}
           />
           {busy ? (
@@ -1977,6 +2108,21 @@ export default function AiPanel({
           />
           <span>让 AI 看当前模型</span>
           {!canSeeImages ? <em>（需要能读图的模型）</em> : null}
+        </label>
+        <label
+          className="ai-see-toggle"
+          title="打开后：首轮由多个角色分工——零件 Agent 各自建模、几何查询给贴合件曲面点、拼接 Agent 用射线定接缝，最后合并成 1 个造型构件；后续自检轮仍按普通方式微调。适合零件多、接缝要求高的模型"
+        >
+          <input
+            type="checkbox"
+            checked={assembleMode}
+            disabled={busy}
+            onChange={(event) => {
+              setAssembleMode(event.target.checked);
+              writeUiBool(ASSEMBLE_KEY, event.target.checked);
+            }}
+          />
+          <span>分零件建模</span>
         </label>
         </div>
         <button

@@ -1,0 +1,39 @@
+{
+  "name": "示例：车身 + 后视镜",
+  "color": "#e9b900",
+  "parts": [
+    {
+      "id": "body",
+      "name": "车身主体",
+      "material": "paintOrange",
+      "quota": 24,
+      "features": [
+        { "label": "车身主轮廓", "shape": "roundedBox", "width": 4.2, "depth": 1.8, "height": 1.1, "radius": 0.18, "translate": [0, 0, 0.75] },
+        { "label": "前灯凹位切除", "shape": "box", "mode": "cut", "width": 0.42, "depth": 0.12, "height": 0.16, "translate": [2.05, 0.62, 0.9] }
+      ],
+      "anchors": [
+        { "name": "右前门镜座根部", "at": [0.85, 0.92, 1.12], "normal": [0, 1, 0] }
+      ],
+      "bbox": { "min": [-2.1, -0.9, 0.2], "max": [2.1, 0.9, 1.3] }
+    },
+    {
+      "id": "mirror",
+      "name": "右后视镜",
+      "material": "plasticDark",
+      "quota": 8,
+      "features": [
+        { "label": "镜座", "shape": "capsule", "radius": 0.035, "height": 0.14, "translate": [0, 0, 0] },
+        { "label": "镜壳", "shape": "roundedBox", "width": 0.22, "depth": 0.09, "height": 0.12, "radius": 0.035, "translate": [0, 0.14, 0.04] }
+      ],
+      "anchors": [
+        { "name": "镜座根部", "at": [0, -0.07, 0], "normal": [0, -1, 0] }
+      ],
+      "bbox": { "min": [-0.11, -0.07, -0.07], "max": [0.11, 0.19, 0.1] }
+    }
+  ],
+  "placements": [
+    { "part": "body", "translate": [0, 0, 0] },
+    { "part": "mirror", "translate": [0.85, 0.99, 1.12], "rotate": [0, 0, -12] }
+  ],
+  "budget": { "total": 96, "reserved": 6 }
+}

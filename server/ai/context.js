@@ -56,6 +56,12 @@ function solidSummary(element, maxFeatures = 48) {
         ? {
           material: feature.material.name ?? feature.material.color ?? null,
           color: feature.material.color ?? null,
+          // 只标记「已有贴图」，不把几百 KB 的 base64 带进上下文
+          ...(feature.material.map ? {
+            textured: true,
+            mapMode: feature.material.mapMode ?? 'cylindrical',
+            ...(feature.material.bumpMap ? { bumped: true } : {}),
+          } : {}),
         }
         : {}),
     })),

@@ -340,6 +340,10 @@ export interface AiSettingsView {
   visionBaseUrl: string;
   hasVisionKey: boolean;
   visionKeyHint: string;
+  /** 文生图模型名；留空表示用内置程序化纹理 */
+  imageModel?: string;
+  imageBaseUrl?: string;
+  imageEnabled?: boolean;
   timeoutMs: number;
   /** 上下文窗口（tokens）；0 表示按模型名自动推断 */
   contextTokens?: number;
@@ -361,6 +365,8 @@ export interface AiSettingsPayload {
   visionBaseUrl?: string;
   visionApiKey?: string;
   clearVisionKey?: boolean;
+  imageModel?: string;
+  imageBaseUrl?: string;
   timeoutMs?: number;
   contextTokens?: number;
   apiKey?: string;
@@ -374,6 +380,10 @@ export interface AiStatus {
   vision?: { enabled: boolean; model: string };
   /** 主模型自己能不能读图：决定发送时能否把视口截图附带过去做视觉自检 */
   canSeeImages?: boolean;
+  /** 贴图生成能力：procedural=true 表示用内置纹理兜底 */
+  texture?: { enabled: boolean; model: string; procedural: boolean };
+  /** Python 计算工具：容器模式才是硬隔离 */
+  python?: AiPythonStatus;
   /** 上下文窗口大小（tokens）：面板显示占用比例 */
   contextWindow?: number;
   ready: boolean;
@@ -480,6 +490,15 @@ export type AiMeasureRequest =
   | { type: 'surface'; target?: string; feature?: string | number; axis: 'x' | 'y' | 'z'; at: [number, number] }
   | { type: 'gap'; target?: string; a: string | number; b: string | number };
 
+/**
+ * AI 要求的只读特征树查询：把项目上下文里被裁剪掉的原始特征定义取回来。
+ * 与 server/ai/describe.js 的 normalizeDescribe 输出一致；序号 index 从 1 起。
+ */
+export type AiDescribeRequest =
+  | { type: 'element'; target?: string | number; from: number; count: number }
+  | { type: 'feature'; target?: string | number; feature: string | number }
+  | { type: 'search'; target?: string | number; query: string };
+
 /** 上下文用量：服务端按 token 预算分配后的实际占用（前端显示「12.4k / 128k」并提示压缩） */
 export interface AiContextUsage {
   model?: string;
@@ -508,6 +527,76 @@ export interface AiContextUsage {
   canCompact?: boolean;
 }
 
+/** 分零件建模的合并报告（只有 mode=assemble 的请求才有） */
+export interface AiAssemblyInfo {
+  name: string;
+  report: {
+    featureCount: number;
+    limit: number;
+    parts: Array<{ id: string; name: string; featureCount: number; scope: string }>;
+    warnings: string[];
+    [key: string]: unknown;
+  };
+  stages: Array<{ name: string; text: string }>;
+  warnings: string[];
+  seams: Array<{ a: string; b: string; relation: string; distance: number }>;
+  samplePoints: number;
+  mock: boolean;
+  [key: string]: unknown;
+}
+
+/** 服务端这轮生成的贴图报告（图片本体已内联进 ops 的 material.map） */
+export interface AiTextureInfo {
+  prompt: string;
+  /** python = AI 用 Python 脚本（PIL 等）生成的贴图 */
+  source: 'model' | 'procedural' | 'procedural-fallback' | 'python';
+  model: string;
+  width: number;
+  height: number;
+  bytes: number;
+  chars: number;
+  warning?: string;
+}
+
+/** 独立生图接口的返回 */
+export interface AiTextureResult extends AiTextureInfo {
+  image: string;
+}
+
+/** AI 请求服务端在沙箱里执行的 Python 计算脚本 */
+export interface AiPythonRequest {
+  code: string;
+  note?: string;
+}
+
+/** `GET /api/ai/status` 里的 Python 工具能力声明 */
+export interface AiPythonStatus {
+  enabled: boolean;
+  mode: 'off' | 'container' | 'restricted';
+  /** 只有 Docker 容器模式才是硬隔离 */
+  isolated: boolean;
+  containerReady: boolean;
+  python: string;
+  pythonOk: boolean;
+  timeoutMs: number;
+  image: string;
+  warning: string | null;
+}
+
+/** Python 沙箱执行报告（不含脚本产出的图片本体） */
+export interface AiPythonReport {
+  mode: 'off' | 'container' | 'restricted';
+  isolated: boolean;
+  scripts: number;
+  ok: number;
+  failed: number;
+  opsCount: number;
+  images: number;
+  ms: number;
+  errors: string[];
+  warning?: string;
+}
+
 export interface AiPlan {
   reply: string;
   ops: Array<Record<string, unknown>>;
@@ -515,6 +604,8 @@ export interface AiPlan {
   inspect?: AiInspectView[];
   /** AI 要做的几何测量（最多 6 条），结果以文字回传给它 */
   measure?: AiMeasureRequest[];
+  /** AI 要查的只读特征树（最多 4 条），结果以文字回传给它 */
+  describe?: AiDescribeRequest[];
   /** AI 自评：已经满足用户需求，不用再改也不用再看图（自检闭环的收工信号） */
   done?: boolean;
   summary: Record<string, number>;
@@ -531,6 +622,16 @@ export interface AiPlan {
   vision?: AiVisionInfo | null;
   /** 本次请求的上下文占用（预算式压缩后的实际用量） */
   context?: AiContextUsage | null;
+  /** 分零件建模的合并报告：零件清单、特征预算、接缝复核 */
+  assembly?: AiAssemblyInfo | null;
+  /** 本轮 AI 生成并贴到材质上的贴图（生成方式与体积，不含图片数据） */
+  textures?: AiTextureInfo[];
+  /** 本轮请求服务端执行的 Python 脚本 */
+  python?: AiPythonRequest[];
+  /** Python 执行结果：自检闭环把它回灌给模型，下一轮据此写 ops */
+  pythonText?: string;
+  /** 沙箱后端、隔离级别、耗时与错误摘要 */
+  pythonReport?: AiPythonReport | null;
   /** 服务端落库后的会话与消息 id（前端据此回写「已应用」） */
   conversationId?: string | null;
   messageId?: string | null;
@@ -539,7 +640,7 @@ export interface AiPlan {
 
 /** 流式 plan 的中间事件（SSE）：思考过程 / 输出草稿 / 特征树生成进度 */
 export type AiPlanEvent =
-  | { type: 'start'; provider: string; model: string; mock?: boolean; images?: number }
+  | { type: 'start'; provider: string; model: string; mock?: boolean; images?: number; mode?: string }
   | { type: 'status'; text: string }
   | { type: 'vision'; model: string; object: string; parts: number }
   | { type: 'reasoning'; delta: string }
@@ -548,12 +649,14 @@ export type AiPlanEvent =
   | { type: 'plan'; chars: number }
   /** 连接中断后自动重试：前端据此清掉上一轮的半截草稿，别把两次输出拼在一起 */
   | { type: 'retry'; attempt: number; total: number; delayMs: number; reason: string }
-  | { type: 'result'; reply: string; ops: Array<Record<string, unknown>>; inspect?: AiInspectView[]; measure?: AiMeasureRequest[]; done?: boolean; summary: Record<string, number>; provider: string; model: string; mock: boolean; ms?: number; events?: number; repaired?: number; warning?: string; vision?: AiVisionInfo | null; context?: AiContextUsage | null; conversationId?: string | null; messageId?: string | null; userMessageId?: string | null }
+  | { type: 'result'; reply: string; ops: Array<Record<string, unknown>>; inspect?: AiInspectView[]; measure?: AiMeasureRequest[]; describe?: AiDescribeRequest[]; python?: AiPythonRequest[]; pythonText?: string; pythonReport?: AiPythonReport | null; done?: boolean; summary: Record<string, number>; provider: string; model: string; mock: boolean; ms?: number; events?: number; repaired?: number; warning?: string; vision?: AiVisionInfo | null; context?: AiContextUsage | null; assembly?: AiAssemblyInfo | null; textures?: AiTextureInfo[]; conversationId?: string | null; messageId?: string | null; userMessageId?: string | null }
   | { type: 'error'; message: string };
 
 export interface AiPlanStreamOptions {
   onEvent?: (event: AiPlanEvent) => void;
   signal?: AbortSignal;
+  /** 走多角色编排：零件 Agent 分工建模 → 曲面采样 → 拼接 Agent → 合并成唯一 addSolid */
+  assemble?: boolean;
   /** 同一次发送的幂等键：自动重试时复用，服务端据此不再重复插一条用户消息 */
   requestId?: string;
 }
@@ -638,6 +741,8 @@ export function createAiApi(baseUrl = '') {
     attachments?: Array<{ name: string; text: string }>;
     /** 自检闭环里前端代发的巡检回执：仍进上下文，但不在聊天区当作用户发言显示 */
     internal?: boolean;
+    /** 老服务端不支持 /ai/assemble/* 时，退回 /ai/plan 也要按分零件模式生成 */
+    mode?: 'assemble';
   }
 
   const sessionBody = (session?: SessionRef) => ({
@@ -646,6 +751,7 @@ export function createAiApi(baseUrl = '') {
     ...(session?.imageShots ? { imageShots: session.imageShots } : {}),
     ...(session?.attachments?.length ? { attachments: session.attachments } : {}),
     ...(session?.internal ? { internal: true } : {}),
+    ...(session?.mode ? { mode: session.mode } : {}),
   });
 
   const planOnce = (
@@ -672,6 +778,13 @@ export function createAiApi(baseUrl = '') {
   const api = {
     async status() {
       return request<AiStatus>(baseUrl, '/api/ai/status');
+    },
+    /** 独立生图：返回可直接写进 material.map 的 data URL */
+    async generateTexture(prompt: string) {
+      return request<AiTextureResult>(baseUrl, '/api/ai/texture', {
+        method: 'POST',
+        body: { prompt },
+      });
     },
     async plan(projectId: string, message: string, selectedIds: string[], history: Array<{ role: string; content: string }>, images: string[] = [], session?: SessionRef) {
       return planOnce(projectId, message, selectedIds, history, images, session);
@@ -737,6 +850,10 @@ export function createAiApi(baseUrl = '') {
       session?: SessionRef,
     ): Promise<AiPlan> {
       const requestId = options.requestId ?? makeRequestId();
+      // 分零件建模走独立端点；body 里也带 mode，方便代理/旧版服务端降级到 /ai/plan 后仍能识别
+      const planPath = options.assemble
+        ? `/api/projects/${projectId}/ai/assemble/stream`
+        : `/api/projects/${projectId}/ai/plan/stream`;
 
       const attemptOnce = async (): Promise<AiPlan> => {
         const headers: Record<string, string> = {
@@ -748,7 +865,7 @@ export function createAiApi(baseUrl = '') {
 
         let response: Response;
         try {
-          response = await fetch(baseUrl + `/api/projects/${projectId}/ai/plan/stream`, {
+          response = await fetch(baseUrl + planPath, {
             method: 'POST',
             headers,
             body: JSON.stringify({
@@ -757,6 +874,7 @@ export function createAiApi(baseUrl = '') {
               history,
               ...(images.length ? { images } : {}),
               requestId,
+              ...(options.assemble ? { mode: 'assemble' as const } : {}),
               ...sessionBody(session),
             }),
             signal: options.signal,
@@ -775,7 +893,10 @@ export function createAiApi(baseUrl = '') {
             try { data = await response.json(); } catch { data = null; }
             throw new ApiError(response.status, data?.error ?? `请求失败（HTTP ${response.status}）`);
           }
-          const fallback = await planOnce(projectId, message, selectedIds, history, images, session, requestId);
+          const fallback = await planOnce(projectId, message, selectedIds, history, images, {
+            ...session,
+            mode: options.assemble ? 'assemble' : undefined,
+          }, requestId);
           options.onEvent?.({ type: 'result', ...fallback });
           return fallback;
         }
@@ -800,6 +921,7 @@ export function createAiApi(baseUrl = '') {
               ops: Array.isArray(event.ops) ? event.ops : [],
               inspect: Array.isArray(event.inspect) ? event.inspect : [],
               measure: Array.isArray(event.measure) ? event.measure : [],
+              describe: Array.isArray(event.describe) ? event.describe : [],
               done: event.done === true,
               summary: event.summary ?? {},
               provider: event.provider ?? '',
@@ -810,6 +932,11 @@ export function createAiApi(baseUrl = '') {
               warning: event.warning || undefined,
               vision: event.vision ?? null,
               context: event.context ?? null,
+              assembly: event.assembly ?? null,
+              textures: Array.isArray(event.textures) ? event.textures : [],
+              python: Array.isArray(event.python) ? event.python : [],
+              pythonText: event.pythonText ?? '',
+              pythonReport: event.pythonReport ?? null,
               conversationId: event.conversationId ?? null,
               messageId: event.messageId ?? null,
               userMessageId: event.userMessageId ?? null,

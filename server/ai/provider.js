@@ -8,6 +8,8 @@ import { LIBRARY_MODELS, modelHasParams, modelParamSpecs } from '../../shared/li
 import { describeImages, resolveVision } from './vision.js';
 import { normalizeInspect } from './inspect.js';
 import { normalizeMeasure } from './measure.js';
+import { normalizeDescribe } from './describe.js';
+import { normalizePython } from './python.js';
 import {
   clipToTokens,
   estimateTokens,
@@ -49,6 +51,14 @@ export function resolveAiConfig(env = process.env) {
       model: visionModel,
       baseUrl: (env.STRU_AI_VISION_BASE_URL ?? '').replace(/\/+$/, ''),
       apiKey: env.STRU_AI_VISION_API_KEY ?? '',
+    },
+    // 文生图：填了模型名才调 /images/generations；地址与 Key 默认复用主模型。
+    // 留空时 AI 写 `material.map: "ai:…"` 会走内置程序化纹理，离线也能出图。
+    image: {
+      model: (env.STRU_AI_IMAGE_MODEL ?? '').trim(),
+      baseUrl: (env.STRU_AI_IMAGE_BASE_URL ?? '').replace(/\/+$/, ''),
+      apiKey: env.STRU_AI_IMAGE_API_KEY ?? '',
+      size: env.STRU_AI_IMAGE_SIZE ?? '1024x1024',
     },
     // mock 永远可用；真实提供方需要 key
     ready: provider === 'mock' || Boolean(apiKey),
@@ -92,10 +102,33 @@ const TOOL = {
             + 'target 可指定构件名或 id，只有一个造型构件时可省略。feature、a、b 可用特征名、id 或从 1 起的序号。',
           items: { type: 'object', additionalProperties: true },
         },
+        describe: {
+          type: 'array',
+          description: '只读特征树查询（最多 4 条）。项目上下文只列前 48 个特征且复杂 shape 会被省略；'
+            + '要核对某个特征完整的原始定义、找被裁剪掉的构件，或确认 id / 序号时用这个，结果以文字回传，不修改模型。'
+            + '可与 ops、inspect、measure 同轮出现（顺序：先应用 ops，再查询、测量、截图）。'
+            + '三种写法：'
+            + '{ "type": "element", "target": "构件名或 id", "from": 1, "count": 24 } 分页列出该构件的完整特征定义（序号从 1 起）；'
+            + '{ "type": "feature", "target": "构件名或 id", "feature": 3 } 取单个特征的完整定义（feature 可用序号、id 或名称）；'
+            + '{ "type": "search", "query": "镜座" } 按关键词检索构件与特征，返回名字、id 和序号。'
+            + '只有一个造型构件时 target 可省略；返回里的序号可直接用于 editFeature / setDimensions。',
+          items: { type: 'object', additionalProperties: true },
+        },
+        python: {
+          type: 'array',
+          description: 'Python 计算脚本（最多 2 段，每段 ≤8000 字符）。坐标、母线、阵列角度、曲面采样点等'
+            + '需要精确计算时才用：服务端在受限沙箱里执行，结果以文字回灌给你，下一轮据此写 ops。'
+            + '元素写法 { "code": "…", "note": "算什么" }（note 可省略），脚本必须用 emit(对象) 提交结果，'
+            + '例如 emit({"result": {"points": [[r, z], ...]}})；对象里还能带 ops（建模指令数组）或'
+            + ' images（[{ name, dataUrl }]，本轮可用 material.map / bumpMap: "python:N" 引用）。'
+            + '可用 math / numpy / PIL / OCP / cadquery（scipy 未预装），禁止文件、网络、子进程与反射。'
+            + '不要为了简单算术调用它；算完记得把数值真正用进 ops，不要只报告结果。',
+          items: { type: 'object', additionalProperties: true },
+        },
         done: {
           type: 'boolean',
           description: '你认为已经满足用户需求、不需要再改也不用再看图时设 true。'
-            + '设 true 时 ops、inspect、measure 都要留空；第一次生成后不要立刻设 true，先看一组视角再判断。',
+            + '设 true 时 ops、inspect、measure、describe、python 都要留空；第一次生成后不要立刻设 true，先看一组视角再判断。',
         },
       },
       required: ['reply', 'ops'],
@@ -227,7 +260,20 @@ ${MODEL_CATALOG}
   // cornerLift/cornerOut = 角部起翘（翼角）：让瓦面自己在多边形角上抬起外挑，别另外贴一块板。
   // 中国古建屋顶（亭/榭/殿）的瓦顶**必须**用它：给放样截面加余弦波只能得到一条条圆脊，
   // 那是石棉瓦不是瓦；只有板瓦+筒瓦+层层叠压才是瓦顶。
+- ballPanels: radius, layout?, seam?, thickness?, bulge?, segments?, rings?, darkCount?, light?, dark?, core?
+  // 球面皮革拼块：把缝制球做成**真几何**（不是贴图）。每块皮是独立的加厚球面壳，
+  // 中心微鼓、边沿内缩留真实缝、侧壁有厚度、缝底是内胆球，光照下缝会真的变深浅。
+  // layout: pentagons(缺省)=12 块全五边形(黑白都五边形，3 块黑)；classic=真实足球 12 黑五 + 20 白六。
+  // seam=缝宽/米(缺省 radius×0.02)，thickness=皮厚=缝深(缺省 radius×0.028)，
+  // bulge=块面鼓起(缺省 thickness×0.8)，segments=每边细分 6~64，rings=径向分层 2~16，
+  // darkCount=pentagons 下黑块数 0~12(缺省 3；正十二面体最多只有 3 个面能互不相邻)，
+  // light/dark/core = 白皮 / 黑皮 / 缝底颜色，写 "#f1eee5" 或 {color,roughness} 均可。
+  // 足球、篮球、排球这类一块块皮缝起来的球一律用它；改颜色用 editFeature 的 patch.shape.light 等字段。
 - group: features:[特征...]                                   // 子装配，可整体阵列
+【分段数 segments / tubeSegments / fillet.segments】只影响曲面圆滑程度，合法范围是 6~64 的整数。
+  花瓶、瓶体、轮毂这类 revolve / cylinder / sphere / torus 写 32~48 就足够圆滑；不要按通用 3D 习惯写 96 / 128，
+  也不要写 3~5 做低多边形。超出范围会被服务端夹到边界值，但请直接给合法值，别浪费一轮修正。
+  editFeature 的 patch 里写 segments 同样受这条约束。
 截面（loft 专用，三种写法任选其一，**优先用参数化截面，不要手写几百个坐标**）：
   { z, ellipse:{rx, ry, power?} }             // 椭圆/超椭圆：机身、短舱、整流罩（power 2=椭圆，2.2–2.6 像机身）
   { z, airfoil:{chord, thickness, le?, camber?} } // 翼型：机翼、尾翼、桨叶（chord 弦长，thickness 相对厚度 0.09–0.14，le 前缘 x）
@@ -266,6 +312,43 @@ pattern = { type:'linear', count, step:[dx,dy,dz] } / { type:'circular', count, 
 4. 用户说「换个颜色 / 做成铝合金 / 太灰了 / 加一点质感」时，用 editFeature 的 patch: { "material": ... } 改材质，
    不要重建整个实体；整体换色也可以用 updateElement 的 color。
 5. 首个特征（基体）也要给材质，否则整机会是一块默认灰。
+
+【纹理贴图 / AI 生图】（花纹、涂装、木纹、拉丝、砖墙、标牌这类「几何做不出来」的外观）
+在特征的 material 里加 map，**不要再为花纹堆几百个薄片特征**：
+  "material": { "roughness":0.18, "metalness":0.02,
+                "map":"ai:青花缠枝莲纹，钴蓝浓淡分水，甜白釉底，口沿回纹与下腹仰莲瓣",
+                "mapMode":"cylindrical" }
+规则：
+1. map 写 "ai:<提示词>"（≤300 字）：服务端调用图像模型生成一张**无缝柱面展开图**并内联进材质；
+   未配置图像模型 / 上游失败时用内置程序化纹理兜底，**目前只有三种图案**：「青花缠枝莲」、
+   「黑白足球·全五边形拼块」（默认，黑白都是五边形，带凹陷缝）、
+   「黑白足球·经典 32 面」（提示词写明 32 面 / 白六边形，12 黑五边形 + 20 白六边形）。
+   其余提示词一律是青花占位图。所以「换个提示词再试一次」不会改变青花，
+   别在自检里反复重写 map；要任意图案请在 AI 设置里配置图像模型。
+2. mapMode：cylindrical（默认，绕 Z 轴的回转体：瓶 / 罐 / 柱 / 轮毂）、spherical（球体）、
+   planar（XY 平面：平板 / 立面）。UV 由造型内核按整体包围盒投影，跨接缝自动解卷。
+3. 有 map 时**不要**再写 color（贴图自带底色，写了会把花纹染暗）；确实要染色才写。
+   mapRepeat:[u,v] 控制平铺次数，缺省 [1,1]，各取 0~32。
+4. 也可以直接写 "map":"data:image/png;base64,…"（≤600000 字符），一般不需要。
+5. 适合：瓷器花纹、木纹、拉丝金属、迷彩、砖墙、文字标牌、足球等球面拼块。
+   不适合：需要真实凹凸的浮雕（仍用几何特征）、透明玻璃（贴图不参与折射）。
+6. 回转体贴花纹时，一个 revolve + 一个 map 就够；改已有模型同样用 editFeature 的
+   patch: { "material": { "map":"ai:…" } }，不要重建实体。
+7. 【缝制球用真几何】足球 / 篮球 / 排球这类「一块块皮革缝起来」的球，一律用 ballPanels 形状：
+   每块皮是独立的加厚球面壳，块间留真实空隙，缝底是内胆球，光照下缝的明暗随视角变化。
+   一个特征就够，例如 { "shape":"ballPanels", "radius":0.12, "layout":"pentagons" }
+   （12 块全五边形，黑白都是五边形）；想要真实足球写 "layout":"classic"（12 黑五 + 20 白六）。
+   **不要**退回去用 sphere + map：贴图 / bumpMap 的缝永远是画上去的，近看没有断面和阴影；
+   也**不要**用一堆平面 prism 薄片沿径向摆（平面板贴不住球面，反复微调只会来回打转）。
+   只有球面花纹（不是拼块）才用贴图；改皮革颜色用 editFeature 的 patch: { "shape": { "light": "#..." } }。
+8. 改已有模型时，历史消息里的 "[贴图已生成·历史省略，不换纹理时不要写 map]" 表示该特征已有贴图：
+   **不要**把这个标记写回 ops（它不是提示词）；不换纹理时 patch 里干脆不要带 map 字段。
+9. 【缝要有凹感】拼块 / 皮革 / 砖缝这类需要缝线立体感的外观，材质里可写 "bumpMap":"auto"：
+   服务端生成颜色图时附一张严格对齐的灰度高度图（缝低、块面高），光照下缝会真的凹下去；
+   "bumpScale":0~0.05（缺省 0.004）控制幅度。内置黑白足球图案**自动带高度图**，不必写；
+   但球类拼块优先用 ballPanels 真几何，贴图 + bump 只是没有几何能力时的降级（缝不会真的凹进去）。
+   图像模型生成的贴图没有配套高度图，auto 会被忽略。bumpMap 不要写 ai: 提示词，也不要把历史里的
+   "<凹凸贴图…>" 标记写回 ops，凹凸图永远跟着颜色图走。
 
 【整机构图】（这是「像不像」的分水岭，先构图再抠细节）
 1. 一个产品 = 一个构件 = 一棵特征树：所有零件都放进**同一次** addSolid 的 features 里（后续微调用 addFeature 追到同一个 target）。
@@ -363,6 +446,10 @@ pattern = { type:'linear', count, step:[dx,dy,dz] } / { type:'circular', count, 
    - ops：要执行的修改。**前端会立刻应用到模型**，不需要用户点确认；
    - inspect：要转过去截图的视角（最多 4 个）。顺序固定：先应用这一轮的 ops，再切视角截图，再把图发回给你；
    - measure：要对当前特征树做的几何测量（最多 6 条），顺序同 inspect，结果以文字回传；
+   - describe：只读查询完整特征树（最多 4 条）。上下文里找不到目标、只看到 shapeDataOmitted、
+     或要核对某个 loft 截面 / pattern / material 的原始字段时，用 { "type":"search","query":"…" } 找序号，
+     再用 { "type":"feature","feature":序号 } 取整条定义，或用 { "type":"element","from":1,"count":24 } 分页列出；
+   - python：要精确计算的脚本（最多 2 段），结果以文字回传给你，下一轮据此写 ops；
    - done：你认为已经满足用户需求了。
    所以「改完马上看结果」要写在**同一轮**里（ops + inspect），不要拆成两轮。
    视角写法：{ "view": "iso" | "front" | "back" | "left" | "right" | "top" | "bottom" }，
@@ -385,12 +472,26 @@ pattern = { type:'linear', count, step:[dx,dy,dz] } / { type:'circular', count, 
    所以每一步都要有实质进展（改了东西、或看了新的角度），reply 里说清「从哪个视角看出什么问题、改了什么」。
 6. inspect 只提供视口截图。距离、表面位置和包围盒只能来自 measure 的返回文字；measure 是对当前特征树求值后采样计算的，不是拓扑精确的碰撞检测，也不提供外观相似度评分。没有 measure 结果的部位只能说「目视检查」或「尚未验证」，不可声称已经测量过。
 7. 同样的测量不要重复要；测量发现悬浮或穿插就先修（用 setDimensions 改 translate 等路径）再复测。
+8. describe 拿到的是当前文档里**未经裁剪**的原始特征定义，不是估计值；改尺寸前用它确认真实字段名和数值，
+   不要照上下文里的形状摘要猜。查询结果只对发起查询的那一轮有效，改过之后要重新查。
+9. **算不准就交给 python，不要心算**：母线插值、旋转体轮廓、沿曲面摆位、阵列角度、螺栓圆周分布、
+   拟合参考图取控制点、生成贴图这类需要循环或数值求解的事，写一段脚本算出精确点列再填进 ops。
+   格式 {"python":[{"code":"…","note":"算什么"}]}；脚本用 emit({"result": …}) 提交结果，
+   可用标准库 math / random / itertools、numpy、PIL(Pillow)、OCP / cadquery；
+   **scipy 未预装，不要 import scipy**（数值计算用 math + numpy 即可），禁止文件、网络、子进程。
+   结果在下一轮回执里，所以**同一轮不要把 python 和依赖其数值的 ops 一起写**：先算，拿到结果再改。
+   脚本也能直接 emit({"ops":[…]})，服务端会先 dry-run 校验再合入；失败原因会原文回灌，照着改脚本。
+   PIL 画的图可以用 emit({"images":[{"name":"…","dataUrl":"data:image/png;base64,…"}]}) 返回，
+   本轮 ops 里写 material.map:"python:1" 就能贴上，画灰度高度图时也可写 material.bumpMap:"python:2"
+   配 bumpScale（跨轮不保留）。简单加减乘除不要调用 python。
 
 【通用规则】
 0. 每条指令都必须带 op 字段，值就是上面列出的指令名（例如 { "op": "addSolid", "features": [...] }）；不要写成 action / type / kind。
 1. 优先使用上下文中已有的标高名与类型名；只有确实需要时才 addLevel。
 2. 默认墙/柱高度到上一层标高；没有上一层时用 height: 3。
 3. 不要发明不存在的构件名称；修改/删除前先在上下文中确认目标（elements 里带 solid 的条目列出了该造型每个特征的序号、id、形状与材质）。
+   上下文标了 omittedElements / omittedFeatures 或某特征写了 shapeDataOmitted，说明有内容没列出来：
+   先用 describe 的 search / element 查清楚再动手，不要凭空推断 id，也不要把没列出的特征当成不存在。
 4. 需求含糊时，reply 里提一个简短的问题，ops 返回空数组。但如果消息里带着【服务端校验反馈】（说明你的上一条指令被拒绝），不要反问、不要只解释——直接按提示把字段改到范围内，重新输出完整指令。
 5. 坐标要合理：建筑构件之间避免不必要的重叠；造型零件按真实连接和间隙布置，不要把相邻零件整个吞掉。
 6. 不要编造单位换算：用户没说单位时按米理解，明显是毫米级的小零件（螺丝、手机壳）按常识折算成米。
@@ -406,6 +507,8 @@ function parseToolArguments(message) {
         ops: Array.isArray(parsed.ops) ? parsed.ops : [],
         inspect: normalizeInspect(parsed.inspect),
         measure: normalizeMeasure(parsed.measure),
+        describe: normalizeDescribe(parsed.describe),
+        python: normalizePython(parsed.python),
         done: parsed.done === true,
       };
     } catch {
@@ -422,23 +525,26 @@ function parseToolArguments(message) {
           ops: Array.isArray(parsed.ops) ? parsed.ops : [],
           inspect: normalizeInspect(parsed.inspect),
           measure: normalizeMeasure(parsed.measure),
+          describe: normalizeDescribe(parsed.describe),
+          python: normalizePython(parsed.python),
           done: parsed.done === true,
         };
       } catch {
         // 忽略
       }
     }
-    return { reply: message.content, ops: [], inspect: [], measure: [], done: false };
+    return { reply: message.content, ops: [], inspect: [], measure: [], describe: [], python: [], done: false };
   }
   return null;
 }
 
 /** 纯 JSON 兜底提示：thinking 模式或部分模型不接受 tools / tool_choice 时改用 */
 const JSON_ONLY_PROMPT = `本次不再使用工具调用。请只输出一个 JSON 对象，不要输出 Markdown 代码块或任何解释文字：
-{"reply": "给用户的简短中文说明；信息不足时在这里提问", "ops": [ ... 建模指令 ... ], "inspect": [ ... 想看的视角 ... ], "measure": [ ... 几何测量请求 ... ], "done": false}
+{"reply": "给用户的简短中文说明；信息不足时在这里提问", "ops": [ ... 建模指令 ... ], "inspect": [ ... 想看的视角 ... ], "measure": [ ... 几何测量请求 ... ], "describe": [ ... 只读特征树查询 ... ], "python": [ ... 需要精确计算的脚本 ... ], "done": false}
 不需要修改模型时 ops 返回空数组；指令格式与规则同前面的说明。
 想看模型就把 inspect 写成 [{ "view": "front" }, { "view": "right" }, { "view": "iso" }]（最多 4 个），
-可以和 ops 同轮出现（先应用修改再截图）。需要几何测量时写 measure，格式同前面的说明。确认已满足需求时 done 为 true、ops、inspect、measure 都留空。`;
+可以和 ops 同轮出现（先应用修改再截图）。需要几何测量时写 measure，需要完整特征定义时写 describe，格式同前面的说明。
+确认已满足需求时 done 为 true、ops、inspect、measure、describe 都留空。`;
 
 /** 判断 400 是否属于「不支持工具调用 / 强制 tool_choice」这一类可降级错误 */
 const TOOL_REJECT_PATTERN = /tool_choice|tool choice|thinking mode|thinking 模式|does not support (this )?tool|tools? (is |are )?not supported|unsupported.*tools?/i;
@@ -540,10 +646,13 @@ function timeoutMessage(config) {
   return `AI 请求超时（${seconds} 秒未返回）：模型思考时间过长或上游限流，可缩短需求描述、换更快的模型，或在 AI 设置里调大超时`;
 }
 
-async function requestCompletion(config, payload) {
+async function requestCompletion(config, payload, options = {}) {
   const url = `${config.baseUrl}/chat/completions`;
   // 显式 stream:false：部分网关/模型默认按流式返回，会让 JSON.parse 直接失败
   const body = JSON.stringify({ ...payload, stream: false });
+  // 外部 signal 用于「用户点了停止」：与超时信号合并，任一触发都掐断上游请求
+  const timeout = AbortSignal.timeout(config.timeoutMs);
+  const signal = options.signal ? AbortSignal.any([options.signal, timeout]) : timeout;
   let lastError = null;
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
@@ -558,9 +667,11 @@ async function requestCompletion(config, payload) {
           Accept: 'application/json',
         },
         body,
-        signal: AbortSignal.timeout(config.timeoutMs),
+        signal,
       });
     } catch (error) {
+      // 用户主动停止：不要说成超时，也不要重试
+      if (options.signal?.aborted) throw new Error('已停止生成');
       // 超时不重试（再等一次只会让用户更久），其余网络错误（连接重置 / DNS 抖动）重试一次
       if (error?.name === 'TimeoutError' || error?.name === 'AbortError') throw new Error(timeoutMessage(config));
       lastError = new Error(`AI 服务连接失败：${error?.cause?.code ?? error?.message ?? '未知网络错误'}（${url}）`);
@@ -601,7 +712,7 @@ async function requestCompletion(config, payload) {
     const looksHtml = HTML_HEAD.test(text) || /text\/html/i.test(contentType);
     if (attempt === MAX_ATTEMPTS && !looksHtml) {
       try {
-        const streamed = await streamCompletion(config, payload);
+        const streamed = await streamCompletion(config, payload, null, { signal: options.signal });
         if (streamed) return streamed;
       } catch {
         // 流式也失败：保留非流式的原始错误，报错信息更有指导性
@@ -1170,6 +1281,55 @@ function createMockProvider() {
         };
       }
 
+      // Python 工具演示：Mock 也会给一段计算脚本，让「服务端执行 → 结果回灌」整条链路可离线验证
+      if (/PYTHON_TOOL_TEST|python\s*脚本|用\s*python\s*算/i.test(text)) {
+        return {
+          reply: '（Mock 模式）先用 Python 把圆周点位算准，下一轮再按结果写 ops。',
+          ops: [],
+          python: normalizePython([{
+            note: '圆周阵列点位',
+            code: 'import math\n'
+              + "pts = [[round(0.1 * math.cos(i * math.pi / 8), 4), round(0.1 * math.sin(i * math.pi / 8), 4)] for i in range(9)]\n"
+              + "emit({'result': {'points': pts, 'count': len(pts)}})",
+          }]),
+          mock: true,
+        };
+      }
+
+      // 贴图演示：Mock 也会写 `ai:<提示词>`，让服务端生图 → 内联 → 落库整条链路可离线验证
+      if (!wantsDelete && /青花|贴图|纹理|瓷器|瓷瓶|花瓶|vase|texture/i.test(text)) {
+        return {
+          reply: '（Mock 模式）已生成一只带 AI 贴图的青花瓷瓶：一条母线 revolve 出薄壁撇口瓶，'
+            + '纹样交给服务端生成的柱面展开贴图，不再堆薄片几何。确认后点「应用到模型」。',
+          ops: [{
+            op: 'addSolid',
+            name: '贴图青花瓷瓶',
+            level,
+            features: [{
+              label: '薄壁瓶胎·青花釉',
+              shape: {
+                shape: 'revolve',
+                segments: 48,
+                profile: [
+                  [0, 0], [0.05, 0], [0.062, 0.018], [0.098, 0.075], [0.118, 0.135],
+                  [0.112, 0.205], [0.078, 0.27], [0.066, 0.298], [0.078, 0.32],
+                  [0.071, 0.32], [0.058, 0.296], [0.07, 0.268], [0.102, 0.203],
+                  [0.106, 0.135], [0.086, 0.075], [0.052, 0.018], [0.04, 0], [0, 0],
+                ],
+              },
+              material: {
+                name: '甜白釉·青花',
+                roughness: 0.16,
+                metalness: 0.02,
+                mapMode: 'cylindrical',
+                map: 'ai:青花缠枝莲纹，钴蓝浓淡分水，甜白釉底，口沿回纹与下腹仰莲瓣',
+              },
+            }],
+          }],
+          mock: true,
+        };
+      }
+
       // 造型类：四翼螺旋桨无人机。特征树与「设计库」模板同源，走同一条 addSolid 指令。
       // 带「加长/改成」这类微调词时不重建，交给下面的 editFeature 分支。
       if (!wantsDelete && !/(加长|加宽|缩短|变长|改成|改为|长到|宽到)/.test(text)
@@ -1371,6 +1531,71 @@ function createMockProvider() {
   };
   return provider;
 }
+
+/**
+ * 多角色编排用：把「一个子任务」交给同一个上游模型，要求它只回一个 JSON 对象。
+ * 与 apply_bim_ops 那条链路分开——子 Agent 不写库、不产出 ops，只产出局部产物
+ * （零件 features / 摆放表 / 拆件计划），由服务端校验后再合并。
+ *
+ * mock 模式下不联网：交给调用方的 mock(role, {system, user}) 返回确定性脚本，
+ * 这样整条编排链（含真实几何查询与合并）在离线测试里也能跑通。
+ */
+export function parseRoleJson(text) {
+  const raw = String(text ?? '').trim();
+  if (!raw) return null;
+  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1] ?? raw;
+  const start = fenced.indexOf('{');
+  const end = fenced.lastIndexOf('}');
+  if (start < 0 || end <= start) return null;
+  for (const candidate of [fenced.slice(start, end + 1), fenced.slice(start)]) {
+    try {
+      const parsed = JSON.parse(candidate);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
+    } catch {
+      // 再试下一种截法
+    }
+  }
+  return null;
+}
+
+export async function callRoleJson(config, {
+  role, system, user, images = [], signal = null, mock = null,
+}) {
+  if (config.provider === 'mock') {
+    if (typeof mock !== 'function') throw new Error(`mock 模式没有「${role}」角色的脚本`);
+    return mock(role, { system, user });
+  }
+  const content = images.length
+    ? [
+      ...images.map((image) => ({
+        type: 'image_url',
+        image_url: { url: typeof image === 'string' ? image : image?.dataUrl ?? '' },
+      })),
+      { type: 'text', text: String(user) },
+    ]
+    : String(user);
+  const messages = [
+    { role: 'system', content: String(system) },
+    { role: 'user', content },
+  ];
+  const payload = {
+    model: config.model,
+    messages,
+    temperature: 0.2,
+    ...(config.reasoningEffort ? { reasoning_effort: config.reasoningEffort } : {}),
+  };
+  const data = await requestCompletion(config, payload, { signal });
+  const message = data?.choices?.[0]?.message;
+  const text = typeof message?.content === 'string' && message.content.trim()
+    ? message.content
+    : message?.tool_calls?.[0]?.function?.arguments ?? '';
+  const parsed = parseRoleJson(text);
+  if (!parsed) throw new Error(`「${role}」角色没有返回可解析的 JSON：${String(text).slice(0, 200)}`);
+  return parsed;
+}
+
+/** 给编排层复用图片预处理（读图判定 / 视觉模型描述），与 plan 用的是同一套 */
+export { prepareImages as prepareRoleImages };
 
 export function createProvider(config) {
   const provider = config.provider === 'mock' ? createMockProvider() : createOpenAiProvider(config);
