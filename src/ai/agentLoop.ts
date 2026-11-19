@@ -214,8 +214,11 @@ export function extractActions(decision: AgentDecision, canMeasure = true, canTo
         if (typeof args.note === 'string') actions.finishNote = args.note;
         break;
       default:
-        // 注册表里的服务端只读工具（search_recipes / describe_model / inspect_tree）
-        if (canTool && (call.side === 'server' || !call.side)) actions.serverCalls.push(call);
+        // 注册表里的服务端只读工具（search_recipes / describe_model / inspect_tree / run_python）
+        // 服务端工具循环若已执行，会在 call.result 回填结果、并随 notes 回灌；跳过以免跑第二遍
+        // （Python 脚本跑两遍会重复产出 ops/贴图，尤其是随机图案）。只有未执行的才交给前端调 /ai/tool。
+        if (canTool && (call.side === 'server' || !call.side) && call.result === undefined) actions.serverCalls.push(call);
+        break;
     }
   }
   // 扁平 done 也算（有些模型在 calls 里没写 finish，但 done=true）

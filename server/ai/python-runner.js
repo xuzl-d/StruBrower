@@ -137,7 +137,8 @@ function spawnScript(code, { mode, timeoutMs, python }, { signal } = {}) {
         'run', '--rm', '-i', '--network', 'none', '--read-only',
         '--tmpfs', '/tmp:rw,size=64m', '--pids-limit', '64', '--cpus', '1',
         '--memory', '512m', '--user', '65534:65534',
-        '-v', `${SANDBOX_DIR}:/sandbox:ro`, IMAGE,
+        // bootstrap.py 已 COPY 进镜像，不再挂载宿主路径（避免 Windows Docker Desktop 文件共享限制）
+        IMAGE,
         'python', '-I', '-B', '/sandbox/bootstrap.py',
       ]
       : ['-I', '-B', BOOTSTRAP];
@@ -218,6 +219,62 @@ function spawnScript(code, { mode, timeoutMs, python }, { signal } = {}) {
 }
 
 /**
+ * 抽出「脚本已执行后的合并阶段」：不在这里 spawn 子进程，只把模型本轮 ops 与
+ * 脚本产出的 ops 合在一起，替换 python:N 占位符，再对脚本 ops 走一遍 dry-run。
+ * 工具循环里脚本是边执行边回灌的（见 tools.js 的 run_python）；一次 plan 可能
+ * 跨多轮、每段脚本都单独跑过，这里把结果汇总成一份供 withPythonTool 落库。
+ *
+ * @param {{ text?: string, ops?: Array, images?: Array, report?: object, requests?: Array }[]} executed
+ *   工具循环里已执行好的每段脚本结果
+ * @param {Array} modelOps 模型本轮 apply_bim_ops 写出的 ops
+ * @returns {{ text: string, ops: Array, images: Array, report: object, requests: Array }}
+ */
+export function collectPythonToolResult(executed, modelOps = [], document = null) {
+  const list = Array.isArray(executed) ? executed : [];
+  const base = Array.isArray(modelOps) ? modelOps : [];
+  // 按「先模型、后脚本」拼顺序；多段脚本按执行先后追加。
+  const scriptOps = list.flatMap((item) => (Array.isArray(item?.ops) ? item.ops : []));
+  const images = list.flatMap((item) => (Array.isArray(item?.images) ? item.images : []));
+  const requests = list.flatMap((item) => (Array.isArray(item?.requests) ? item.requests : []));
+  const text = list.map((item) => (typeof item?.text === 'string' ? item.text : '')).filter(Boolean).join('\n\n');
+  const merged = [...base, ...scriptOps];
+
+  // 脚本 ops 已在各段独立执行时 dry-run 过；这里对合并后的脚本部分复审一次，
+  // 失败只摘掉脚本产出的那部分，保留模型自己写的 ops（与 runPythonTool 行为一致）。
+  let finalOps = merged;
+  const errors = [];
+  if (scriptOps.length) {
+    const copy = document ? JSON.parse(JSON.stringify(document)) : { levels: [], grids: [], types: [], materials: [], elements: [], name: 'python' };
+    try {
+      applyOps(copy, scriptOps);
+    } catch (error) {
+      const message = `脚本产出的 ops 合并后未通过校验：${error instanceof Error ? error.message : String(error)}`.slice(0, 300);
+      errors.push(message);
+      finalOps = base;
+    }
+  }
+
+  // 占位符替换要在合并后做一次：模型 ops 里写的 python:N 引用的是本轮任意一段脚本的图片。
+  const resolved = resolvePythonImages(finalOps, images);
+  const report = {
+    mode: 'off', isolated: false, scripts: list.length, ok: 0, failed: 0,
+    opsCount: scriptOps.length, images: images.length, ms: 0, errors,
+  };
+  for (const item of list) {
+    const r = item?.report;
+    if (!r || typeof r !== 'object') continue;
+    report.mode = r.mode && r.mode !== 'off' ? r.mode : report.mode;
+    report.isolated = report.isolated || r.isolated === true;
+    report.ok += Number(r.ok) || 0;
+    report.failed += Number(r.failed) || 0;
+    report.ms += Number(r.ms) || 0;
+    if (Array.isArray(r.errors)) report.errors.push(...r.errors.map((e) => String(e).slice(0, 300)));
+    if (r.warning) report.warning = r.warning;
+  }
+  return { text, ops: resolved.ops, images, report, requests, used: resolved.used };
+}
+
+/**
  * 执行一轮 AI 请求里的所有 python 脚本。
  * @returns {{ text: string, ops: Array, images: Array, report: Object }}
  *   text 回灌给模型；ops 已过 dry-run；images 供 python:N 引用；report 给前端气泡。
@@ -243,6 +300,9 @@ export async function runPythonTool(requests, { document, ops, onEvent, signal }
   if (!status.enabled) return { ...empty(), report };
 
   const started = Date.now();
+  // 用 pythonStatus 解析后的模式执行：container 显式指定但镜像缺失时会降级为 restricted，
+  // spawnScript 必须跟随这个降级结果，否则会去找不存在的镜像而失败。
+  const spawnOpts = { ...pythonConfig(), mode: status.mode };
   const chunks = [];
   const allOps = [];
   const allImages = [];
@@ -250,7 +310,7 @@ export async function runPythonTool(requests, { document, ops, onEvent, signal }
   for (let index = 0; index < list.length; index += 1) {
     const request = list[index];
     onEvent?.({ type: 'status', text: `正在执行 Python 脚本 ${index + 1}/${list.length}（${status.isolated ? '容器隔离' : '受限进程'}）…` });
-    const envelope = await spawnScript(request.code, pythonConfig(), { signal });
+    const envelope = await spawnScript(request.code, spawnOpts, { signal });
     const label = `【Python ${index + 1}${request.note ? ` · ${request.note}` : ''}】`;
     if (!envelope.ok) {
       report.failed += 1;

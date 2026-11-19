@@ -29,6 +29,10 @@ function check(name, ok, detail) {
   check('每个工具都有参数 schema', toolDefinitions().every((d) => d.function.parameters?.properties));
   check('只读工具在服务端', serverToolNames().includes('search_recipes') && serverToolNames().includes('describe_model'));
   check('apply 不在服务端只读列表', !serverToolNames().includes('apply_bim_ops'));
+  check('run_python 注册为服务端工具', toolNames().includes('run_python') && serverToolNames().includes('run_python'));
+  const pyTool = toolDefinitions().find((d) => d.function.name === 'run_python');
+  check('run_python schema 暴露 scripts 与 emit 契约', Boolean(pyTool?.function.parameters?.properties?.scripts)
+    && String(pyTool?.function.description).includes('emit'), pyTool?.function.description?.slice(0, 80));
   check('未知工具 getTool 返回 null', getTool('no_such_tool') === null);
   check('客户端工具不在服务端执行', await runServerTool('apply_bim_ops', {}, {}) === null);
 }
@@ -57,6 +61,27 @@ function check(name, ok, detail) {
     document: { elements: [{ id: 't1', name: '坦克', primitive: { kind: 'solid', features: [{ label: '履带', shape: { shape: 'sweep' } }] } }] },
   });
   check('inspect_tree 列出特征', tree.ok && tree.text.includes('履带'), tree.text);
+}
+
+// ── 3b. run_python 工具：执行脚本、回灌结果、合并脚本 ops 与贴图 ──
+{
+  const { collectPythonToolResult } = await import('../server/ai/python-runner.js');
+  const sink: any[] = [];
+  const code = 'import math\npts=[round(0.1*math.cos(2*math.pi*i/9),4) for i in range(9)]\nemit({"result":{"count":len(pts)}})';
+  const ran = await runServerTool('run_python', { scripts: [{ code, note: '算点位' }] }, { document: null, pythonSink: sink });
+  // 这里经 esbuild 打包，python-runner 的 import.meta.url 指向 .tmp/，bootstrap 路径失效，
+  // 因此不要求执行成功（成功执行由 scripts/python-runner-test.mjs 直接 node 跑覆盖）；
+  // 只验证工具确实执行了脚本、结果/错误都回灌文字并写进 sink。
+  check('run_python 执行脚本并回灌文字', typeof ran.text === 'string' && ran.text.includes('Python 1'), ran.text.slice(0, 160));
+  check('run_python 把结果写进 sink', sink.length === 1 && sink[0]?.report?.scripts === 1, sink.length);
+
+  const png = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==';
+  const fakeExecuted = [{ text: '图', requests: [{ code }], images: [{ name: 't', dataUrl: png }], ops: [], report: { mode: 'restricted', isolated: false, scripts: 1, ok: 1, failed: 0, opsCount: 0, images: 1, ms: 1, errors: [] } }];
+  const modelOps = [{ op: 'addSolid', name: 'M', features: [{ shape: { shape: 'box', width: 1, depth: 1, height: 1 }, material: { color: '#fff', map: 'python:1' } }] }];
+  const merged: any = collectPythonToolResult(fakeExecuted, modelOps, null);
+  check('合并阶段把模型 python:1 换成脚本贴图', merged.ops.length === 1
+    && String(merged.ops[0].features[0].material.map).startsWith('data:image/png'), merged.ops[0]?.features?.[0]?.material?.map?.slice?.(0, 30));
+  check('合并阶段汇总执行报告', merged.report.scripts === 1 && merged.report.ok === 1 && merged.report.images === 1, merged.report);
 }
 
 // ── 4. 多工具解析 ───────────────────────────────────────────
@@ -139,6 +164,12 @@ function check(name, ok, detail) {
   check('老决策也能拆出动作', legacy.ops.length === 1 && legacy.finish === true && legacy.serverCalls.length === 0);
   const noTool = extractActions({ calls: [{ name: 'search_recipes', side: 'server' }] }, true, false);
   check('无 callTool 时忽略只读工具', noTool.serverCalls.length === 0);
+  // 服务端工具循环已执行过的工具带 result，前端不再重复调用（尤其 run_python 不能跑两遍）
+  const already = extractActions({ calls: [
+    { name: 'run_python', args: { scripts: [] }, side: 'server', result: '已算完' },
+    { name: 'search_recipes', args: { query: 'x' }, side: 'server' },
+  ] }, true, true);
+  check('已执行的服务端工具不再重复调用', already.serverCalls.length === 1 && already.serverCalls[0].name === 'search_recipes', already.serverCalls.map((c) => c.name));
 }
 
 // ── 7. 前端：只读工具回灌 + 打转召回 ────────────────────────

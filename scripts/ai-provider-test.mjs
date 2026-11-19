@@ -203,16 +203,18 @@ const server = http.createServer((req, res) => {
       return;
     }
     if (req.url === '/python/chat/completions') {
-      // 脚本写法：对象带 note、纯字符串、空 code（应被丢掉）
+      // 新契约：模型在工具循环里调用 run_python（server 工具），由服务端执行脚本。
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(toolReply({
-        reply: '先算点位',
-        ops: [],
-        python: [
-          { code: 'emit({"result": 1})', note: '算点位' },
-          'emit({"result": 2})',
-          { code: '' },
-        ],
+      res.end(JSON.stringify({
+        choices: [{ message: { content: '', tool_calls: [
+          { type: 'function', function: { name: 'run_python', arguments: JSON.stringify({
+            scripts: [
+              { code: 'emit({"result": {"count": 2}})', note: '算点位' },
+              'emit({"result": 2})',
+              { code: '' },
+            ],
+          }) } },
+        ] } }],
       }));
       return;
     }
@@ -588,14 +590,22 @@ check('解析出 describe 请求并把 count 夹到上限',
 check('describe 与 measure 可以同轮出现', describePlan.measure?.length === 1, describePlan.measure);
 check('非法 type 被丢弃', describePlan.describe?.every((item) => item.type !== 'unknown'));
 
-console.log('Python 计算脚本（python）');
-check('工具参数里有 python 字段',
-  JSON.parse(requested[0].body).tools?.[0]?.function?.parameters?.properties?.python?.type === 'array');
+console.log('Python 计算脚本（run_python 工具）');
+const toolsInRequest = JSON.parse(requested[0].body).tools ?? [];
+check('工具清单里有 run_python', toolsInRequest.some((t) => t.function.name === 'run_python'));
+check('run_python 暴露 scripts 参数', toolsInRequest.find((t) => t.function.name === 'run_python')?.function?.parameters?.properties?.scripts?.type === 'array');
 const pythonProvider = createProvider({ provider: 'openai', baseUrl: `${baseUrl}/python`, model: 'm', apiKey: 'sk-test', timeoutMs: 5000, ready: true });
 const pythonPlan = await pythonProvider.plan({ message: '算点位', context: {} });
-check('解析出 python 脚本（对象与纯字符串写法）',
-  pythonPlan.python?.length === 2 && pythonPlan.python[0].note === '算点位', pythonPlan.python);
-check('空 code 被丢弃', pythonPlan.python?.every((item) => item.code.length > 0));
+// 工具循环执行后：请求规范化成 pythonExecuted.requests（空 code 被 normalizePython 丢掉），
+// 两段脚本的结果合并到 pythonExecuted.text / report 里。
+// 工具循环最多跑 MAX_TOOL_TURNS 轮，mock server 每轮都返回同一组脚本，
+// 因此 requests / report.scripts 会按轮次累加；这里只验证规范化与执行确实发生。
+check('规范化后丢掉空 code', pythonPlan.pythonExecuted?.requests?.length > 0
+  && pythonPlan.pythonExecuted.requests.every((r) => r.code.length > 0)
+  && pythonPlan.pythonExecuted.requests.some((r) => r.note === '算点位'), pythonPlan.pythonExecuted?.requests);
+check('脚本结果合并进回灌文字', typeof pythonPlan.pythonExecuted?.text === 'string'
+  && pythonPlan.pythonExecuted.text.includes('"count": 2'), pythonPlan.pythonExecuted?.text?.slice(0, 120));
+check('汇总报告记下执行段数', pythonPlan.pythonExecuted?.report?.scripts >= 2, pythonPlan.pythonExecuted?.report?.scripts);
 check('独立规范化也挡住超长 count', normalizeDescribe([{ type: 'element', count: 999 }])[0].count === MAX_DESCRIBE_COUNT);
 
 server.close();

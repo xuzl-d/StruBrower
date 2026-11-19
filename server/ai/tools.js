@@ -12,6 +12,8 @@
  */
 import { searchKnowledge, formatKnowledge } from './knowledge.js';
 import { modelDocument, modelParamSpecs, libraryModelIds } from '../../shared/library.js';
+import { runPythonTool } from './python-runner.js';
+import { normalizePython } from './python.js';
 
 /** 工具执行位置：server=服务端只读，client=前端副作用 */
 export const SERVER_SIDE = 'server';
@@ -175,6 +177,40 @@ const REGISTRY = [
       return text.length > MAX_INSPECT_CHARS
         ? `${text.slice(0, MAX_INSPECT_CHARS)}\n…（特征树过长已截断；完整特征见上下文 elements，可用 inspect_tree 指定单个构件再看）`
         : text;
+    },
+  },
+  {
+    name: 'run_python',
+    title: '运行 Python 脚本',
+    side: SERVER_SIDE,
+    description: '在受限沙箱里执行你写的 Python 脚本。用途：精确计算阵列点位 / 三角函数 / 曲线采样，把结果回传给你自己看，或让脚本直接 emit 建模 ops 与程序化贴图。需要多次重复、精确坐标或画贴图时用它，不要手算或硬拼几十个数字。脚本用 emit({"result":...}) 提交结果、emit({"ops":[...]}) 提交建模指令、emit({"images":[{name,dataUrl}]}) 提交贴图（之后在 apply_bim_ops 的 material.map 里写 "python:1" 引用）。只允许 math / numpy / PIL / cadquery 等白名单库，禁止文件与网络。',
+    schema: {
+      type: 'object',
+      properties: {
+        scripts: {
+          type: 'array',
+          description: '要执行的脚本列表，每项 { "code": "Python 源码", "note": "这段在做什么" }。最多 2 段；不写 note 也可以直接给字符串。',
+          items: { type: 'object', additionalProperties: true },
+        },
+        reply: { type: 'string', description: '给用户的简短说明（可选）' },
+      },
+    },
+    run: async ({ args, document, pythonSink, onEvent, signal }) => {
+      const requests = normalizePython(args?.scripts ?? args?.code ?? args);
+      if (!requests.length) return '没有可执行的 Python 脚本：请在 scripts 里写 code，用 emit({"result":...}) 提交结果。';
+      // 真正执行放在这里（服务端工具循环内），结果回灌给模型；产出的 ops / 图片
+      // 写进 sink，等这一轮全部结束再统一 dry-run 并合并，避免脚本跑两遍。
+      const result = await runPythonTool(requests, { document, ops: [], onEvent, signal });
+      if (pythonSink) {
+        pythonSink.push({
+          requests,
+          text: result.text,
+          ops: result.ops,
+          images: result.images,
+          report: result.report,
+        });
+      }
+      return result.text || '脚本执行完毕，但没有 emit 任何结果；用 emit({"result": ...}) 提交点列或数值。';
     },
   },
   {

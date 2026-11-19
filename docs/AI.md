@@ -377,7 +377,23 @@ const run = await runAgentLoop(firstRound, {
 - 单条输出约 20k 字符封顶，超长时会写明「用 from 继续查」或「用 feature 单查」，不会静默截断半个 JSON。
 - 只查询不改也算有效动作；同样的查询反复要且没有任何 ops，会被 `repeated` 打转检测停掉。
 
-### Python 计算工具（`python`）
+### Python 计算工具（`run_python` / 旧扁平 `python`）
+
+**调用方式（主干）**：Python 已是工具注册表里的 `run_python`（server 侧工具，`server/ai/tools.js`），
+和 `search_recipes / describe_model` 一样由模型在 agent 循环里**自主决定是否调用**——需要精确点位、
+程序化贴图或大批量重复特征时，模型自己调它，服务端执行后把结果文字回灌，模型据此再写 ops。
+不需要在提示词里写死「用 Python」。调用形态：
+
+```json
+{ "name": "run_python", "arguments": { "scripts": [
+  { "code": "import math\nemit({'result': [math.cos(i) for i in range(9)]})", "note": "算点位" }
+] } }
+```
+
+服务端工具循环执行脚本 → 结果进 `call.result` 并随 notes 回灌下一轮 → 产出的 ops / 图片写进
+`pythonSink`，整轮结束后由 `collectPythonToolResult` 统一复审、替换 `python:N` 占位符并合并进
+最终指令。前端对**已执行**（带 `result`）的工具不再通过 `/ai/tool` 重复调用，避免脚本跑两遍。
+旧的扁平写法（模型在 plan JSON 顶层写 `"python":[...]`）仍保留兼容，走 `withPythonTool` 的原执行器。
 
 **解决的是「算不准」，不是「读不到」。** 上下文窗口再大，让模型心算 200 个母线控制点、
 沿双曲面摆贴片、按参考图拟合轮廓，还是会错。现在模型可以写一段脚本，由服务端在受限沙箱里
@@ -413,10 +429,19 @@ emit({
 
 | mode | 隔离 | 说明 |
 | --- | --- | --- |
-| `container` | **硬隔离** | Docker：`--network none`、只读根、`--tmpfs /tmp`、非 root、CPU 1 核 / 内存 512M / 进程数 64。需先 `docker build -t stru-python-sandbox:latest server/ai/python`（见该目录 Dockerfile）。 |
+| `container` | **硬隔离** | Docker：`--network none`、只读根、`--tmpfs /tmp`、非 root、CPU 1 核 / 内存 512M / 进程数 64。需先构建镜像：`docker build -t stru-python-sandbox:latest server/ai/python`（见该目录 Dockerfile）。 |
 | `restricted` | **不是安全沙箱** | 本机 Python 子进程的 AST / import / rlimit 限制，适合本地开发与可信环境；状态里 `isolated: false` 且带警告。**对外服务必须启用 Docker 后端**，不要用这个模式执行不可信脚本。 |
 
 `mode: auto`（默认）在镜像可用时自动走容器，否则降级到 restricted。相关环境变量见「方式二」。
+
+**本机启用 Docker 后端（含 Windows）**：只需构建镜像，无需改启动脚本或环境变量——`auto` 会探测到镜像自动启用硬隔离：
+
+```bash
+docker build -t stru-python-sandbox:latest server/ai/python
+# 重启服务后访问 GET /api/ai/status，确认 python.mode=container、python.isolated=true
+```
+
+`bootstrap.py` 已 COPY 进镜像并从镜像内执行，**不依赖宿主机文件挂载**，因此 Windows Docker Desktop 无需在 Settings › Resources › File Sharing 里共享项目盘符。要让 AI 强制走容器（镜像缺失时直接报错而非降级），显式设 `STRU_AI_PYTHON_MODE=container`。镜像里的 `bootstrap.py` 是构建时快照，修改安全策略后需重建镜像才会生效。
 
 **依赖**：复用 STEP 转换器的 venv `server/convert/.venv`（本机是 Python 3.9.6，已装
 `cadquery-ocp 7.7.2`），再装 `numpy / Pillow / scipy` 即可：

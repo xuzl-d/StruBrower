@@ -26,7 +26,7 @@ import { createProvider, defaultReasoningEffort, resolveAiConfig } from './ai/pr
 import { planAssembly } from './ai/orchestrator.js';
 import { planWithRepair } from './ai/repair.js';
 import { generateTexture, resolveTextureOps, slimOpsForHistory } from './ai/textures.js';
-import { pythonStatus, runPythonTool } from './ai/python-runner.js';
+import { pythonStatus, runPythonTool, collectPythonToolResult } from './ai/python-runner.js';
 import { ImageInputError, listModels, normalizeImages, quickMainSupportsImages } from './ai/vision.js';
 import { applyAttachments, describeAttachments, parseAttachments } from './ai/attachments.js';
 import { messageTooLong } from './ai/message-limits.js';
@@ -160,15 +160,24 @@ function refreshAi() {
  * 普通 / 流式两个入口共用，避免两条链路行为漂移。
  */
 async function withPythonTool(planned, resolved, { document, onEvent, signal } = {}) {
-  const python = await runPythonTool(planned.result?.python, {
-    document,
-    ops: resolved.ops,
-    onEvent,
-    signal,
-  });
+  // 新路径：脚本已在服务端工具循环里执行（run_python 工具），pythonExecuted 带着结果。
+  // 这里只做「合并 + 复审 + 贴图占位符替换」，不再 spawn 子进程，避免跑两遍。
+  // 旧路径：模型在扁平 JSON 里直接写 "python":[...]（老配方 / mock），仍走原执行器。
+  const executed = planned.result?.pythonExecuted;
+  const python = Array.isArray(executed) || (executed && typeof executed === 'object')
+    ? (Array.isArray(executed) ? executed : [executed])
+    : null;
+  const outcome = python
+    ? collectPythonToolResult(python, resolved.ops, document)
+    : await runPythonTool(planned.result?.python, {
+      document,
+      ops: resolved.ops,
+      onEvent,
+      signal,
+    });
   const textures = [
     ...resolved.textures,
-    ...python.images.map((image) => ({
+    ...outcome.images.map((image) => ({
       prompt: image.name,
       source: 'python',
       model: '',
@@ -180,10 +189,12 @@ async function withPythonTool(planned, resolved, { document, onEvent, signal } =
   ];
   return {
     ...planned.result,
-    ops: python.ops,
+    ops: outcome.ops,
     textures,
-    pythonText: python.text,
-    pythonReport: python.report,
+    pythonText: outcome.text,
+    pythonReport: outcome.report,
+    // 供前端气泡 / 审计展示：新路径带工具循环执行的脚本请求，旧路径保留原扁平字段
+    python: python ? outcome.requests : planned.result?.python,
   };
 }
 

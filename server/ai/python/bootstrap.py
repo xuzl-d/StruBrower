@@ -129,7 +129,12 @@ def deny_network():
 
 
 def apply_limits(timeout):
-    import resource
+    # resource 是 POSIX 专有模块，Windows 上没有。拿不到就跳过进程内限额，
+    # Node 侧仍有超时 + SIGKILL 兜底；容器模式下还有 cgroup 硬限额。
+    try:
+        import resource
+    except ImportError:
+        return
     # 比 Node 侧 timeout+1.5s 晚一点触发，让 Node 能用 SIGKILL 明确报「超时」；
     # 这里只是万一 Node 卡住时的第二道保险。
     cpu = max(3, int(timeout) + 4)

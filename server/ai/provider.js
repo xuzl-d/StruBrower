@@ -16,6 +16,7 @@ import {
   SERVER_SIDE,
 } from './tools.js';
 import { formatKnowledge } from './knowledge.js';
+import { collectPythonToolResult } from './python-runner.js';
 import {
   clipToTokens,
   estimateTokens,
@@ -1135,19 +1136,26 @@ function createOpenAiProvider(config) {
       const base = { model: config.model, messages, temperature: 0.2, ...(config.reasoningEffort ? { reasoning_effort: config.reasoningEffort } : {}) };
       const vision = prepared.vision;
       const firstError = { value: null };
+      // Python 工具在工具循环里执行时把结果写进这个 sink；跨轮的多段脚本在这里汇总，
+      // 统一 dry-run 后合并进最终 ops / textures（见 index.js 的 withPythonTool）。
+      const pythonSink = [];
       // 首选 function calling（tools 来自注册表），400 自动降级纯 JSON；只读工具在服务端即时执行并回灌
       const { parsed, degraded, toolTurns } = await runWithToolLoop(config, {
         base,
         messages,
         firstError,
-        env: { context, document },
+        env: { context, document, pythonSink },
         invoke: async (payload) => {
           const data = await requestCompletion(config, payload);
           return data?.choices?.[0]?.message;
         },
       });
+      const pythonExecuted = pythonSink.length ? collectPythonToolResult(pythonSink, []) : null;
       return rejectBlindReply({
         ...parsed, model: config.model, vision, context: usage, degraded, toolTurns,
+        // 脚本 ops 不并进 parsed.ops：由 index.js 的 withPythonTool 在贴图解析后统一合并，
+        // 否则会合并两次。这里只带原始模型 ops。
+        pythonExecuted,
       }, vision);
     },
 
@@ -1184,13 +1192,16 @@ function createOpenAiProvider(config) {
         return data?.choices?.[0]?.message;
       };
       try {
+        const pythonSink = [];
         const { parsed, degraded, toolTurns } = await runWithToolLoop(config, {
           base, messages, firstError, emit,
-          env: { context, document },
+          env: { context, document, pythonSink, onEvent: emit, signal },
           invoke: invokeStream,
         });
+        const pythonExecuted = pythonSink.length ? collectPythonToolResult(pythonSink, []) : null;
         return rejectBlindReply({
           ...parsed, model: config.model, vision, context: usage, degraded, toolTurns,
+          pythonExecuted,
         }, vision);
       } catch (error) {
         if (!(error instanceof AiRequestError && error.status === 400) && !(error instanceof Error && /无法解析为建模指令/.test(error.message))) {
