@@ -5,12 +5,15 @@
 
 ## 为什么不是“让 AI 直接吐网格”
 
-Revit 类系统的价值在于**参数化、可编辑、可算量**。所以 LLM 只允许输出结构化指令
-（标高/墙/板/柱/类型，以及造型实体的特征树），几何仍由 `src/bim/geometry.ts`、`src/bim/solid.ts` 按参数生成。这样：
+Revit 类系统的价值在于**参数化、可编辑、可算量**。所以 LLM 的输出分三层，几何始终由内核按参数生成，而不是把三角面顶点烘焙进文档：
 
-- 模型输出可以被 JSON Schema + 服务端规则校验，出错不会写坏文档
-- 每一步都有 rev、审计、版本快照，可撤销
-- 与协作机制（WebSocket 差分/整文档广播）天然兼容
+1. **结构化指令 + 现成图元**（默认）：标高/墙/板/柱/类型，以及造型实体的特征树（box/cylinder/loft/grille…）。输出可被 JSON Schema + 服务端规则校验，出错不会写坏文档。
+2. **参数方程图元 `parametric`**（写不出现成图元时）：AI 写 `radius=R*sin(PI*t)` 这样的方程 + 可调参数，前端用共享的安全公式引擎实时采样成几何。存的是方程不是顶点，所以造型面板里每个参数都是一个滑块，改数就重塑形体；采样出的封闭回转体照常参与 add/cut/intersect 布尔。**一条通路覆盖所有能用方程表达的形体**（花瓶、灯罩、波纹壳、自由曲面），以后新形体不必再加图元、改内核源码。
+3. **通用网格 `mesh`**（方程也写不出时的兜底）：AI 在 Python 里三角化一个实体，导出 positions/indices 落库。它是**死网格**——能显示、能参与 CSG 布尔，但面板改不了参数，也不能重采样。只在从参考实体反求这类场景才用。
+
+这样每层都有 rev、审计、版本快照，可撤销，与协作机制（WebSocket 差分/整文档广播）天然兼容。
+
+> 架构要点：`parametric` 的采样求值用的是 `shared/formula.js` —— 和约束系统、服务端方程校验**同一份实现**。所以“服务端判定这条方程合法”与“浏览器采样出来的形状”绝不会各算各的，这是它比让模型在 JSON 里手抄几十个坐标可靠得多的原因。
 
 ## 交互流程
 
@@ -242,6 +245,82 @@ AI 面板支持**上传 / 粘贴 / 拖入图片**（最多 4 张，单张 4 MB�
           └──── 下一轮 ◀────┘   （默认最多 5 步）
 ```
 
+### 验收清单与独立验收（防止自己建自己夸）
+
+只看「有没有环形零件」会把平面圆盘误判成弧形防护罩。现在生成模型首轮必须把用户原话拆成 `criteria`（3~8 条可核对的验收项），之后每轮原样回灌逐项核对；说 `done` 后还要过一次**独立验收**（`/ai/verify`，只看原话、清单、截图和测量文字，看不到生成过程）。任一验收项不通过，失败原因回灌给生成模型继续改，反复不通过则明确停下，不会自己宣布成功。
+
+核对「罩子包住叶片」「带弧度」这类语义关系时，光看截图容易漏。用语义级 measure 拿数字证据：
+- `{ "type": "enclosure", "outer": "前罩", "inner": "叶片", "axis": "y", "margin": 0.01 }`：外件是否在三个方向包住内件、轴向是否盖过两端。
+- `{ "type": "axialProfile", "feature": "前罩环", "axis": "y" }`：各截面半径沿轴是否递减；等半径会判为「平面圆盘」。
+- `{ "type": "alignment", "base": "前罩外圈", "compare": "前罩弯曲护条", "axis": "y" }`：护条阵列中心是否偏心、末端是否戳出罩体。
+- `{ "type": "solidCover", "feature": "前罩", "axis": "y" }`：沿轴打网格射线算投影面填充率。**≥60% 就是实心面（挡住后面零件的"锅盖"）**；镂空网架 ≤40%。
+
+### 防护网 / 网罩：必须镂空，别做成实心锅盖（风扇踩过的坑）
+
+落地扇反复画错，根因是把前后防护网用**带 ellipse 剖面的 `loft` 多截面放样**做出来。
+`loft` 内部用 `stitchRings` **两端封盖**（`src/bim/solid.ts`），4 段递缩的 ellipse 放样结果是一个
+**实心锥碗 = 一块锅盖**，正面投影填充率约 85%，把扇叶完全挡住；而 `enclosure` / `axialProfile`
+只看包围盒，一个实心碗照样「包住叶片」「收口明显」，反而给 AI 错误的自信。
+
+正确做法——罩网一律用 **grille 图元**一次成型（形状表见上），给几个数就得到正确镂空穹顶：
+
+```jsonc
+// 前罩：外凸穹顶；后罩把 depth 取负即可（如 -0.06），其余相同
+{ "shape": "grille", "label": "前罩网罩",
+  "radius": 0.285,     // 外圈半径
+  "depth": 0.07,       // 罩深；>0 外凸、<0 内凹、0 平面盘
+  "rings": 5,          // 同心网圈数
+  "spokes": 24,        // 径向护条数（已含在特征内，不用再加 circular 阵列）
+  "wire": 0.0035,      // 丝径
+  "translate": [0, 0.11, 1.18], "rotate": [90, 0, 0],
+  "material": { "name": "不锈钢", "color": "#cfd6dd", "metalness": 0.9 } }
+```
+
+grille 内部用抛物穹面 z(r)=depth·(1−(r/R)²) 统一生成同心网圈与径向护条，天然对称贴合、不戳出、不实心。
+只有实心实体（机身、机壳、叶片）才用 loft。**不要**再手抄 sweep path + circular 阵列或分圈 torus——那是风扇画错的根源。
+
+（历史反例，勿用）带 ellipse 剖面的 loft 会被 `stitchRings` 两端封盖成实心锥碗，正面填充率约 85%，把扇叶全挡住；
+而 `enclosure` / `axialProfile` 只看包围盒，实心碗照样「包住叶片」「收口明显」，反而给 AI 错误的自信。
+
+判定：`solidCover` 填充率 ≤40% 才算网罩。做完必须复核 `solidCover`（是否实心）和 `alignment`（护条是否贴合罩体/戳出）两项，数字不达标不许写 done。
+
+### 参数方程造型：`parametric`（写不出的形体，写方程而不是加图元）
+
+遇到现成图元拼不出、或自己正手抄几十上百个坐标的形体，用 `parametric`。它存的是**方程 + 参数**，前端用 `shared/formula.js` 实时采样，所以：
+
+- 造型面板里每个 `params` 键都是一个可调滑块，改数即重塑形体（这是 mesh 死网格做不到的）
+- 采样出的封闭回转体照常参与 add / cut / intersect 布尔（`three-bvh-csg`）
+- 方程语法、服务端校验、前端采样共用一份实现，不会出现“服务端说合法、浏览器算不出来”
+
+语法：`+ - * / ^`、函数 `sin/cos/tan/asin/acos/sqrt/pow/exp/log/abs/min/max/round/clamp/if/mod`、常量 `PI`/`E`。变量只能用 `params` 里的键，revolve 另有 `t`（0~1），surface 另有 `u`、`v`（0~1）。
+
+**回转体**（kind 省略即 revolve）：给半径 `r(t)`、高度 `z(t)` 两个方程，绕 Z 轴采样回转。两端半径为 0 时自动收口成封闭实体。
+
+```jsonc
+// 球：r=R·sin(πt)，z=R·(2t−1)
+{ "shape": "parametric", "label": "方程球",
+  "radius": "R*sin(PI*t)", "height": "R*(2*t-1)",
+  "params": { "R": 0.1 },
+  "paramRanges": { "R": [0.05, 0.3, 0.01] },  // 面板滑块范围 [min,max,step]，可选
+  "profileSteps": 48, "segments": 48 }
+
+// 花瓶：半径随高度收放
+{ "shape": "parametric", "kind": "revolve",
+  "radius": "R*(0.35+0.65*sin(PI*t)^0.6)", "height": "H*t",
+  "params": { "R": 0.12, "H": 0.4 }, "capped": true }
+```
+
+**自由曲面**（kind:'surface'）：给 `x(u,v)`、`y(u,v)`、`z(u,v)` 三个方程，采样成规则网格。开放曲面只能用于「加」出薄壳外观，不能当布尔刀具。
+
+```jsonc
+// 波纹板：z = A·sin(6πu)·sin(πv)
+{ "shape": "parametric", "kind": "surface",
+  "x": "(u-0.5)*W", "y": "(v-0.5)*D", "z": "A*sin(6*PI*u)*sin(PI*v)",
+  "params": { "W": 0.4, "D": 0.4, "A": 0.02 }, "segments": 48, "rings": 24 }
+```
+
+坑：写错（语法、除零、`sqrt` 负数、引用未声明变量）会被服务端当场打回并带原因，按报错改方程即可，不要带着坏方程进下一步。`profileSteps`/`segments`/`rings` 各有硬上限防止卡死浏览器。选图元的顺序：**现成图元 → parametric 写方程 → mesh 兜底**，不要一上来就 mesh。
+
 ### 协议
 
 工具参数（`server/ai/provider.js`）里一轮可以同时给六样东西：
@@ -249,6 +328,7 @@ AI 面板支持**上传 / 粘贴 / 拖入图片**（最多 4 张，单张 4 MB�
 ```jsonc
 {
   "reply": "机身比例偏扁，握把再往后倾 5°，顺便看一眼夹头有没有咬进握把",
+  "criteria": ["握把向后倾斜约 25°", "夹头与握把咬合无缝"],
   "ops": [ { "op": "editFeature", "target": "螺丝刀", "feature": "握把", "patch": { "rotate": [0, 25, 0] } } ],
   "inspect": [
     { "view": "iso" },                                        // 整机：核对整体比例
@@ -261,7 +341,8 @@ AI 面板支持**上传 / 粘贴 / 拖入图片**（最多 4 张，单张 4 MB�
 }
 ```
 
-- **六者可以同轮出现**，顺序固定：先应用 ops，再执行 Python 脚本 / 查询 / 测量 / 截图，最后把结果一起回灌。
+- **七者可以同轮出现**，顺序固定：先应用 ops，再执行 Python 脚本 / 查询 / 测量 / 截图，最后把结果一起回灌。
+  `criteria` 只在首轮给一次，之后由系统回灌；
   `measure` 最多 6 条、`describe` 最多 4 条、`python` 最多 2 段、`inspect` 最多 4 个视角。
   Python 的结果要下一轮才能用，所以「先算再按结果写 ops」必须拆成两轮。
   「改完马上看结果」写在一轮里，比拆两轮省一半时间。
@@ -827,6 +908,7 @@ renderSheet(geometry, materials, [
 | `ellipsoid` | `rx`, `ry`, `rz` | 整流罩、减震球、旋钮 |
 | `cone` | `radius`, `topRadius`, `height` | 桨毂罩、喷嘴 |
 | `torus` | `radius`, `tube` | 轮胎、卡箍、减震环 |
+| `grille` | `radius`, `depth`, `rings?`, `spokes?`, `wire?`, `innerRadius?` | 穹顶网罩：电扇/灯罩/防护笼，一次生成同心网圈+径向护条，天然镂空对称（做网罩一律用这个） |
 | `prism` | `profile:[[x,y]…]`, `height`, `twist?`, `taper?` | 任意多边形拉伸：桨叶、翼型、异形板 |
 | `revolve` | `profile:[[半径,高度]…]`, `segments?`, `angle?` | 母线旋转：轮毂、花瓶、回转体 |
 | `loft` | `sections:[截面…]`，截面见下 | 多截面放样：翼型桨叶、机身过渡、流线体 |
@@ -834,6 +916,8 @@ renderSheet(geometry, materials, [
 | `hull` | `points:[[x,y,z]…]` | 点集凸包：机头整流罩、不规则实体 |
 | `tiles` | `rings:[{z,radius}…]`, `sides?`, `rows?`, `courses?`, `crown?`, `thickness?`, `lift?`, `cornerLift?`, `cornerOut?`, `board?`, `showTiles?` | **瓦面**：坡屋面上逐片铺板瓦 + 筒瓦（叠压 / 错缝 / 瓦当 / 滴水 / 角部起翘）；`board` 一并出瓦下衬板 |
 | `ballPanels` | `radius`, `layout?`, `seam?`, `thickness?`, `bulge?`, `segments?`, `rings?`, `darkCount?`, `light?`, `dark?`, `core?` | **球面皮革拼块**：逐块生成有厚度的球面壳、块间留真实空隙、缝底是内胆球；足球 / 篮球 / 排球的缝不是贴图。详见下节 |
+| `parametric` | `kind`, `radius?/height?` 或 `x?/y?/z?`, `params`, `paramRanges?`, `profileSteps?`, `segments?`, `rings?`, `angle?`, `capped?` | **参数方程**：写方程得到任意形体，前端实时采样、面板可调参、封闭体可布尔。详见下节 |
+| `mesh` | `positions:[x,y,z…]`, `indices:[a,b,c…]`, `normals?` | 通用三角网格兜底（死网格，不可调参）；仅当方程也写不出时用，通常由 Python 三角化产出 |
 | `group` | `features:[特征…]` | 子装配（整体阵列 / 变换） |
 
 曲面（圆柱 / 圆角盒 / 放样 / 扫掠 / 旋转体）都带平滑法线；盒体类形状保留硬棱。

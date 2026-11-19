@@ -313,6 +313,14 @@ check('没有测量结果时不得声称已测量', systemPrompt.includes('不�
   check('measure 规范化丢弃非法项', list.length === 3, list);
   check('surface 轴小写、坐标转数字', list[1]?.axis === 'x' && list[1]?.at[1] === 0.2 && list[1]?.target === '车身', list[1]);
   check('measure 数量有上限', normalizeMeasure(Array.from({ length: 20 }, () => ({ type: 'bounds' }))).length === MAX_MEASURE_REQUESTS);
+  const covers = normalizeMeasure([
+    { type: 'solidCover', feature: '前罩', axis: 'Y', grid: 99 },
+    { type: 'solidCover', feature: '后罩', axis: 'z' },
+    { type: 'solidCover', axis: 'y' },
+  ]);
+  check('solidCover 规范化保留合法项、轴小写、grid 夹到范围', covers.length === 2
+    && covers[0].axis === 'y' && covers[0].grid === 31 && covers[0].feature === '前罩'
+    && covers[1].axis === 'z' && covers[1].grid === 15, covers);
 }
 
 console.log('兜底与错误');

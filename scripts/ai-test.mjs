@@ -71,6 +71,18 @@ const status = await api('GET', '/api/ai/status', { token });
 check('Mock provider 就绪', status.status === 200 && status.data.provider === 'mock' && status.data.ready === true && status.data.mock === true, status.data);
 check('未登录访问 401', (await api('GET', '/api/ai/status')).status === 401);
 
+console.log('独立验收接口');
+const verify = await api('POST', `/api/projects/${projectId}/ai/verify`, {
+  token,
+  body: { goal: '做一个电风扇', criteria: ['护网包住叶片'] },
+});
+check('验收接口 200', verify.status === 200 && verify.data.pass === true, verify.data);
+const verifyBad = await api('POST', `/api/projects/${projectId}/ai/verify`, {
+  token,
+  body: { goal: '做一个电风扇', criteria: [] },
+});
+check('缺验收清单时 400', verifyBad.status === 400, verifyBad.data);
+
 console.log('生成方案（不落库）');
 const plan1 = await api('POST', planPath, { token, body: { message: '建一个 6×4 米、层高 3 米的房间' } });
 check('plan 200', plan1.status === 200, plan1.data);
@@ -139,7 +151,7 @@ const longInternalStream = await streamPlan(`/api/projects/${projectId}/ai/plan/
 check('流式通道同样放行 internal 长回执', longInternalStream.status === 200 && longInternalStream.events.some((event) => event.type === 'result'), longInternalStream.events.map((event) => event.type).join(','));
 const longUser = await api('POST', planPath, { token, body: { message: 'x'.repeat(4001) } });
 check('用户自己写超长需求仍然是 400', longUser.status === 400 && String(longUser.data?.error ?? '').includes('需求描述过长'), longUser.data);
-const hugeInternal = await api('POST', planPath, { token, body: { message: 'x'.repeat(40000), internal: true } });
+const hugeInternal = await api('POST', planPath, { token, body: { message: 'x'.repeat(60001), internal: true } });
 check('internal 轮也有硬上限，且报错说明怎么翻页',
   hugeInternal.status === 400 && String(hugeInternal.data?.error ?? '').includes('from/count'),
   hugeInternal.data);

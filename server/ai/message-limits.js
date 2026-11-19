@@ -9,7 +9,7 @@
  * 所以内部轮单独给一个上限：够装下裁剪后的工具结果，又不至于把模型窗口灌爆。
  */
 export const MAX_USER_MESSAGE = 4000;
-export const MAX_INTERNAL_MESSAGE = 32000;
+export const MAX_INTERNAL_MESSAGE = 60000;
 
 /**
  * 超限时返回给人看的错误文案，没超返回 null。

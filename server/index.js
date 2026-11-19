@@ -22,7 +22,7 @@ import { buildProjectContext } from './ai/context.js';
 import { toolNames, runServerTool } from './ai/tools.js';
 import { describeOpsBrief, compactConversation, maybeSummarize } from './ai/memory.js';
 import { contextWindowOf, describeUsage, estimateTokens } from './ai/budget.js';
-import { createProvider, defaultReasoningEffort, resolveAiConfig } from './ai/provider.js';
+import { createProvider, defaultReasoningEffort, resolveAiConfig, verifyAcceptance } from './ai/provider.js';
 import { planAssembly } from './ai/orchestrator.js';
 import { planWithRepair } from './ai/repair.js';
 import { generateTexture, resolveTextureOps, slimOpsForHistory } from './ai/textures.js';
@@ -422,8 +422,8 @@ const MAX_AI_BODY_BYTES = 14 * 1024 * 1024;
  * 否则 inspect_tree 的长结果会让下一轮请求被 400「需求描述过长」拦掉。
  */
 function checkAiMessageLength(body, text) {
-  const limit = body?.internal === true ? 60000 : 4000;
-  if (text.length > limit) throw new HttpError(400, '需求描述过长');
+  const error = messageTooLong(text, body?.internal === true);
+  if (error) throw new HttpError(400, error);
 }
 
 /** 图片校验（数量 / 格式 / 体积），错误转成 400 而不是 500 */
@@ -1451,7 +1451,7 @@ async function handleApi(ctx) {
       message,
       thumbs: parseThumbs(body.imageThumbs),
       shots: Number(body.imageShots) || 0,
-      internal,
+      internal: body.internal === true,
       requestId: parseRequestId(body),
     });
     let result;
@@ -1501,6 +1501,7 @@ async function handleApi(ctx) {
       reply: result.reply ?? '',
       ops: slimOpsForHistory(ops),
       summary,
+      criteria: Array.isArray(result.criteria) ? result.criteria.slice(0, 8) : [],
       model: aiConfig.model,
       ms: Date.now() - planStarted,
       repaired,
@@ -1534,6 +1535,7 @@ async function handleApi(ctx) {
       ops,
       inspect,
       measure,
+      criteria: Array.isArray(result.criteria) ? result.criteria.slice(0, 8) : [],
       describe,
       done: result.done === true,
       calls: Array.isArray(result.calls) ? result.calls : undefined,
@@ -1557,6 +1559,33 @@ async function handleApi(ctx) {
       messageId: saved?.id ?? null,
       userMessageId: session?.userMessageId ?? null,
     });
+  }
+
+  // 独立验收：只给验收清单和证据，不给生成过程；与 /ai/plan 分开一次调用。
+  // 前端 agent 只有全部验收项都 pass 才接受 finish，避免「自己建自己夸」。
+  if ((match = pathname.match(/^\/api\/projects\/([^/]+)\/ai\/verify$/)) && method === 'POST') {
+    const projectId = match[1];
+    const user = requireUser(ctx);
+    requireProjectRole(projectId, user.id, 'read');
+    enforceLimit(aiLimiter, user, 'AI');
+    if (!aiConfig.ready) throw new HttpError(503, 'AI 未配置：设置 STRU_AI_API_KEY（或 STRU_AI_PROVIDER=mock 使用本地模拟）');
+    const body = await readJson(req, MAX_AI_BODY_BYTES);
+    const goal = String(body?.goal ?? '').trim();
+    if (!goal) throw new HttpError(400, '验收缺少用户原始需求');
+    const criteria = Array.isArray(body?.criteria)
+      ? body.criteria.filter((item) => typeof item === 'string' && item.trim()).slice(0, 8).map((item) => item.trim().slice(0, 200))
+      : [];
+    if (!criteria.length) throw new HttpError(400, '验收缺少验收清单');
+    const images = parseImageBody(body);
+    const measureText = typeof body?.measureText === 'string' ? body.measureText.slice(0, 12000) : '';
+    try {
+      const verdict = await verifyAcceptance(aiConfig, { goal, criteria, images, measureText });
+      return sendJson(res, 200, verdict);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : '验收调用失败';
+      console.warn(`[ai] verify 失败 provider=${aiProvider.id} :: ${detail.slice(0, 400)}`);
+      throw new HttpError(502, `独立验收失败：${detail}`);
+    }
   }
 
   // 流式版：把模型的思考过程、输出草稿、特征树生成进度实时推给前端（SSE）。
@@ -1592,7 +1621,7 @@ async function handleApi(ctx) {
       message,
       thumbs: parseThumbs(body.imageThumbs),
       shots: Number(body.imageShots) || 0,
-      internal,
+      internal: body.internal === true,
       // 前端自动重试时复用同一个 requestId：不重复插用户消息，并清掉上一轮的失败气泡
       requestId: parseRequestId(body),
     });
@@ -1731,6 +1760,7 @@ async function handleApi(ctx) {
         inspect,
         measure,
         describe,
+        criteria: Array.isArray(result.criteria) ? result.criteria.slice(0, 8) : [],
         done: result.done === true,
         calls: Array.isArray(result.calls) ? result.calls : undefined,
         notes: result.notes ?? '',

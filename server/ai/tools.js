@@ -48,6 +48,11 @@ const REGISTRY = [
           type: 'boolean',
           description: '已满足需求、不用再改也不用再看时设 true；设 true 时本工具不要再带 ops。',
         },
+        criteria: {
+          type: 'array',
+          description: '从用户原话拆出的验收清单（最多 8 条，每条一句可核对的话）。首轮给出一次即可，例如「前后护网为带弧度的罩子并包住叶片」。后续每轮会逐项回灌给你核对。',
+          items: { type: 'string' },
+        },
       },
       required: ['reply', 'ops'],
     },
@@ -75,13 +80,13 @@ const REGISTRY = [
     title: '测量几何',
     side: CLIENT_SIDE,
     dependOnWrite: true,
-    description: '对当前特征树做几何求值并把结果文字发回给你。前端会先把同一轮的 apply_bim_ops 落地再测。最多 6 条。',
+    description: '对当前特征树做几何求值并把结果文字发回给你。前端会先把同一轮的 apply_bim_ops 落地再测。最多 6 条。改完先用 {type:"anomalies"} 查离群零件；核对「罩子包住叶片」这类关系用 {type:"enclosure",outer:"前罩",inner:"叶片",axis:"y"}；核对「带弧度/收口」用 {type:"axialProfile",feature:"前罩",axis:"y"}；核对「护条/筋条是否戳出罩体、阵列中心是否偏心」用 {type:"alignment",base:"前罩外圈",compare:"前罩弯曲护条",axis:"y"}；核对「防护网/罩子是不是实心的、挡不挡视线」用 {type:"solidCover",feature:"前罩",axis:"y"}——填充率≥60% 说明被做成了实心锅盖，必须改成镂空网架。改完的防护网务必复核 solidCover 与 alignment 两项。',
     schema: {
       type: 'object',
       properties: {
         requests: {
           type: 'array',
-          description: '测量请求：{type:"surface",feature?,axis,at} 表面交点 / {type:"bounds",feature?} 包围盒 / {type:"gap",a,b} 最近距离。坐标是造型构件局部坐标（米）。',
+          description: '测量请求：{type:"anomalies"} 离群体检 / {type:"enclosure",outer,inner,axis?,margin?} 包覆关系 / {type:"axialProfile",feature,axis} 轴向收口 / {type:"alignment",base,compare,axis?,margin?} 中心偏移与伸出量 / {type:"solidCover",feature,axis,grid?} 实心面填充率（抓防护网被做成锅盖） / {type:"surface",feature?,axis,at} 表面交点 / {type:"bounds",feature?} 包围盒 / {type:"gap",a,b} 最近距离。坐标是造型构件局部坐标（米）。',
           items: { type: 'object', additionalProperties: true },
         },
       },
@@ -183,7 +188,7 @@ const REGISTRY = [
     name: 'run_python',
     title: '运行 Python 脚本',
     side: SERVER_SIDE,
-    description: '在受限沙箱里执行你写的 Python 脚本。用途：精确计算阵列点位 / 三角函数 / 曲线采样，把结果回传给你自己看，或让脚本直接 emit 建模 ops 与程序化贴图。需要多次重复、精确坐标或画贴图时用它，不要手算或硬拼几十个数字。脚本用 emit({"result":...}) 提交结果、emit({"ops":[...]}) 提交建模指令、emit({"images":[{name,dataUrl}]}) 提交贴图（之后在 apply_bim_ops 的 material.map 里写 "python:1" 引用）。只允许 math / numpy / PIL / cadquery 等白名单库，禁止文件与网络。',
+    description: '在受限沙箱里执行你写的 Python 脚本。用途：精确计算阵列点位 / 三角函数 / 曲线采样，把结果回传给你自己看，或让脚本直接 emit 建模 ops 与程序化贴图。需要多次重复、精确坐标或画贴图时用它，不要手算或硬拼几十个数字。脚本用 emit({"result":...}) 提交结果、emit({"ops":[...]}) 提交建模指令、emit({"images":[{name,dataUrl}]}) 提交贴图（之后在 apply_bim_ops 的 material.map 里写 "python:1" 引用）。造型优先用现成图元或 parametric 写方程（前端实时采样、面板能改参数）；只有方程也写不出的形体才考虑 mesh 网格兜底（死网格、改不了参数），且当前沙箱默认不含 OCP，需要三角化请先确认环境。只允许 math / numpy / PIL / scipy 等白名单库，禁止文件与网络。',
     schema: {
       type: 'object',
       properties: {

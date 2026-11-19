@@ -488,7 +488,24 @@ export interface AiInspectView {
 export type AiMeasureRequest =
   | { type: 'bounds'; target?: string; feature?: string | number }
   | { type: 'surface'; target?: string; feature?: string | number; axis: 'x' | 'y' | 'z'; at: [number, number] }
-  | { type: 'gap'; target?: string; a: string | number; b: string | number };
+  | { type: 'gap'; target?: string; a: string | number; b: string | number }
+  /** 几何体检：逐特征算包围盒，报出远离主体或异常巨大的零件（无需截图也能自查离群） */
+  | { type: 'anomalies'; target?: string }
+  /** 包覆关系：outer 的包围盒是否在容差内包住 inner；axis 是包覆方向（如风扇轴 y） */
+  | { type: 'enclosure'; target?: string; outer: string | number; inner: string | number; axis?: 'x' | 'y' | 'z'; margin?: number }
+  /** 轴向轮廓：某个特征/特征组的半径沿指定轴如何变化，用来核对「罩子收口 / 带弧度」 */
+  | { type: 'axialProfile'; target?: string; feature: string | number; axis: 'x' | 'y' | 'z'; bins?: number }
+  /** 对齐诊断：compare 相对 base 在各方向的中心偏移与伸出量，用来抓「护条戳出罩体 / 阵列偏心」 */
+  | { type: 'alignment'; target?: string; base: string | number; compare: string | number; axis?: 'x' | 'y' | 'z'; margin?: number }
+  /** 实心面遮挡：沿 axis 打网格射线，算该特征在其投影面的填充率，用来抓「防护网被做成实心锅盖/锥碗」 */
+  | { type: 'solidCover'; target?: string; feature: string | number; axis: 'x' | 'y' | 'z'; grid?: number };
+
+/** 独立验收结果：与生成模型分开的一次调用，只有全过才允许 agent 收工 */
+export interface AiVerifyResult {
+  pass: boolean;
+  failures: string[];
+  evidence?: string;
+}
 
 /**
  * AI 要求的只读特征树查询：把项目上下文里被裁剪掉的原始特征定义取回来。
@@ -619,6 +636,8 @@ export interface AiPlan {
   describe?: AiDescribeRequest[];
   /** AI 自评：已经满足用户需求，不用再改也不用再看图（自检闭环的收工信号） */
   done?: boolean;
+  /** AI 从用户原话拆出的验收清单；后续每轮逐项核对，未全过不得 finish */
+  criteria?: string[];
   /** 注册表驱动的工具调用列表（真相源）；扁平字段 ops/inspect/measure/done 是它的兼容视图 */
   calls?: AiToolCall[];
   /** 服务端只读工具（查配方 / 查模板 / 查特征树）已执行好的结果，需回灌给模型 */
@@ -666,7 +685,7 @@ export type AiPlanEvent =
   | { type: 'plan'; chars: number }
   /** 连接中断后自动重试：前端据此清掉上一轮的半截草稿，别把两次输出拼在一起 */
   | { type: 'retry'; attempt: number; total: number; delayMs: number; reason: string }
-  | { type: 'result'; reply: string; ops: Array<Record<string, unknown>>; inspect?: AiInspectView[]; measure?: AiMeasureRequest[]; describe?: AiDescribeRequest[]; python?: AiPythonRequest[]; pythonText?: string; pythonReport?: AiPythonReport | null; done?: boolean; calls?: AiToolCall[]; notes?: string; toolTurns?: number; summary: Record<string, number>; provider: string; model: string; mock: boolean; ms?: number; events?: number; repaired?: number; warning?: string; vision?: AiVisionInfo | null; context?: AiContextUsage | null; assembly?: AiAssemblyInfo | null; textures?: AiTextureInfo[]; conversationId?: string | null; messageId?: string | null; userMessageId?: string | null }
+  | { type: 'result'; reply: string; ops: Array<Record<string, unknown>>; inspect?: AiInspectView[]; measure?: AiMeasureRequest[]; criteria?: string[]; describe?: AiDescribeRequest[]; python?: AiPythonRequest[]; pythonText?: string; pythonReport?: AiPythonReport | null; done?: boolean; calls?: AiToolCall[]; notes?: string; toolTurns?: number; summary: Record<string, number>; provider: string; model: string; mock: boolean; ms?: number; events?: number; repaired?: number; warning?: string; vision?: AiVisionInfo | null; context?: AiContextUsage | null; assembly?: AiAssemblyInfo | null; textures?: AiTextureInfo[]; conversationId?: string | null; messageId?: string | null; userMessageId?: string | null }
   | { type: 'error'; message: string };
 
 export interface AiPlanStreamOptions {
@@ -795,6 +814,26 @@ export function createAiApi(baseUrl = '') {
   const api = {
     async status() {
       return request<AiStatus>(baseUrl, '/api/ai/status');
+    },
+    /**
+     * 独立验收：把验收清单 + 最新截图交给单独的模型调用，
+     * 它没参与建模，只回答哪些项还没过。与 /ai/plan 同一套鉴权。
+     */
+    async verify(
+      projectId: string,
+      input: { goal: string; criteria: string[]; images?: string[]; measureText?: string },
+      session?: SessionRef,
+    ) {
+      return request<AiVerifyResult>(baseUrl, `/api/projects/${projectId}/ai/verify`, {
+        method: 'POST',
+        body: {
+          goal: input.goal,
+          criteria: input.criteria,
+          ...(input.images?.length ? { images: input.images } : {}),
+          ...(input.measureText ? { measureText: input.measureText } : {}),
+          ...sessionBody(session),
+        },
+      });
     },
     /** 独立生图：返回可直接写进 material.map 的 data URL */
     async generateTexture(prompt: string) {
@@ -939,6 +978,7 @@ export function createAiApi(baseUrl = '') {
               inspect: Array.isArray(event.inspect) ? event.inspect : [],
               measure: Array.isArray(event.measure) ? event.measure : [],
               describe: Array.isArray(event.describe) ? event.describe : [],
+              criteria: Array.isArray(event.criteria) ? event.criteria : undefined,
               done: event.done === true,
               calls: Array.isArray(event.calls) ? event.calls : undefined,
               notes: event.notes,

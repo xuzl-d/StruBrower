@@ -153,13 +153,14 @@ function check(name, ok, detail) {
   const actions = extractActions({
     calls: [
       { name: 'search_recipes', args: { query: '坦克' }, side: 'server' },
-      { name: 'apply_bim_ops', args: { ops: [{ op: 'addSolid' }] } },
+      { name: 'apply_bim_ops', args: { ops: [{ op: 'addSolid' }], criteria: ['护网包住叶片'] } },
       { name: 'inspect', args: { views: [front] } },
       { name: 'finish', args: { note: 'ok' } },
     ],
   }, true, true);
   check('只读工具被分到 serverCalls', actions.serverCalls.length === 1);
   check('ops/views/finish 分别提取', actions.ops.length === 1 && actions.views.length === 1 && actions.finish === true);
+  check('验收清单被提取', actions.criteria.join('|') === '护网包住叶片', actions.criteria);
   const legacy = extractActions({ ops: [{ op: 'addSolid' }], done: true });
   check('老决策也能拆出动作', legacy.ops.length === 1 && legacy.finish === true && legacy.serverCalls.length === 0);
   const noTool = extractActions({ calls: [{ name: 'search_recipes', side: 'server' }] }, true, false);

@@ -348,6 +348,29 @@ export type SolidShape =
   | { shape: 'ellipsoid'; rx: number; ry: number; rz: number; segments?: number }
   | { shape: 'cone'; radius: number; topRadius?: number; height: number; segments?: number }
   | { shape: 'torus'; radius: number; tube: number; segments?: number; tubeSegments?: number }
+  /**
+   * 穹顶网罩：电扇/灯罩/防护笼的镂空骨架，由少数语义参数生成，几何天然同心对称。
+   * 绕 Z 轴（放样轴）建模，rotate 到风扇轴即可。depth>0 向 +Z 凸，depth<0 向 -Z 凹。
+   * 内部 = 若干同心网圈（torus）+ 沿穹面曲线的径向护条（sweep），中间全镂空，
+   * 不会出现手抄 sweep 坐标导致的偏心/戳出/实心锅盖。
+   */
+  | {
+    shape: 'grille';
+    /** 外圈半径（m） */
+    radius: number;
+    /** 穹顶深度（m），首末网圈沿轴的落差；0 为平面圆盘 */
+    depth: number;
+    /** 同心网圈数量（含最外圈），2~8 */
+    rings?: number;
+    /** 径向护条数量，0~96；0 表示只要同心圈 */
+    spokes?: number;
+    /** 网圈/护条的丝径（m），默认按 radius 的 1.2% */
+    wire?: number;
+    /** 护条在轴向上覆盖的半径范围下限（m，默认 radius*0.08，即收到中心附近） */
+    innerRadius?: number;
+    segments?: number;
+    tubeSegments?: number;
+  }
   /** 任意多边形拉伸；twist 为整体扭转角（度），taper 为顶面缩放 */
   | { shape: 'prism'; profile: Vec2[]; height: number; twist?: number; taper?: number }
   /** 母线（[半径, 高度]）绕 Z 轴旋转；angle 缺省 360 */
@@ -374,6 +397,65 @@ export type SolidShape =
   }
   /** 点集凸包：用若干三维点围出流线外形（整流罩、机头） */
   | { shape: 'hull'; points: Vec3[] }
+  /**
+   * 通用三角网格：AI 在 Python 沙箱用 OCP（B-rep 内核）建体 / 布尔后三角化导出，
+   * 或纯方程采样得到的封闭曲面。作为「写不出来的任意形体」的通用出口——接入一次，
+   * 以后新形体只要写 Python 方程，不必再加图元、改内核源码。
+   *
+   * 布尔已在 B-rep 层完成，这里只承载结果；前端 CSG（three-bvh-csg）对封闭流形网格
+   * 照样能做后续 cut / intersect。positions 为扁平 xyz（米，特征局部坐标，Z-up），
+   * indices 为三角面索引。normals 可选：给了就保留 B-rep 的平滑法线，不给则按面计算。
+   */
+  | {
+    shape: 'mesh';
+    /** 扁平顶点坐标 [x,y,z, ...]，米 */
+    positions: number[];
+    /** 三角面索引，每三个一组 */
+    indices: number[];
+    /** 可选顶点法线，扁平 [nx,ny,nz, ...]，与 positions 等长 */
+    normals?: number[];
+  }
+  /**
+   * 参数方程图元：AI 写数学方程，前端用安全公式引擎实时采样生成几何。
+   *
+   * 这是「写一个方程得到任意形体」的通用出口——接入一次，以后新形体只要写方程，
+   * 不必再加图元、改内核源码。与 mesh 的区别：mesh 存烘焙好的顶点（死网格，改不了参数），
+   * parametric 存的是方程 + 参数，前端每次实时求值，所以滑块改参数就能重塑形体，
+   * 采样出的封闭网格照常参与 add / cut / intersect 布尔。
+   *
+   * 方程用 shared/formula.js 语法（无 eval）：sin/cos/sqrt/pow/PI 等函数常量齐全，
+   * 变量除 params 里的键之外，revolve 用 t∈[0,1]，surface 用 u,v∈[0,1]。
+   */
+  | {
+    shape: 'parametric';
+    /**
+     * revolve：母线 (r(t), z(t)) 绕 Z 轴回转。r 首尾为 0 时自动收口成封闭实体（可布尔）。
+     * surface：参数曲面 (x(u,v), y(u,v), z(u,v))。开放曲面只能 add，不能作为布尔刀具。
+     */
+    kind: 'revolve' | 'surface';
+    /** revolve：半径方程 r(t)，米，如 "R*sin(PI*t)" */
+    radius?: string;
+    /** revolve：高度方程 z(t)，米，如 "H*t-H/2" */
+    height?: string;
+    /** surface：三个坐标方程，变量 u、v ∈ [0,1] */
+    x?: string;
+    y?: string;
+    z?: string;
+    /** 方程里用到的可调变量 → 初值；每个键在造型面板里生成一个滑块 */
+    params: Record<string, number>;
+    /** 可选：变量 → [min,max] 或 [min,max,step]；缺省按初值给 ±50% 范围 */
+    paramRanges?: Record<string, [number, number] | [number, number, number]>;
+    /** revolve 母线采样点数（t 方向），缺省 40 */
+    profileSteps?: number;
+    /** 环向 / surface u 方向分段，缺省 48 */
+    segments?: number;
+    /** surface v 方向分段，缺省 24 */
+    rings?: number;
+    /** revolve 回转角度（度），缺省 360 */
+    angle?: number;
+    /** revolve 母线首尾不在轴上时是否补平盖，缺省 true */
+    capped?: boolean;
+  }
   /** 子特征组：把多个特征合成一个实体，再整体变换 / 阵列（用于螺旋桨这类子装配） */
   | { shape: 'group'; features: SolidFeature[] }
   /**

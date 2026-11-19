@@ -42,6 +42,8 @@ export interface AgentDecision {
   inspect?: AiInspectView[];
   measure?: AiMeasureRequest[];
   done?: boolean;
+  /** 模型从用户原话拆出的验收清单；首轮给一次，后续每轮回灌逐项核对 */
+  criteria?: string[];
   calls?: AgentToolCall[];
   /** 服务端工具在响应里已经执行好的只读结果（search_recipes 等），需回灌给模型 */
   notes?: string;
@@ -61,6 +63,7 @@ export type AgentStage =
   | { type: 'apply-failed'; step: number; note: string }
   | { type: 'inspect'; step: number; views: string[]; shots: number }
   | { type: 'measure'; step: number; count: number }
+  | { type: 'verify'; step: number; pass: boolean; failures: string[] }
   | { type: 'tool'; step: number; name: string; title: string; ok: boolean }
   | { type: 'recall'; step: number; text: string }
   | { type: 'stop'; step: number };
@@ -78,7 +81,9 @@ export type AgentEndReason =
   | 'inspect-failed'
   | 'apply-failed'
   /** 反复要同样的视角 / 改不动，判定为打转 */
-  | 'repeated';
+  | 'repeated'
+  /** 独立验收反复不通过，且步数用尽 */
+  | 'verify-failed';
 
 export interface AgentRun {
   reason: AgentEndReason;
@@ -94,12 +99,21 @@ export interface AgentRun {
   recalls: number;
   /** 最后一轮的说明 */
   reply: string;
+  /** 本轮形成的验收清单 */
+  criteria: string[];
+  /** 独立验收驳回过几次 */
+  verifyFailures: number;
   error?: string;
 }
 
 export interface AgentDeps {
-  /** 用户这次的需求原话（每轮复述，防止历史被裁剪后它忘了要做什么） */
+  /** 用户这次的输入（可能是「继续」「再改改」这类追问，直接发给首轮模型） */
   goal: string;
+  /**
+   * 会话的需求锚点：最初那条真实需求原话，整轮自检与验收都用它。
+   * 没有单独提供时退回 goal——此时「继续」会被当成需求，容易跑偏。
+   */
+  originalGoal?: string;
   referenceImages?: string[];
   referenceThumbs?: string[];
   /** 请求模型（前端是流式，测试里可以是假函数） */
@@ -110,6 +124,17 @@ export interface AgentDeps {
   inspect(views: AiInspectView[]): Promise<AgentShot[]>;
   /** 对当前模型做几何测量，返回给模型看的文字；不提供则忽略模型的 measure */
   measure?(requests: AiMeasureRequest[]): Promise<string>;
+  /**
+   * 独立验收：只看原话 + 清单 + 截图 + 测量文字，不看生成过程。
+   * 提供之后，模型说 finish 也必须先过这一关；未全过会把失败项回灌让它继续改。
+   */
+  verify?(args: {
+    goal: string;
+    criteria: string[];
+    images: string[];
+    measureText?: string;
+    step: number;
+  }): Promise<{ pass: boolean; failures: string[]; evidence?: string }>;
   /**
    * 执行服务端只读工具（search_recipes / describe_model / inspect_tree）。
    * 返回给模型看的文字；不提供时忽略这些工具调用。
@@ -131,8 +156,12 @@ export interface AgentDeps {
   ensureFirstLook?: boolean;
 }
 
-/** 一次自检闭环最多跑几轮。5 轮足够「初稿 → 看 → 修 → 再看 → 收尾」，再多基本是在打转 */
-export const MAX_AGENT_STEPS = 5;
+/**
+ * 一次自检闭环最多跑几轮。复杂造型（护网/曲面罩）要「初稿 → 看 → 修 → 再看 → 再修 → 收尾」，
+ * 5 轮经常在改到一半时被掐断，模型只能停在半成品上反复说「还没收敛」。提到 12 轮给足修正空间；
+ * 真正的无限打转由 MAX_AGENT_IDLE（重复同视角不修改）和 verifyIdle（驳回却不改）兜底，不靠步数硬卡。
+ */
+export const MAX_AGENT_STEPS = 12;
 /** 连续几次空转（要同样的视角 / 改不动还不改）就判定为打转 */
 export const MAX_AGENT_IDLE = 2;
 /** 每轮复述用户需求时的截断长度：太长会把上下文挤掉，也不能短到语义残缺 */
@@ -176,13 +205,21 @@ export interface AgentActions {
   views: AiInspectView[];
   measures: AiMeasureRequest[];
   serverCalls: AgentToolCall[];
+  criteria: string[];
   finish: boolean;
   finishNote: string;
 }
 
+function normalizeCriteria(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((item): item is string => typeof item === 'string' && Boolean(item.trim()))
+    .slice(0, 8)
+    .map((item) => item.trim().slice(0, 200));
+}
+
 export function extractActions(decision: AgentDecision, canMeasure = true, canTool = true): AgentActions {
   const actions: AgentActions = {
-    ops: [], views: [], measures: [], serverCalls: [], finish: false, finishNote: '',
+    ops: [], views: [], measures: [], serverCalls: [], criteria: [], finish: false, finishNote: '',
   };
   const calls = Array.isArray(decision.calls) ? decision.calls : [];
   if (!calls.length) {
@@ -191,6 +228,7 @@ export function extractActions(decision: AgentDecision, canMeasure = true, canTo
     actions.views = Array.isArray(decision.inspect) ? decision.inspect : [];
     actions.measures = canMeasure && Array.isArray(decision.measure) ? decision.measure : [];
     actions.finish = decision.done === true;
+    actions.criteria = normalizeCriteria(decision.criteria);
     return actions;
   }
   for (const call of calls) {
@@ -202,6 +240,7 @@ export function extractActions(decision: AgentDecision, canMeasure = true, canTo
         // 老格式兼容：apply_bim_ops 里直接带了 inspect / measure
         if (Array.isArray(args.inspect)) actions.views.push(...args.inspect as AiInspectView[]);
         if (canMeasure && Array.isArray(args.measure)) actions.measures.push(...args.measure as AiMeasureRequest[]);
+        if (Array.isArray(args.criteria)) actions.criteria.push(...normalizeCriteria(args.criteria));
         break;
       case 'inspect':
         if (Array.isArray(args.views)) actions.views.push(...args.views as AiInspectView[]);
@@ -223,6 +262,7 @@ export function extractActions(decision: AgentDecision, canMeasure = true, canTo
   }
   // 扁平 done 也算（有些模型在 calls 里没写 finish，但 done=true）
   if (decision.done === true) actions.finish = true;
+  if (!actions.criteria.length) actions.criteria = normalizeCriteria(decision.criteria);
   return actions;
 }
 
@@ -238,14 +278,17 @@ export function stepPrompt(args: {
   step: number;
   maxSteps: number;
   goal: string;
+  originalGoal?: string;
   applyNote?: string;
   applyError?: string;
   shots: Array<{ label: string }>;
   referenceCount?: number;
   measureText?: string;
   toolNotes?: string;
+  criteria?: string[];
+  verifyText?: string;
 }): string {
-  const { step, maxSteps, goal, applyNote, applyError, shots, referenceCount = 0, measureText, toolNotes } = args;
+  const { step, maxSteps, goal, originalGoal, applyNote, applyError, shots, referenceCount = 0, measureText, toolNotes, criteria = [], verifyText } = args;
   const lines: string[] = [`[自检第 ${step}/${maxSteps} 步]`];
 
   if (applyError) {
@@ -265,14 +308,24 @@ export function stepPrompt(args: {
   }
   if (measureText) lines.push(measureText);
 
-  lines.push(`用户的需求原话仍然是：「${clipGoal(goal)}」`);
+  // 锚点是会话最初那条真实需求；「继续」「再改改」只是本轮动作，不能顶替需求原话。
+  // 两者不同时都给模型看，并明确分工，避免它把「继续」当成要建的东西。
+  const anchor = originalGoal?.trim() ? originalGoal : goal;
+  lines.push(`用户的需求原话始终是：「${clipGoal(anchor)}」`);
+  if (anchor.trim() !== goal.trim()) {
+    lines.push(`你这次输入的是「${clipGoal(goal)}」——这是让我继续改的指令，不是新需求；上面那条原话才是判定完成的依据，不要因为改了几轮就换目标。`);
+  }
+  if (verifyText) lines.push(`独立验收没有通过：${verifyText}。证据不足或未达成的项必须继续改，不要再声称完成。`);
+  if (criteria.length) {
+    lines.push(`验收清单（这是本次的硬标准，逐项核对，未全过不得写 done）：`, criteria.map((item, index) => `${index + 1}. ${item}`).join('\n'));
+  }
   lines.push(
     '现在自己决定下一步，不要反问用户；只有关键尺寸、用途或参照无法合理估计时才提出具体问题：',
     '- 先列出观察到的主要差异，按整体轮廓、比例与位置、连接与间隙、显著细节排序；优先修影响最大的差异。',
     '- 不确定某类物体怎么做、想复用现成案例时，先用 search_recipes / describe_model 查资料，再据结果建模，不要凭印象硬拼。',
     '- 修改前核对特征的形状和变换；曲面有凹凸或转折时使用足够的截面或轮廓点，不用叠放的方块掩盖主形状错误。',
     '- 每次修改后用相近视角复核；对遮挡、未截到或缺少工具证据的部位标为未验证；需要核对位置、间距或穿插时用 measure，没有测量结果就不要声称已经测量。',
-    '- 已经满足需求 → 调用 finish（或 done:true），reply 说明你在图里核对到了什么；',
+    '- 验收清单每一项都核对通过、且确实满足需求 → 调用 finish（或 done:true），reply 逐项说明你在图里/测量里核对到了什么；',
     '- 还没满足 → 优先用 apply_bim_ops 里的 setDimensions / editFeature / addFeature 精确修改；基本形状错误时用 replaceFeature 替换对应特征，并再给 inspect 复核；',
     '- 不要重复上一轮已经看过的同一组视角却不做任何修改。',
   );
@@ -318,16 +371,26 @@ export async function runAgentLoop(first: AgentRound, deps: AgentDeps): Promise<
   let lastApplyError = '';
   /** 最近一次成功落地的说明（补拍复核时还要用它告诉模型「图里已经是改完的样子」） */
   let lastApplyNote = '';
+  let criteria: string[] = [];
+  let verifyFailures = 0;
+  let lastVerifyText = '';
+  let lastShots: AgentShot[] = [];
+  let lastMeasureText = '';
+  const verifyIdleLimit = 2;
+  let verifyIdle = 0;
 
   const finish = (reason: AgentEndReason): AgentRun => ({
     reason, steps, applied, shots, toolCalls, recalls, reply,
+    criteria: [...criteria], verifyFailures,
     ...(reason === 'apply-failed' && lastApplyError ? { error: lastApplyError } : {}),
   });
   const follow = (info: {
     applyNote?: string; applyError?: string; shotList?: AgentShot[];
-    measureText?: string; toolNotes?: string;
+    measureText?: string; toolNotes?: string; verifyText?: string;
   }) => {
     const captured = info.shotList ?? [];
+    if (captured.length) lastShots = captured;
+    if (info.measureText !== undefined) lastMeasureText = info.measureText;
     const references = (deps.referenceImages ?? []).slice(0, captured.length ? 3 : 4);
     const referenceThumbs = (deps.referenceThumbs ?? []).slice(0, references.length);
     const includedShots = captured.slice(0, 4 - references.length);
@@ -336,12 +399,15 @@ export async function runAgentLoop(first: AgentRound, deps: AgentDeps): Promise<
         step: steps + 1,
         maxSteps,
         goal: deps.goal,
+        originalGoal: deps.originalGoal,
         applyNote: info.applyNote,
         applyError: info.applyError,
         shots: includedShots,
         referenceCount: references.length,
         measureText: info.measureText,
         toolNotes: info.toolNotes,
+        criteria,
+        verifyText: info.verifyText,
       }),
       images: [...references, ...includedShots.map((shot) => shot.dataUrl)],
       thumbs: [...referenceThumbs, ...includedShots.map((shot) => shot.thumb)],
@@ -350,8 +416,27 @@ export async function runAgentLoop(first: AgentRound, deps: AgentDeps): Promise<
     };
   };
 
+  /** 独立验收：生成模型说 done 之后也要过这一关，失败项回灌让它继续改 */
+  const checkAcceptance = async (): Promise<{ pass: boolean; failures: string[]; evidence?: string }> => {
+    if (!deps.verify || !criteria.length) return { pass: true, failures: [] };
+    try {
+      const verdict = await deps.verify({
+        goal: deps.originalGoal?.trim() ? deps.originalGoal : deps.goal,
+        criteria,
+        images: lastShots.map((shot) => shot.dataUrl),
+        measureText: lastMeasureText,
+        step: steps,
+      });
+      deps.onStage?.({ type: 'verify', step: steps, pass: verdict.pass, failures: verdict.failures ?? [] });
+      return verdict;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return { pass: false, failures: [`独立验收调用失败：${message}`] };
+    }
+  };
+
   for (;;) {
-    if (steps >= maxSteps) return finish('max-steps');
+    if (steps >= maxSteps) return finish(verifyFailures ? 'verify-failed' : 'max-steps');
     if (deps.stopped()) return finish('stopped');
 
     steps += 1;
@@ -360,6 +445,10 @@ export async function runAgentLoop(first: AgentRound, deps: AgentDeps): Promise<
     deps.onStage?.({ type: 'plan', step: steps, decision });
 
     const actions = extractActions(decision, Boolean(deps.measure), Boolean(deps.callTool));
+    if (actions.criteria.length) {
+      criteria = actions.criteria;
+      verifyIdle = 0;
+    }
 
     // 1) 服务端只读工具（查配方 / 查模板 / 查特征树）：结果原样回灌，帮助它下一步决策。
     //    它们无副作用，可与本轮其它工具共存；结果先攒着，最后随截图一起回传。
@@ -411,19 +500,39 @@ export async function runAgentLoop(first: AgentRound, deps: AgentDeps): Promise<
     const views = actions.views;
     const measures = actions.measures;
     const finishRequested = actions.finish;
+    if (actions.ops.length || views.length || measures.length) verifyIdle = 0;
 
     if (unresolvedApplyFailure && !applyError && !views.length && !measures.length && !appliedThisStep) return finish('apply-failed');
 
-    // 3) 它说满足了 / 第一轮刚落地就收工：先补拍一组默认视角自查，别放着没核对的模型就走。
-    //    纯文字需求（无参考图）最容易踩这个坑：模型建完既不说 done 也不要求看，
-    //    旧逻辑直接判 no-action，导致「履带画不好却从没复核」。只要第一轮成功落地就必须自检。
-    const firstDraftNeedsLook = appliedThisStep && steps === 1 && (deps.ensureFirstLook !== false);
+    // 3) 每一轮成功落地后都补拍一组默认视角自查，别放着没核对的模型就走。
+    //    旧逻辑只在首轮补拍（steps===1），导致第 2 轮改完的离群零件没有第二次核对机会，
+    //    AI 嘴上说「已修正」却漏改特征时无人发现。现在每轮 apply 成功都复核，靠 maxSteps 兜底防打转。
+    //    若本轮只说 finish 没有落地，则不再重复补拍，直接收工。
+    // 每轮成功落地都该复核，但「从没拍过、且本轮就宣告完成」可尊重模型判断，避免 inspect 空时卡住。
+    // 一旦有过截图 / 参考图（shots>0 或有参考图），说明在照着某个目标核对，最后一次修改必须再看一眼；
+    // 首轮永远强制（纯文字首稿最容易盲自信）。这样既覆盖「第2轮改完也复核」，又不破坏「失败后重试成功即 done」。
+    const shouldSelfCheck = appliedThisStep && deps.ensureFirstLook !== false
+      && (steps === 1 || shots > 0 || (deps.referenceImages?.length ?? 0) > 0 || !finishRequested);
     if (!applyError && !views.length && !measures.length
-      && (finishRequested || firstDraftNeedsLook || (appliedThisStep && (deps.referenceImages?.length ?? 0) > 0))) {
-      const needsLook = deps.ensureFirstLook !== false && appliedThisStep
-        && (steps === 1 || shots > 0 || (deps.referenceImages?.length ?? 0) > 0);
-      if (!needsLook) return finish(finishRequested ? 'done' : 'no-action');
-      if (steps >= maxSteps) return finish('max-steps');
+      && (finishRequested || shouldSelfCheck || (appliedThisStep && (deps.referenceImages?.length ?? 0) > 0))) {
+      const needsLook = shouldSelfCheck;
+      if (!needsLook) {
+        if (!finishRequested) return finish('no-action');
+        const verdict = await checkAcceptance();
+        if (!verdict.pass) {
+          verifyFailures += 1;
+          verifyIdle += 1;
+          if (verifyIdle >= verifyIdleLimit) return finish('verify-failed');
+          const failures = verdict.failures.length ? verdict.failures.join('；') : '证据不足或验收项未全部通过';
+          lastVerifyText = verdict.evidence ? `${failures}（验收证据：${verdict.evidence}）` : failures;
+          reply = '';
+          round = follow({ verifyText: lastVerifyText });
+          continue;
+        }
+        verifyIdle = 0;
+        return finish('done');
+      }
+      if (steps >= maxSteps) return finish(verifyFailures ? 'verify-failed' : 'max-steps');
       const captured = await deps.inspect(FIRST_LOOK_VIEWS);
       deps.onStage?.({
         type: 'inspect',
@@ -436,7 +545,8 @@ export async function runAgentLoop(first: AgentRound, deps: AgentDeps): Promise<
       shots += captured.length;
       reply = '';
       round = follow({
-        applyNote: `${lastApplyNote || '修改已落地'}；这一组视角是系统补拍的（你没要求看图，但改完总得核对一眼）`,
+        applyNote: `${lastApplyNote || '修改已落地'}；这一组视角是系统补拍的（你没要求看图，但改完总得核对一眼）。`
+          + '看不到图或怀疑零件散落时，用 measure 的 {type:"anomalies"} 做几何体检，它会报出飘离主体/异常巨大的特征及序号。',
         shotList: captured,
         toolNotes,
       });

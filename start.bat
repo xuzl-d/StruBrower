@@ -5,6 +5,7 @@ cd /d "%~dp0"
 rem StruBrowser launcher for Windows, counterpart of start.sh and start.command.
 rem   start.bat            dev mode: API 8787 plus Web 5173, opens the browser
 rem   start.bat prod       prod mode: build, then serve everything on port 8787
+rem   Web and API both bind 0.0.0.0, so the same LAN can open http://LAN-IP:5173/
 rem   set STRU_NO_OPEN=1   do not open the browser
 rem   set PORT=9000        custom API port, set WEB_PORT=9001 for a custom Web port
 rem API and Web each run in their own console window, titled StruBrowser API and
@@ -86,7 +87,7 @@ if not defined WEB_PORT (
 )
 echo [start] Starting Web on port %WEB_PORT% ...
 set "STRU_API_URL=http://127.0.0.1:%API_PORT%"
-start "StruBrowser Web" cmd /k "chcp 65001 >nul & node node_modules\vite\bin\vite.js --port %WEB_PORT% --strictPort --host 127.0.0.1"
+start "StruBrowser Web" cmd /k "chcp 65001 >nul & node node_modules\vite\bin\vite.js --port %WEB_PORT% --strictPort --host 0.0.0.0"
 call :wait_http http://127.0.0.1:%WEB_PORT%/ 40 || (
   set "ERR=Web failed to start. See the window titled StruBrowser Web"
   goto :fail
@@ -199,7 +200,7 @@ exit /b 0
 
 rem Finds the first bindable port from 5173 and sets WEB_PORT. The port comes back as node's exit code
 :find_web_port
-node -e "let p=5173;(function t(){const s=require('net').createServer();s.once('error',()=>{p+=1;t()});s.once('listening',()=>s.close(()=>process.exit(p)));s.listen(p,'127.0.0.1')})()"
+node -e "let p=5173;(function t(){const s=require('net').createServer();s.once('error',()=>{p+=1;t()});s.once('listening',()=>s.close(()=>process.exit(p)));s.listen(p,'0.0.0.0')})()"
 set "WEB_PORT=%errorlevel%"
 if %WEB_PORT% lss 1024 set "WEB_PORT="
 exit /b 0

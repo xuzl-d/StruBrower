@@ -838,6 +838,144 @@ console.log('贴花（涂装 / 文字）');
   check('文字与朝向入库', element.primitive.text === 'AIRBUS A350' && element.primitive.normal === '-y');
 }
 
+console.log('穹顶网罩 grille');
+{
+  const grille: SolidFeature = {
+    id: 'gr1', label: '前罩', mode: 'add',
+    shape: { shape: 'grille', radius: 0.285, depth: 0.07, rings: 5, spokes: 24, wire: 0.0035 },
+  } as SolidFeature;
+  const geo = buildSolidGeometry([grille]);
+  const tri = Math.floor((geo.index?.count ?? geo.getAttribute('position').count) / 3);
+  geo.computeBoundingBox();
+  const size = geo.boundingBox!.getSize(new Vector3());
+  check('grille 生成大量三角面（镂空骨架）', tri > 2000, `tri=${tri}`);
+  check('grille 径向尺寸 = 2×半径（XY 平面）', near(size.x, 0.57, 0.02) && near(size.y, 0.57, 0.02), `${size.x.toFixed(3)}x${size.y.toFixed(3)}`);
+  check('grille 轴向跨度 ≈ 罩深（沿 Z）', near(size.z, 0.07, 0.01), String(size.z.toFixed(3)));
+  check('grille 三角形绕序一致（有向体积>0）', signedVolume(geo) > 0, String(signedVolume(geo).toFixed(5)));
+  geo.dispose();
+
+  const flat = buildSolidGeometry([{ ...grille, shape: { shape: 'grille', radius: 0.285, depth: 0, rings: 3, spokes: 8 } } as SolidFeature]);
+  flat.computeBoundingBox();
+  check('depth=0 时是平面盘（Z 向无厚度）', flat.boundingBox!.getSize(new Vector3()).z < 0.02);
+  flat.dispose();
+}
+{
+  // 服务端归一化：非法值夹到范围、给出默认丝径
+  const { document } = applyOps(createProject({ name: 'grille 校验' }), [
+    { op: 'addSolid', features: [{ shape: 'grille', radius: 0.2, depth: -0.05, rings: 99, spokes: 999, label: '后罩' }] },
+  ]);
+  const shape = (document.elements[0] as any).primitive.features[0].shape;
+  check('grille 通过服务端校验并保留', shape.shape === 'grille', JSON.stringify(shape));
+  check('rings/spokes 夹到上限', shape.rings === 8 && shape.spokes === 96, JSON.stringify(shape));
+  check('wire 缺省按半径给出', shape.wire > 0 && shape.wire < 0.02, String(shape.wire));
+}
+
+console.log('参数方程图元 parametric（AI 写方程 → 前端实时采样 → 可改参数 / 可布尔）');
+{
+  // 回转体：球 R=0.1，母线 r(t)=R*sin(PI*t)、z(t)=R*(2t-1)
+  const ball: SolidFeature = {
+    id: 'pa1', label: '方程球', mode: 'add',
+    shape: {
+      shape: 'parametric', kind: 'revolve',
+      radius: 'R*sin(PI*t)', height: 'R*(2*t-1)',
+      params: { R: 0.1 }, paramRanges: { R: [0.02, 0.3, 0.01] },
+      profileSteps: 40, segments: 48,
+    },
+  } as SolidFeature;
+  const geo = buildSolidGeometry([ball]);
+  geo.computeBoundingBox();
+  const size = geo.boundingBox!.getSize(new Vector3());
+  check('parametric 回转采样出球（XY 直径≈0.2）', near(size.x, 0.2, 0.01) && near(size.y, 0.2, 0.01), `${size.x.toFixed(3)}x${size.y.toFixed(3)}`);
+  check('parametric 球轴向直径≈0.2', near(size.z, 0.2, 0.01), size.z.toFixed(3));
+  check('parametric 球有向体积>0（封闭可布尔）', signedVolume(geo) > 0, signedVolume(geo).toFixed(5));
+  geo.dispose();
+
+  // 改参数 R 后几何跟着变——这正是「前端手动改参数」的核心
+  const changed = updateSolidFeatureField(ball, 'shape.params.R', 0.2);
+  const geo2 = buildSolidGeometry([changed]);
+  geo2.computeBoundingBox();
+  const size2 = geo2.boundingBox!.getSize(new Vector3());
+  check('改 params.R 后球直径翻倍（参数可编辑）', near(size2.x, 0.4, 0.02), size2.x.toFixed(3));
+  geo2.dispose();
+  check('updateSolidFeatureField 不越界改坏 params', (changed.shape as any).params.R === 0.2 && (changed.shape as any).params !== (ball.shape as any).params);
+
+  // 面板字段：每个参数变量一个滑块 + 采样分段
+  const groups = solidFeatureGroups(ball);
+  const keys = groups.flatMap((groupItem) => groupItem.fields.map((field) => field.key));
+  check('面板暴露 shape.params.R 滑块', keys.includes('shape.params.R'), keys.join(','));
+  check('滑块范围来自 paramRanges', groups.flatMap((g) => g.fields).find((f) => f.key === 'shape.params.R')?.min === 0.02);
+
+  // 曲面模式：马鞍面 z=u²-v²，采样成网格
+  const saddle: SolidFeature = {
+    id: 'pa2', label: '马鞍面', mode: 'add',
+    shape: {
+      shape: 'parametric', kind: 'surface',
+      x: '(u-0.5)*0.4', y: '(v-0.5)*0.4', z: '0.1*((u-0.5)^2-(v-0.5)^2)',
+      params: {}, segments: 24, rings: 24,
+    },
+  } as SolidFeature;
+  const saddleGeo = buildSolidGeometry([saddle]);
+  saddleGeo.computeBoundingBox();
+  const saddleSize = saddleGeo.boundingBox!.getSize(new Vector3());
+  check('parametric surface 采样出曲面（XY≈0.4）', near(saddleSize.x, 0.4, 0.01) && near(saddleSize.y, 0.4, 0.01), `${saddleSize.x.toFixed(3)}x${saddleSize.y.toFixed(3)}`);
+  check('parametric surface 有 Z 起伏', saddleSize.z > 0.01, saddleSize.z.toFixed(3));
+  saddleGeo.dispose();
+}
+{
+  // 服务端归一化：好方程通过，坏方程当场打回
+  const { document } = applyOps(createProject({ name: 'parametric 校验' }), [
+    { op: 'addSolid', features: [{ shape: 'parametric', kind: 'revolve', radius: 'R*sin(PI*t)', height: 'H*t', params: { R: 0.1, H: 0.2 }, label: '花瓶' }] },
+  ]);
+  const shape = (document.elements[0] as any).primitive.features[0].shape;
+  check('parametric 通过服务端校验并保留方程', shape.shape === 'parametric' && shape.radius === 'R*sin(PI*t)', JSON.stringify(shape));
+
+  // 扁平写法下 kind:'surface' 不能被 FEATURE_KEYS 过滤掉（否则 surface 被误判成 revolve 要 radius）
+  const { document: surfDoc } = applyOps(createProject({ name: 'parametric surface 校验' }), [
+    { op: 'addSolid', features: [{ shape: 'parametric', kind: 'surface', x: 'u*0.4', y: 'v*0.4', z: '0.02*u', params: {} }] },
+  ]);
+  const surfShape = (surfDoc.elements[0] as any).primitive.features[0].shape;
+  check('扁平写法的 kind:surface 被正确保留', surfShape.shape === 'parametric' && surfShape.kind === 'surface' && surfShape.x === 'u*0.4', JSON.stringify(surfShape));
+
+  let rejected = false;
+  try {
+    applyOps(createProject({ name: '坏方程' }), [
+      { op: 'addSolid', features: [{ shape: 'parametric', kind: 'revolve', radius: 'MISSING*t', height: 'H*t', params: { H: 0.2 } }] },
+    ]);
+  } catch {
+    rejected = true;
+  }
+  check('parametric 引用未声明变量被服务端打回', rejected);
+}
+
+console.log('通用网格图元 mesh（OCP 三角化的兜底出口）');
+{
+  // 一个最小四面体：4 顶点、4 三角面
+  const tetra: SolidFeature = {
+    id: 'me1', label: '网格四面体', mode: 'add',
+    shape: {
+      shape: 'mesh',
+      positions: [0, 0, 0, 0.1, 0, 0, 0, 0.1, 0, 0, 0, 0.1],
+      indices: [0, 2, 1, 0, 1, 3, 1, 2, 3, 2, 0, 3],
+    },
+  } as SolidFeature;
+  const geo = buildSolidGeometry([tetra]);
+  check('mesh 构造出 4 个三角面', Math.floor((geo.index?.count ?? geo.getAttribute('position').count) / 3) === 4);
+  geo.dispose();
+  const { document } = applyOps(createProject({ name: 'mesh 校验' }), [
+    { op: 'addSolid', features: [{ shape: 'mesh', positions: [0, 0, 0, 1, 0, 0, 0, 1, 0], indices: [0, 1, 2], label: '导入体' }] },
+  ]);
+  check('mesh 通过服务端校验', (document.elements[0] as any).primitive.features[0].shape.shape === 'mesh');
+  let rejected = false;
+  try {
+    applyOps(createProject({ name: '坏网格' }), [
+      { op: 'addSolid', features: [{ shape: 'mesh', positions: [0, 0, 0, 1, 0, 0, 0, 1, 0], indices: [0, 1, 99] }] },
+    ]);
+  } catch {
+    rejected = true;
+  }
+  check('mesh 索引越界被服务端打回', rejected);
+}
+
 if (failures.length) {
   console.error(`\n造型测试失败 ${failures.length} 项：`);
   failures.forEach((failure) => console.error(` - ${failure}`));

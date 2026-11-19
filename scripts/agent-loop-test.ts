@@ -86,6 +86,28 @@ function scripted(decisions: AgentDecision[]) {
   check('统计到 3 张截图', run.shots === 3, run.shots);
 }
 
+// ── 2c. 第二轮又改了但没要求看 → 仍要补拍复核（旧逻辑只在首轮补拍，漏掉这次修改）──
+{
+  const { plan, calls } = scripted([
+    { reply: '初稿', ops: [{ op: 'addSolid' }] },
+    { reply: '修一处', ops: [{ op: 'editFeature' }] }, // 第2轮又改，但没 inspect 也没 finish
+    { reply: '这次看清楚了', done: true },
+  ]);
+  let inspectCount = 0;
+  const run = await runAgentLoop(first, {
+    goal: '做一个带网罩的电风扇',
+    plan,
+    apply: async () => ({ note: '已应用' }),
+    inspect: async (views) => { inspectCount += 1; return views.map((v) => shot(v.label)); },
+    stopped: () => false,
+  });
+  check('第2轮修改后继续闭环而非 no-action', run.reason === 'done' && run.steps === 3, run);
+  check('每轮 apply 后各补拍一次（共2次）', inspectCount === 2, inspectCount);
+  check('第2轮也收到自检图', calls[1]?.images.length === 3, calls[1]?.images.length);
+  check('补拍回执引导用 anomalies 体检', calls[1]?.text.includes('anomalies'), calls[1]?.text?.slice(-200));
+  check('共落地2次、截图6张', run.applied === 2 && run.shots === 6, run);
+}
+
 // ── 3. 完整闭环：改 → 看 → 改 → 看 → 确认 ─────────────────────
 {
   const { plan, calls } = scripted([
@@ -166,6 +188,9 @@ function scripted(decisions: AgentDecision[]) {
   check('已停止时一次都不发请求', idleRun.reason === 'stopped' && planCalls === 0, { idleRun, planCalls });
 }
 
+// 默认上限要足够复杂造型收敛（护网/曲面罩常要 6~10 步），不能被卡在 5 步
+check('默认步数上限足够收敛', MAX_AGENT_STEPS >= 8, MAX_AGENT_STEPS);
+
 // ── 5. 步数上限：一直想看也不放过 ──────────────────────────────
 {
   const parade = [front, right, iso, { view: 'top' as const, label: '俯视' }, { view: 'bottom' as const, label: '仰视' }];
@@ -179,9 +204,11 @@ function scripted(decisions: AgentDecision[]) {
     apply: async () => ({ note: '' }),
     inspect: async () => [shot('视图')],
     stopped: () => false,
+    // 这组测试只排了 5 个不同视角，固定 5 步测「跑满即停」，不受默认上限调大的影响
+    maxSteps: 5,
   });
-  check('跑满步数上限就停', run.reason === 'max-steps' && run.steps === MAX_AGENT_STEPS, run);
-  check('模型调用次数等于上限', step === MAX_AGENT_STEPS, step);
+  check('跑满步数上限就停', run.reason === 'max-steps' && run.steps === 5, run);
+  check('模型调用次数等于上限', step === 5, step);
 }
 
 // ── 6. 打转：反复要同样的视角却什么都不改 ───────────────────────
@@ -207,6 +234,8 @@ function scripted(decisions: AgentDecision[]) {
     apply: async () => ({ note: '' }),
     inspect: async () => [shot('视图')],
     stopped: () => false,
+    // 同样固定 5 步：5 个视角各看一次就到顶，用来验证「视角在变不算打转」
+    maxSteps: 5,
   });
   check('视角在变就不算打转', varied.reason === 'max-steps', varied);
 }
@@ -399,6 +428,16 @@ function scripted(decisions: AgentDecision[]) {
   check('没有测量结果不得声称测量', text.includes('不要声称已经测量'));
   const withMeasure = stepPrompt({ step: 2, maxSteps: 5, goal: 'x', shots: [], measureText: '[几何测量结果] 示例' });
   check('测量结果文字被带进提示', withMeasure.includes('[几何测量结果] 示例'), withMeasure);
+  // 追问不能顶替需求原话：锚点始终是第一条真实需求
+  const followUp = stepPrompt({
+    step: 4, maxSteps: 12, goal: '继续', originalGoal: '创建一个落地式电风扇',
+    shots: [], criteria: ['前后护网是弧形罩'],
+  });
+  check('追问时复述的是需求锚点而非「继续」', followUp.includes('需求原话始终是：「创建一个落地式电风扇」'), followUp);
+  check('追问被明确标成继续指令', followUp.includes('这是让我继续改的指令，不是新需求'), followUp);
+  check('追问时仍带验收清单', followUp.includes('前后护网是弧形罩'), followUp);
+  const plain = stepPrompt({ step: 1, maxSteps: 12, goal: '做一个螺丝刀', shots: [] });
+  check('无锚点时回退到当前需求', plain.includes('做一个螺丝刀') && !plain.includes('继续改的指令'), plain);
   const last = stepPrompt({ step: 5, maxSteps: 5, goal: 'x', shots: [] });
   check('最后一步给出收敛提示', last.includes('最后一步'), last);
   check('最后一步不得假装完成', last.includes('明确说明未完成'));
@@ -513,6 +552,67 @@ function scripted(decisions: AgentDecision[]) {
     stopped: () => false,
   });
   check('done 与 measure 同轮：先量完再收工', mixedRun.reason === 'done' && mixedRun.steps === 2, mixedRun);
+}
+
+// ── 16. 验收清单：首轮生成，后续逐项回灌 ───────────────────────
+{
+  const criteria = ['护网沿风扇轴向前后凸出', '护网包住扇叶'];
+  const { plan, calls } = scripted([
+    { reply: '建好了', ops: [{ op: 'addSolid' }], criteria },
+    { reply: '清单两项都核对了', done: true },
+  ]);
+  const run = await runAgentLoop(first, {
+    goal: '做一个带弧形护网的电风扇',
+    plan,
+    apply: async () => ({ note: '已应用' }),
+    inspect: async (views) => views.map((view) => shot(view.label)),
+    stopped: () => false,
+  });
+  check('首轮验收清单被记录', run.reason === 'done' && run.criteria.join('|') === criteria.join('|'), run);
+  check('自检回执里逐项列出验收清单', calls[1]?.text.includes('验收清单') && criteria.every((item) => calls[1]?.text.includes(item)), calls[1]?.text?.slice(0, 500));
+  check('提示词要求未全过不得收工', Boolean(calls[1]?.text.includes('未全过不得写 done')), calls[1]?.text?.slice(0, 500));
+}
+
+// ── 17. 独立验收：驳回后继续改，反复驳回则明确停下 ──────────────
+{
+  const criteria = ['护网是带弧度的罩子'];
+  const { plan, calls } = scripted([
+    { reply: '建好了', ops: [{ op: 'addSolid' }], criteria },
+    { reply: '我觉得可以了', done: true },
+    { reply: '还是可以了', done: true },
+  ]);
+  const seen: number[] = [];
+  const run = await runAgentLoop(first, {
+    goal: '做带弧度护网的风扇',
+    plan,
+    apply: async () => ({ note: '已应用' }),
+    inspect: async (views) => views.map((view) => shot(view.label)),
+    verify: async ({ images, step }) => {
+      seen.push(step);
+      check('独立验收拿到补拍图', images.length === 3, images.length);
+      return { pass: false, failures: ['护网仍是平面圆盘，未收口'] };
+    },
+    stopped: () => false,
+  });
+  check('独立验收驳回后不直接 done', run.reason === 'verify-failed' && run.verifyFailures === 2, run);
+  check('验收被调用了两次', seen.length === 2, seen);
+  check('失败项回灌给模型继续改', Boolean(calls[2]?.text.includes('平面圆盘')), calls[2]?.text?.slice(0, 500));
+}
+{
+  const { plan } = scripted([
+    { reply: '建好了', ops: [{ op: 'addSolid' }], criteria: ['护网包住叶片'] },
+    { reply: '逐项核对通过', done: true },
+  ]);
+  let verified = 0;
+  const run = await runAgentLoop(first, {
+    goal: '做带护网的风扇',
+    plan,
+    apply: async () => ({ note: '已应用' }),
+    inspect: async (views) => views.map((view) => shot(view.label)),
+    verify: async () => { verified += 1; return { pass: true, failures: [] }; },
+    stopped: () => false,
+  });
+  check('独立验收通过后才 done', run.reason === 'done' && verified === 1 && run.verifyFailures === 0, run);
 }
 
 console.log(failed === 0 ? '\n自检闭环测试全部通过' : `\n自检闭环测试失败：${failed} 项`);

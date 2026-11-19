@@ -7,6 +7,7 @@
  */
 import crypto from 'node:crypto';
 import { normalizeHexColor, resolveSolidMaterial, solidMaterialKey, solidMaterialLabel } from '../../shared/materials.js';
+import { evaluateFormula, formulaReferences } from '../../shared/formula.js';
 import { OpsError } from './errors.js';
 
 export const SOLID_LIMITS = {
@@ -18,6 +19,7 @@ export const SOLID_LIMITS = {
   // 阵列单特征实例上限。原先 64，一排 90 个舷窗得拆成 4 个特征；192 够一整排写完。
   patternCount: 192,
   sections: 24,
+  profileSteps: 128,
 };
 
 /** 单位米；单个尺寸上限 500 m，防模型把单位写错（如把 mm 当 m）后生成超大实体 */
@@ -36,11 +38,14 @@ const SHAPE_KINDS = new Set([
   'ellipsoid',
   'cone',
   'torus',
+  'grille',
   'prism',
   'revolve',
   'loft',
   'sweep',
   'hull',
+  'mesh',
+  'parametric',
   'tiles',
   'ballPanels',
   'group',
@@ -56,11 +61,14 @@ const SHAPE_LABELS = {
   ellipsoid: '椭球',
   cone: '圆锥/圆台',
   torus: '圆环',
+  grille: '穹顶网罩',
   prism: '拉伸轮廓',
   revolve: '旋转体',
   loft: '放样',
   sweep: '扫掠',
   hull: '凸包',
+  mesh: '自定义网格',
+  parametric: '参数方程',
   tiles: '瓦面',
   ballPanels: '皮革拼球',
   group: '子特征组',
@@ -100,10 +108,14 @@ const fail = (message) => {
  */
 function shapeSpecOf(feature, label) {
   const raw = feature.shape;
+  // parametric 用 kind 区分 revolve/surface：扁平写法下它须作为形状字段进 spec，
+  // 不能被下面的 FEATURE_KEYS（kind 本是 feature 级别名）过滤掉。
+  const keepKind = raw === 'parametric' || feature.kind === 'parametric';
+  const entryAllowed = (key) => !FEATURE_KEYS.has(key) || (keepKind && key === 'kind');
   if (typeof raw === 'string') {
     const spec = { shape: raw };
     for (const [key, value] of Object.entries(feature)) {
-      if (!FEATURE_KEYS.has(key)) spec[key] = value;
+      if (entryAllowed(key)) spec[key] = value;
     }
     if (Array.isArray(feature.features)) spec.features = feature.features;
     return spec;
@@ -117,7 +129,7 @@ function shapeSpecOf(feature, label) {
   if (typeof kind === 'string') {
     const spec = { shape: kind };
     for (const [key, value] of Object.entries(feature)) {
-      if (!FEATURE_KEYS.has(key)) spec[key] = value;
+      if (entryAllowed(key)) spec[key] = value;
     }
     if (Array.isArray(feature.features)) spec.features = feature.features;
     return spec;
@@ -463,6 +475,28 @@ function normalizeShape(shape, label, depth, counter) {
         segments: segments(shape.segments, `${label}.segments`),
         tubeSegments: segments(shape.tubeSegments, `${label}.tubeSegments`, 12),
       };
+    case 'grille': {
+      const radius = size(shape.radius, `${label}.radius`);
+      const ringsRaw = Math.round(Number(shape.rings ?? 5));
+      const spokesRaw = Math.round(Number(shape.spokes ?? 24));
+      const rings = Number.isFinite(ringsRaw) ? Math.min(8, Math.max(2, ringsRaw)) : 5;
+      const spokes = Number.isFinite(spokesRaw) ? Math.min(96, Math.max(0, spokesRaw)) : 24;
+      const wireDefault = Math.round(radius * 0.012 * 1e4) / 1e4;
+      const wire = shape.wire === undefined ? wireDefault : size(shape.wire, `${label}.wire`);
+      const innerDefault = Math.round(radius * 0.08 * 1e4) / 1e4;
+      const innerRadius = shape.innerRadius === undefined ? innerDefault : num(shape.innerRadius, `${label}.innerRadius`, { min: 0.001, max: radius * 0.6 });
+      return {
+        shape: 'grille',
+        radius,
+        depth: shape.depth === undefined ? 0.05 : num(shape.depth, `${label}.depth`, { min: -radius, max: radius }),
+        rings,
+        spokes,
+        wire: Math.min(wire, radius * 0.2),
+        innerRadius,
+        segments: segments(shape.segments, `${label}.segments`),
+        tubeSegments: segments(shape.tubeSegments, `${label}.tubeSegments`, 8),
+      };
+    }
     case 'prism':
       return {
         shape: 'prism',
@@ -600,6 +634,132 @@ function normalizeShape(shape, label, depth, counter) {
         dark: panelMaterial(shape.dark, `${label}.dark`, PANEL_MATERIAL_DEFAULTS.dark),
         core: panelMaterial(shape.core, `${label}.core`, PANEL_MATERIAL_DEFAULTS.core),
       };
+    }
+    case 'mesh': {
+      // 通用三角网格：AI 在 Python 里三角化导出的实体。这里守住数量、索引范围与坐标有限性，
+      // 避免坏数据把浏览器卡死 / CSG 求值时抛异常。前端内核会再做一次防御性过滤。
+      const MAX_VERTICES = 12000;
+      const MAX_TRIANGLES = 24000;
+      const rawPos = shape.positions;
+      if (!Array.isArray(rawPos) || rawPos.length < 9 || rawPos.length % 3 !== 0) {
+        fail(`${label}.positions 必须是扁平 [x,y,z,...] 数组，至少 3 个顶点`);
+      }
+      if (rawPos.length / 3 > MAX_VERTICES) {
+        fail(`${label}.positions 顶点数 ${rawPos.length / 3} 超过上限 ${MAX_VERTICES}；请降低三角化精度`);
+      }
+      const positions = [];
+      for (let i = 0; i < rawPos.length; i += 1) {
+        const value = Number(rawPos[i]);
+        if (!Number.isFinite(value) || Math.abs(value) > MAX_COORD) {
+          fail(`${label}.positions[${i}] 不是有限坐标（${rawPos[i]}）`);
+        }
+        positions.push(value);
+      }
+      const vertexCount = positions.length / 3;
+      const rawIndex = shape.indices;
+      if (!Array.isArray(rawIndex) || rawIndex.length < 3 || rawIndex.length % 3 !== 0) {
+        fail(`${label}.indices 必须是三角面索引 [a,b,c,...] 数组`);
+      }
+      if (rawIndex.length / 3 > MAX_TRIANGLES) {
+        fail(`${label}.indices 三角面数 ${rawIndex.length / 3} 超过上限 ${MAX_TRIANGLES}；请降低三角化精度`);
+      }
+      const indices = [];
+      for (let i = 0; i < rawIndex.length; i += 1) {
+        const idx = Number(rawIndex[i]);
+        if (!Number.isInteger(idx) || idx < 0 || idx >= vertexCount) {
+          fail(`${label}.indices[${i}] = ${rawIndex[i]} 越界（顶点数 ${vertexCount}）`);
+        }
+        indices.push(idx);
+      }
+      const result = { shape: 'mesh', positions, indices };
+      if (Array.isArray(shape.normals)) {
+        if (shape.normals.length !== positions.length) {
+          fail(`${label}.normals 长度 ${shape.normals.length} 必须等于 positions 长度 ${positions.length}`);
+        }
+        const normals = shape.normals.map((value, i) => {
+          const parsed = Number(value);
+          if (!Number.isFinite(parsed)) fail(`${label}.normals[${i}] 不是有限数值`);
+          return parsed;
+        });
+        result.normals = normals;
+      }
+      return result;
+    }
+    case 'parametric': {
+      // 参数方程图元：用同一份安全公式引擎对方程试算，语法错 / 引用未声明变量在这里当场打回，
+      // 不让 AI 带着一条算不出的方程进下一轮。前端采样与这里共用 evaluateFormula，结果一致。
+      const kind = shape.kind === 'surface' ? 'surface' : 'revolve';
+      const params = shape.params;
+      if (!params || typeof params !== 'object' || Array.isArray(params)) {
+        fail(`${label}.params 必须是 { 变量名: 数值 } 字典，例如 { "R": 0.2, "H": 0.35 }`);
+      }
+      const variables = {};
+      for (const [name, value] of Object.entries(params)) {
+        if (!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(name)) {
+          fail(`${label}.params 变量名「${name}」不合法：只能用字母 / 数字 / 下划线，且以字母开头`);
+        }
+        const parsed = Number(value);
+        if (!Number.isFinite(parsed) || Math.abs(parsed) > MAX_SIZE) {
+          fail(`${label}.params.${name} 必须是有限数值（绝对值 ≤ ${MAX_SIZE}）`);
+        }
+        variables[name] = parsed;
+      }
+      const KW = new Set(['t', 'u', 'v']);
+      const exprs = kind === 'surface'
+        ? { x: shape.x, y: shape.y, z: shape.z }
+        : { radius: shape.radius, height: shape.height };
+      const result = { shape: 'parametric', kind, params: variables };
+      for (const [key, expr] of Object.entries(exprs)) {
+        if (typeof expr !== 'string' || !expr.trim()) {
+          fail(`${label}.${key} 缺少方程字符串（例如 "R*sin(PI*t)"）`);
+        }
+        if (expr.length > 400) fail(`${label}.${key} 方程过长（>400 字符）`);
+        // 在采样区间多个点试算：t=0/0.5/1 或 (u,v) 四角+中心，覆盖除零、开方域等边界
+        const probes = kind === 'surface'
+          ? [{ u: 0, v: 0 }, { u: 1, v: 0 }, { u: 0, v: 1 }, { u: 1, v: 1 }, { u: 0.5, v: 0.5 }]
+          : [{ t: 0 }, { t: 0.5 }, { t: 1 }];
+        for (const probe of probes) {
+          const evaluated = evaluateFormula(expr, { ...variables, ...probe });
+          if (!evaluated.ok) {
+            fail(`${label}.${key} 方程在 ${JSON.stringify(probe)} 处算不出：${evaluated.error}`);
+          }
+        }
+        const refs = formulaReferences(expr).filter((name) => !KW.has(name));
+        for (const ref of refs) {
+          if (!(ref in variables) && !/^(PI|pi|E|e)$/.test(ref)) {
+            fail(`${label}.${key} 引用了未声明的变量「${ref}」：请在 params 里给出它的值`);
+          }
+        }
+        result[key] = expr;
+      }
+      if (shape.paramRanges && typeof shape.paramRanges === 'object') {
+        const ranges = {};
+        for (const [name, range] of Object.entries(shape.paramRanges)) {
+          if (!(name in variables)) fail(`${label}.paramRanges.${name} 对应的变量不在 params 里`);
+          if (!Array.isArray(range) || range.length < 2 || range.length > 3) {
+            fail(`${label}.paramRanges.${name} 必须是 [min,max] 或 [min,max,step]`);
+          }
+          const lo = Number(range[0]);
+          const hi = Number(range[1]);
+          if (!Number.isFinite(lo) || !Number.isFinite(hi) || lo >= hi) {
+            fail(`${label}.paramRanges.${name} 的 [min,max] 必须是 min < max`);
+          }
+          const parsed = range.length === 3 ? Number(range[2]) : 0.01;
+          if (!Number.isFinite(parsed) || parsed <= 0) fail(`${label}.paramRanges.${name} 的步长必须为正数`);
+          ranges[name] = [lo, hi, parsed];
+        }
+        result.paramRanges = ranges;
+      }
+      if (kind === 'revolve') {
+        result.profileSteps = Math.min(SOLID_LIMITS.profileSteps ?? 128, Math.max(2, Math.round(Number(shape.profileSteps ?? 40))));
+        result.segments = segments(shape.segments, `${label}.segments`, 48);
+        result.angle = num(shape.angle ?? 360, `${label}.angle`, { min: -MAX_ANGLE, max: MAX_ANGLE });
+        result.capped = shape.capped !== false;
+      } else {
+        result.segments = segments(shape.segments, `${label}.segments`, 48);
+        result.rings = segments(shape.rings, `${label}.rings`, 24);
+      }
+      return result;
     }
     case 'group': {
       if (depth >= 2) fail(`${label} 子特征组最多嵌套 2 层`);
@@ -758,6 +918,8 @@ export function describeShape(shape) {
       return `cone(r${fixed(shape.radius)}→${fixed(shape.topRadius ?? 0)},h${fixed(shape.height)})`;
     case 'torus':
       return `torus(r${fixed(shape.radius)},tube${fixed(shape.tube)})`;
+    case 'grille':
+      return `grille(r${fixed(shape.radius)},深${fixed(shape.depth)},${shape.rings ?? 5}圈×${shape.spokes ?? 24}条,丝${fixed(shape.wire ?? shape.radius * 0.012)})`;
     case 'prism':
       return `prism(${shape.profile?.length ?? 0}点,h${fixed(shape.height)}${shape.twist ? `,twist${shape.twist}` : ''})`;
     case 'revolve':
@@ -768,6 +930,10 @@ export function describeShape(shape) {
       return `sweep(${shape.path?.length ?? 0}点路径)`;
     case 'hull':
       return `hull(${shape.points?.length ?? 0}点凸包)`;
+    case 'mesh':
+      return `mesh(${(shape.positions?.length ?? 0) / 3}顶点/${(shape.indices?.length ?? 0) / 3}面)`;
+    case 'parametric':
+      return `parametric(${shape.kind === 'surface' ? '曲面' : '回转'},${Object.keys(shape.params ?? {}).length}参数:${Object.keys(shape.params ?? {}).join(',')})`;
     case 'tiles':
       return `瓦面(${shape.rings?.length ?? 0}站,每面${shape.rows ?? 9}列×${shape.courses ?? 12}层)`;
     case 'ballPanels':

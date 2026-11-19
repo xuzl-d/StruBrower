@@ -27,6 +27,7 @@ import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js
 import { ConvexGeometry } from 'three/examples/jsm/geometries/ConvexGeometry.js';
 import { ADDITION, Brush, Evaluator, INTERSECTION, SUBTRACTION } from 'three-bvh-csg';
 import { resolveSolidMaterial, solidMaterialKey } from '../../shared/materials.js';
+import { evaluateFormula } from '../../shared/formula.js';
 import { buildBallPanelParts, DEFAULT_PANEL_MATERIALS } from './ball-panels';
 import type { LoftSection, RoofAttachment, SolidFeature, SolidMaterial, SolidPattern, SolidShape, Vec2, Vec3 } from './types';
 
@@ -41,6 +42,12 @@ export const SOLID_LIMITS = {
   // 提高到 192 之后一整排就能写完（多出来的实例只增加几何，特征数不变）。
   patternCount: 192,
   bodies: 420,
+  // 通用网格图元：AI 在 Python 里三角化导出的实体。顶点上限兼顾精度与浏览器性能
+  // （1.2 万顶点 ≈ 2.4 万三角面），单个特征树累计也受 bodies 限制。
+  meshVertices: 12000,
+  meshTriangles: 24000,
+  // 参数方程采样：每条母线的采样点、回转/曲面分段各自有上限，防止 AI 写 10000 段卡死浏览器
+  profileSteps: 128,
 } as const;
 
 const MIN_SIZE = 0.001;
@@ -413,6 +420,63 @@ function buildSweep(profile: Vec2[], path: Vec3[], closed = false, taper?: [numb
   return geometry;
 }
 
+/**
+ * 穹顶网罩（grille）：同心网圈 + 沿穹面曲线的径向护条，一次性生成镂空骨架。
+ *
+ * 之所以做成单一图元而不是让模型拼 sweep/torus：手抄几十个坐标极易偏心、护条戳出、
+ * 甚至用 loft 生成实心锅盖——风扇反复画错就栽在这里。这里把半径/罩深/圈数/条数
+ * 作为语义参数，穹面方程统一，天然同心对称、镂空，模型只需给几个数。
+ *
+ * 建模轴为 Z：外圈在 z=0，穹顶中心在 z=depth（depth<0 则向 -Z 凹）。
+ * 网圈半径按 r=R·cos(t·π/2) 递减，z(r)=depth·(1-(r/R)²) 为抛物穹面；
+ * 护条沿同一穹面从外圈走到 innerRadius，并绕 Z 均布 spokes 根。
+ */
+function buildGrille(shape: Extract<SolidShape, { shape: 'grille' }>): BufferGeometry {
+  const radius = Math.max(MIN_SIZE, finite(shape.radius, 0.25));
+  const depth = finite(shape.depth, 0.05);
+  const rings = clamp(Math.round(finite(shape.rings, 5)), 2, 8);
+  const spokes = clamp(Math.round(finite(shape.spokes, 24)), 0, 96);
+  const wire = clamp(finite(shape.wire, radius * 0.012), MIN_SIZE / 2, radius * 0.2);
+  const inner = clamp(finite(shape.innerRadius, radius * 0.08), MIN_SIZE, radius * 0.6);
+  const seg = segments(shape.segments, 48);
+  const tubeSeg = segments(shape.tubeSegments, 8);
+
+  // 抛物穹面：半径 r 处的轴向位置
+  const zAt = (r: number) => depth * (1 - (r / radius) ** 2);
+
+  const parts: BufferGeometry[] = [];
+  // 同心网圈：外圈 r=R(z=0) → 内圈 r=R·cos(π/2)=0 附近；最后补一个中心环。
+  for (let i = 0; i < rings; i += 1) {
+    const t = i / (rings - 1);
+    const r = Math.max(wire, radius * Math.cos((t * Math.PI) / 2));
+    const ring = new TorusGeometry(r, wire, tubeSeg, seg);
+    ring.translate(0, 0, zAt(r));
+    parts.push(ring);
+  }
+
+  // 径向护条：沿穹面从外圈走到 inner，绕 Z 均布。每根走同一条穹面曲线。
+  if (spokes > 0) {
+    const steps = 7;
+    const path: Vec3[] = [];
+    for (let s = 0; s < steps; s += 1) {
+      const r = radius - ((radius - inner) * s) / (steps - 1);
+      path.push([r, 0, zAt(r)]);
+    }
+    const half = wire * 0.8;
+    const profile: Vec2[] = [[-half, -half], [half, -half], [half, half], [-half, half]];
+    for (let k = 0; k < spokes; k += 1) {
+      const angle = (k / spokes) * Math.PI * 2;
+      const bar = buildSweep(profile, path, false);
+      bar.rotateZ(angle);
+      parts.push(bar);
+    }
+  }
+
+  const merged = mergeGeometries(parts.map(normalizeSolid), false) ?? new BufferGeometry();
+  parts.forEach((part) => part.dispose());
+  return merged;
+}
+
 function buildRevolve(profile: Vec2[], seg: number, angle = 360): BufferGeometry {
   const raw = (Array.isArray(profile) ? profile : [])
     .filter((point) => Array.isArray(point) && point.length >= 2)
@@ -619,6 +683,132 @@ function buildHull(points: Vec3[]): BufferGeometry {
   } catch {
     return new BufferGeometry();
   }
+}
+
+/**
+ * 通用三角网格：直接吃扁平顶点 / 索引，构造可参与变换、阵列与 CSG 的几何。
+ *
+ * 服务端已校验数量、索引范围与坐标有限性；这里再做防御性过滤，避免旧文档或
+ * 手工塞进来的坏数据把浏览器卡死。保留 B-rep 三角化带来的平滑法线（若提供）。
+ */
+function buildMesh(shape: Extract<SolidShape, { shape: 'mesh' }>): BufferGeometry {
+  const rawPos = Array.isArray(shape.positions) ? shape.positions : [];
+  const pos: number[] = [];
+  for (let index = 0; index + 2 < rawPos.length && pos.length / 3 < SOLID_LIMITS.meshVertices; index += 3) {
+    const x = finite(rawPos[index], NaN);
+    const y = finite(rawPos[index + 1], NaN);
+    const z = finite(rawPos[index + 2], NaN);
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
+    pos.push(x, y, z);
+  }
+  const vertexCount = pos.length / 3;
+  if (vertexCount < 3) return new BufferGeometry();
+
+  const geometry = new BufferGeometry();
+  geometry.setAttribute('position', new Float32BufferAttribute(pos, 3));
+
+  const rawIndex = Array.isArray(shape.indices) ? shape.indices : [];
+  const index: number[] = [];
+  for (let i = 0; i + 2 < rawIndex.length && index.length / 3 < SOLID_LIMITS.meshTriangles; i += 3) {
+    const a = Math.trunc(finite(rawIndex[i], -1));
+    const b = Math.trunc(finite(rawIndex[i + 1], -1));
+    const c = Math.trunc(finite(rawIndex[i + 2], -1));
+    if (a < 0 || b < 0 || c < 0 || a >= vertexCount || b >= vertexCount || c >= vertexCount) continue;
+    if (a === b || b === c || a === c) continue;
+    index.push(a, b, c);
+  }
+  if (index.length >= 3) geometry.setIndex(index);
+
+  // B-rep 三角化时算好的平滑法线要保留（normalizeSolid 只在缺失时才 computeVertexNormals）
+  const rawNormal = Array.isArray(shape.normals) ? shape.normals : [];
+  if (rawNormal.length >= pos.length) {
+    const normals: number[] = [];
+    for (let i = 0; i < pos.length && normals.length < pos.length; i += 1) {
+      normals.push(finite(rawNormal[i], 0));
+    }
+    if (normals.length === pos.length) geometry.setAttribute('normal', new Float32BufferAttribute(normals, 3));
+  }
+  return geometry;
+}
+
+/**
+ * 参数方程图元：把 AI 写的方程在前端实时采样成几何。
+ *
+ * 用共享的安全公式引擎（shared/formula.js，无 eval）——它和约束系统、服务端校验是同一份实现，
+ * 所以「服务端说这条方程合法」和「浏览器采样出来的形状」绝不会各算各的。
+ *
+ * revolve：在 t∈[0,1] 上采样 (r(t), z(t)) 当母线，交给 LatheGeometry 回转；
+ *          母线首尾若贴近轴（r≈0）就自然收口成封闭实体，可直接参与 CSG 布尔。
+ * surface：在 (u,v)∈[0,1]² 上采样 (x,y,z) 成规则网格；开放曲面只用于「加」出薄壳类外观。
+ */
+function buildParametric(shape: Extract<SolidShape, { shape: 'parametric' }>): BufferGeometry {
+  const params = shape.params && typeof shape.params === 'object' ? shape.params : {};
+  const evalAt = (expr: string | undefined, vars: Record<string, number>): number => {
+    if (typeof expr !== 'string' || !expr.trim()) return 0;
+    const result = evaluateFormula(expr, { ...params, ...vars });
+    return result.ok ? result.value : 0;
+  };
+
+  if (shape.kind === 'surface') {
+    const uSeg = clamp(Math.round(finite(shape.segments, 48)), 4, SOLID_LIMITS.profileSteps);
+    const vSeg = clamp(Math.round(finite(shape.rings, 24)), 4, SOLID_LIMITS.profileSteps);
+    const columns = uSeg + 1;
+    const rows = vSeg + 1;
+    const pos: number[] = [];
+    for (let j = 0; j < rows; j += 1) {
+      const v = vSeg === 0 ? 0 : j / vSeg;
+      for (let i = 0; i < columns; i += 1) {
+        const u = uSeg === 0 ? 0 : i / uSeg;
+        pos.push(
+          evalAt(shape.x, { u, v }),
+          evalAt(shape.y, { u, v }),
+          evalAt(shape.z, { u, v }),
+        );
+      }
+    }
+    const index: number[] = [];
+    for (let j = 0; j < vSeg; j += 1) {
+      for (let i = 0; i < uSeg; i += 1) {
+        const a = j * columns + i;
+        const b = a + 1;
+        const c = a + columns;
+        const d = c + 1;
+        index.push(a, c, b, b, c, d);
+      }
+    }
+    const geometry = new BufferGeometry();
+    geometry.setAttribute('position', new Float32BufferAttribute(pos, 3));
+    if (index.length) geometry.setIndex(index);
+    geometry.computeVertexNormals();
+    return geometry;
+  }
+
+  // revolve（默认）：采样母线后回转
+  const steps = clamp(Math.round(finite(shape.profileSteps, 40)), 2, SOLID_LIMITS.profileSteps);
+  const profile: Vec2[] = [];
+  for (let i = 0; i <= steps; i += 1) {
+    const t = i / steps;
+    const radius = Math.max(0, evalAt(shape.radius, { t }));
+    const height = evalAt(shape.height, { t });
+    profile.push([radius, height]);
+  }
+
+  // 补平盖：母线首尾不在轴上时，LatheGeometry 会留下开口；加一圈到轴心的母线把口收上
+  if (shape.capped !== false) {
+    const first = profile[0];
+    const last = profile[profile.length - 1];
+    if (first && first[0] > 1e-6) profile.unshift([0, first[1]]);
+    if (last && last[0] > 1e-6) profile.push([0, last[1]]);
+  }
+
+  if (profile.length < 2) return new BufferGeometry();
+  const seg = clamp(Math.round(finite(shape.segments, 48)), 6, SOLID_LIMITS.segments);
+  const angle = finite(shape.angle, 360);
+  const closed = Math.abs(angle) >= 359.9;
+  const phiLength = closed ? Math.PI * 2 : (clamp(angle, 1, 360) * Math.PI) / 180;
+  // LatheGeometry 要的是 Vector2 实例（读 .x/.y），直接传 [r,h] 数组会得到 NaN
+  const points = profile.map(([radius, height]) => new Vector2(radius, height));
+  return new LatheGeometry(points, seg, 0, phiLength).rotateX(Math.PI / 2);
 }
 
 /* ---------- 瓦面：逐片铺板瓦 + 筒瓦 ---------- */
@@ -1777,6 +1967,8 @@ function buildShape(shape: SolidShape, context?: ShapeContext): BufferGeometry {
       const tube = Math.max(MIN_SIZE / 2, finite(shape.tube, 0.02));
       return new TorusGeometry(radius, tube, Math.max(6, Math.round(segments(shape.tubeSegments, 12))), segments(shape.segments, 32));
     }
+    case 'grille':
+      return buildGrille(shape);
     case 'prism':
       return buildPrism(
         shape.profile,
@@ -1803,6 +1995,10 @@ function buildShape(shape: SolidShape, context?: ShapeContext): BufferGeometry {
     }
     case 'hull':
       return buildHull(shape.points);
+    case 'mesh':
+      return buildMesh(shape);
+    case 'parametric':
+      return buildParametric(shape);
     case 'tiles':
       return buildTiles(shape);
     case 'ballPanels':
@@ -2415,11 +2611,14 @@ export const SOLID_SHAPE_LABELS: Record<SolidShape['shape'], string> = {
   ellipsoid: '椭球',
   cone: '圆锥 / 圆台',
   torus: '圆环',
+  grille: '穹顶网罩',
   prism: '拉伸轮廓',
   revolve: '旋转体',
   loft: '放样',
   sweep: '扫掠',
   hull: '凸包',
+  mesh: '自定义网格',
+  parametric: '参数方程',
   tiles: '瓦面',
   ballPanels: '皮革拼球',
   group: '子装配',
@@ -2499,6 +2698,39 @@ export function solidFeatureGroups(feature: SolidFeature): SolidFieldGroup[] {
     case 'hull':
       size.push(countField('shape.points', '点数', shape.points.length, 4, SOLID_LIMITS.hullPoints));
       break;
+    case 'parametric': {
+      size.push(countField('shape.profileSteps', '母线采样', finite(shape.profileSteps, 40), 2, SOLID_LIMITS.profileSteps));
+      if (shape.kind === 'surface') {
+        size.push(
+          countField('shape.segments', 'U 分段', finite(shape.segments, 48), 4, SOLID_LIMITS.profileSteps),
+          countField('shape.rings', 'V 分段', finite(shape.rings, 24), 4, SOLID_LIMITS.profileSteps),
+        );
+      } else {
+        size.push(
+          countField('shape.segments', '环向分段', finite(shape.segments, 48), 6, SOLID_LIMITS.segments),
+          angleField('shape.angle', '回转角', finite(shape.angle, 360)),
+        );
+      }
+      // 每个方程变量一个滑块：[min,max] 或 [min,max,step]；缺省按初值给 ±50% 范围
+      const params = shape.params && typeof shape.params === 'object' ? shape.params : {};
+      const ranges = shape.paramRanges ?? {};
+      for (const [name, value] of Object.entries(params)) {
+        if (!Number.isFinite(value)) continue;
+        const range = ranges[name];
+        const lo = Array.isArray(range) ? finite(range[0], value * 0.5) : value * 0.5;
+        const hi = Array.isArray(range) ? finite(range[1], value * 1.5 || value + 0.1) : (value === 0 ? value + 0.1 : value * 1.5);
+        const step = Array.isArray(range) && range.length > 2 ? finite(range[2], 0.01) : 0.01;
+        size.push({
+          key: `shape.params.${name}`,
+          label: `参数 ${name}`,
+          value,
+          min: Math.min(lo, value),
+          step: Math.abs(step) < 1e-6 ? 0.01 : Math.abs(step),
+          unit: '',
+        });
+      }
+      break;
+    }
     case 'cylinder':
     case 'sphere':
       size.push(lengthField('shape.radius', '半径', shape.radius));
@@ -2519,6 +2751,16 @@ export function solidFeatureGroups(feature: SolidFeature): SolidFieldGroup[] {
         lengthField('shape.tube', '管半径', shape.tube),
         countField('shape.segments', '环分段', finite(shape.segments, 32), 6, SOLID_LIMITS.segments),
         countField('shape.tubeSegments', '管分段', finite(shape.tubeSegments, 12), 6, SOLID_LIMITS.segments),
+      );
+      break;
+    case 'grille':
+      size.push(
+        lengthField('shape.radius', '罩半径', shape.radius),
+        lengthField('shape.depth', '罩深', shape.depth),
+        lengthField('shape.wire', '丝径', finite(shape.wire, shape.radius * 0.012)),
+        lengthField('shape.innerRadius', '内径', finite(shape.innerRadius, shape.radius * 0.08)),
+        countField('shape.rings', '网圈数', finite(shape.rings, 5), 2, 8),
+        countField('shape.spokes', '护条数', finite(shape.spokes, 24), 0, 96),
       );
       break;
     case 'prism':
@@ -2668,9 +2910,18 @@ export function updateSolidFeatureField(feature: SolidFeature, key: string, valu
   if (group !== 'shape') return feature;
 
   const shape = feature.shape as unknown as Record<string, unknown>;
+  // shape.params.<name>：参数方程图元的可调变量，写回嵌套字典（第三层是变量名，不是数组下标）
+  if (field === 'params' && axis) {
+    const params = shape.params && typeof shape.params === 'object' ? shape.params as Record<string, number> : {};
+    if (!Number.isFinite(value) || !(axis in params)) return feature;
+    return { ...feature, shape: { ...feature.shape, params: { ...params, [axis]: value } } as SolidShape };
+  }
   if (!(field in shape)) return feature;
   if (field === 'segments' || field === 'tubeSegments') {
     return { ...feature, shape: { ...feature.shape, [field]: clamp(Math.round(value), 6, SOLID_LIMITS.segments) } };
+  }
+  if (field === 'profileSteps' || field === 'rings') {
+    return { ...feature, shape: { ...feature.shape, [field]: clamp(Math.round(value), 4, SOLID_LIMITS.profileSteps) } as SolidShape };
   }
   if (field === 'taper') {
     return { ...feature, shape: { ...feature.shape, taper: clamp(value, 0.02, 20) } as SolidShape };

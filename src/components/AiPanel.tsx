@@ -641,6 +641,12 @@ export default function AiPanel({
   assembleRef.current = assembleMode;
   const conversationRef = useRef<string | null>(null);
   conversationRef.current = conversationId;
+  /**
+   * 会话的需求锚点：最初那条真实需求。AI 自检/验收都拿它当判定依据，
+   * 否则用户回一句「继续」「再改改」就被当成需求原话，模型会围着细节打转、永远判不了完成。
+   * 新开/切换会话时重置，载入历史时取第一条用户消息。
+   */
+  const anchorGoalRef = useRef('');
 
   /* ---------- 浮窗拖动 / 右侧停靠 ---------- */
   const panelRef = useRef<HTMLElement>(null);
@@ -882,7 +888,9 @@ export default function AiPanel({
       setConversationId(conversation.id);
       rememberConversation(conversation.id);
       setHistoryOpen(false);
-      setMessages((conversation.messages ?? []).filter((item) => !item.internal).map(toChatMessage));
+      const loaded = (conversation.messages ?? []).filter((item) => !item.internal).map(toChatMessage);
+      setMessages(loaded);
+      anchorGoalRef.current = loaded.find((item) => item.role === 'user')?.text ?? '';
       // 打开历史会话时先给一个估算占用（服务端不调模型算的），否则用户不知道该不该压缩
       setUsage(conversation.usage ?? null);
     } catch (caught) {
@@ -897,6 +905,7 @@ export default function AiPanel({
       rememberConversation(conversation.id);
       setMessages([]);
       setUsage(null);
+      anchorGoalRef.current = '';
       if (!silent) setHistoryOpen(false);
       setConversations((current) => [{
         id: conversation.id,
@@ -1365,6 +1374,8 @@ export default function AiPanel({
           : `本轮已结束（${tally}），未进行视觉复核。`;
       case 'apply-failed':
         return `修改未成功应用，AI 没有提供有效修正${run.error ? `：${run.error}` : '。'}`;
+      case 'verify-failed':
+        return `独立验收反复未通过，先停在这里（${tally}）。可以补一句具体差异让它接着改。`;
       case 'max-steps':
         return `已跑满 ${run.steps} 步还没收敛，先停在这里。回复「继续」可以接着改。`;
       case 'repeated':
@@ -1418,6 +1429,8 @@ export default function AiPanel({
       || (userImages.length ? '请参照这张图片把这个产品建出来（尺寸按图上比例估算）。' : '')
       || (userFiles.length ? '请参考这几个附件里的内容，把模型建出来。' : '');
     if (!content || busy) return;
+    // 会话还没有锚点 → 这条就是最初的真实需求；之后「继续」「再改改」都不再覆盖它
+    if (!anchorGoalRef.current) anchorGoalRef.current = content;
     setBusy(true);
     setCommandsOpen(false);
     stopRef.current = false;
@@ -1492,6 +1505,7 @@ export default function AiPanel({
 
       const run = await runAgentLoop(firstRound, {
         goal: content,
+        originalGoal: anchorGoalRef.current || undefined,
         referenceImages: userImages,
         referenceThumbs: userThumbs,
         plan: async (round) => {
@@ -1516,6 +1530,19 @@ export default function AiPanel({
           await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
           return runMeasure(docRef.current, requests);
         },
+        verify: async ({ goal: verifyGoal, criteria, images: verifyImages, measureText, step }) => {
+          setPhase(`第 ${step} 步：独立验收正在逐项核对…`);
+          try {
+            return await aiApi.verify(projectId, {
+              goal: verifyGoal,
+              criteria,
+              images: verifyImages,
+              measureText,
+            }, { conversationId: conversationRef.current });
+          } catch (error) {
+            return { pass: false, failures: [error instanceof Error ? error.message : '独立验收调用失败'] };
+          }
+        },
         callTool: async (name, args) => {
           setPhase(`第 ${roundNo} 步：正在查询建模资料（${name}）…`);
           const result = await aiApi.callTool(projectId, name, args);
@@ -1534,6 +1561,8 @@ export default function AiPanel({
         onStage: (stage) => {
           if (stage.type === 'measure') {
             setPhase(`第 ${stage.step} 步：已完成 ${stage.count} 项测量，正在判断…`);
+          } else if (stage.type === 'verify') {
+            setPhase(`第 ${stage.step} 步：独立验收${stage.pass ? '全部通过' : `驳回 ${stage.failures.length} 项`}，正在${stage.pass ? '收尾' : '继续修正'}…`);
           } else if (stage.type === 'tool') {
             setPhase(`第 ${stage.step} 步：${stage.ok ? '查到' : '未能查到'}${stage.title}，正在决策…`);
           } else if (stage.type === 'recall') {

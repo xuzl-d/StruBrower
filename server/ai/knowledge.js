@@ -44,6 +44,20 @@ const ALIASES = {
   '花瓶': { models: ['vase'], recipes: ['模型库'] },
   '弯管': { models: ['pipe'], recipes: ['模型库'] },
   '支架': { models: ['bracket'], recipes: ['模型库'] },
+  '电风扇': { recipes: ['验收清单与独立验收', '防护网 / 网罩'] },
+  '风扇': { recipes: ['验收清单与独立验收', '防护网 / 网罩'] },
+  '护网': { recipes: ['验收清单与独立验收', '防护网 / 网罩'] },
+  '防护网': { recipes: ['防护网 / 网罩'] },
+  '网罩': { recipes: ['防护网 / 网罩'] },
+  '罩子': { recipes: ['验收清单与独立验收', '防护网 / 网罩'] },
+  '锅盖': { recipes: ['防护网 / 网罩'] },
+  '包住': { recipes: ['验收清单与独立验收'] },
+  '方程': { recipes: ['参数方程造型'] },
+  '参数方程': { recipes: ['参数方程造型'] },
+  '公式': { recipes: ['参数方程造型'] },
+  '写不出': { recipes: ['参数方程造型'] },
+  '波纹': { recipes: ['参数方程造型'] },
+  '曲面': { recipes: ['参数方程造型'] },
 };
 
 let recipeCache = null;

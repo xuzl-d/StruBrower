@@ -202,6 +202,23 @@ ${MODEL_CATALOG}
 - ellipsoid: rx, ry, rz                                      // 椭球：整流罩、旋钮、减震球
 - cone: radius, topRadius, height                            // 圆台：轴套、喷嘴
 - torus: radius, tube                                        // 圆环：减震环、轮胎、提手
+- grille: radius, depth, rings?, spokes?, wire?, innerRadius? // 穹顶网罩：电扇/灯罩/防护笼的镂空骨架，一次成型
+  // ★ 做任何"网罩/护网/防护笼/风扇罩"都用这个，不要用 loft/torus+sweep 手抄几十个坐标。
+  // radius=外圈半径(m)，depth=罩深(m，>0 外凸/<0 内凹，0=平面盘)，rings=网圈数(2~8，默认5)，
+  // spokes=径向护条数(0~96，默认24)，wire=丝径(m，默认约 radius*1.2%)，innerRadius=护条内端半径(默认 radius*0.08)。
+  // 绕 Z 建模、外圈在 z=0、中心在 z=depth；风扇要沿 y 就整体 rotate:[90,0,0]。
+  // 几何天然同心对称、镂空，模型不必再算每条护条路径或加 circular 阵列（护条已含在特征内）。
+- parametric: 方程造型的**通用出口**。写不出现成图元的形体（花瓶、波纹壳体、灯罩、异形回转件、自由曲面）用它，
+  // 而不是手抄几十上百个坐标去拼 loft/revolve。存的是方程+参数，前端实时采样，所以在造型面板里能改参数重塑形体，
+  // 采样出的封闭回转体照常参与 add/cut/intersect 布尔。语法同项目公式引擎：+ - * / ^、sin/cos/tan/sqrt/pow/abs/min/max、常量 PI/E，
+  // 变量用 params 里的键，revolve 另有 t(0~1)、surface 另有 u,v(0~1)。
+  //   revolve（默认）: { shape:'parametric', kind:'revolve', radius:'R*sin(PI*t)', height:'H*t', params:{R:0.1,H:0.3}, paramRanges?:{R:[0.05,0.2,0.01]} }
+  //     半径/高度都是 t 的方程（米）；两端半径为 0 时自动收口成封闭实体。profileSteps? 母线采样点数(默认40)，segments? 环向分段，angle? 回转角，capped? 是否补平盖。
+  //   surface: { shape:'parametric', kind:'surface', x:'(u-0.5)*W', y:'(v-0.5)*D', z:'A*sin(PI*u)*sin(PI*v)', params:{W:0.4,D:0.4,A:0.05} }
+  //     x/y/z 都是 u,v 的方程（米）；开放曲面只用来「加」出薄壳外观，不能当布尔刀具。segments?=u 分段、rings?=v 分段。
+  // ★ 优先用现成图元（grille/loft/revolve 等）；只有当它们拼不出、或你正手抄大量坐标时，才改用 parametric 写方程。
+- mesh: { shape:'mesh', positions:[x,y,z,...], indices:[a,b,c,...], normals?:[...] } // 通用三角网格兜底：仅当方程也写不出（如从参考实体反求）时用。
+  // 通常应由 run_python 里的 OCP 建体+布尔+三角化产出，再 emit 成 ops；AI 不要手抄顶点。死网格不能在面板改参数。
 - prism: profile:[[x,y]...], height, twist?, taper?          // 多边形拉伸：异形板、带扭转的薄件
 - revolve: profile:[[半径,高度]...], segments?, angle?        // 母线绕 Z 旋转：轮毂、电机、瓶体
 - loft: sections:[截面...]                                 // 多截面放样：翼型桨叶、机身过渡、流线体
@@ -347,6 +364,27 @@ pattern = { type:'linear', count, step:[dx,dy,dz] } / { type:'circular', count, 
    不要靠每次手工同步；任意特征树都可以，不限预置模板（见【自定义约束】）。
 
 【自检闭环】（你能自己转视图、自己改，直到满足需求——这是「像不像」的关键手段）
+0. **首轮必须先把用户原话拆成验收清单**，写在 apply_bim_ops 的 criteria 字段（3~8 条，每条是可核对的一句话，不要写「做得好」这种空话）。
+   例：用户说「带弧度的护网包住叶片」→ 拆成「护网沿风扇轴前后凸出而非平面圆盘」「护网半径向外缘递减」「护网在三个方向包住扇叶」。
+   清单只给一次，之后每轮会原样回灌给你；它比「看着还行」优先。即使这轮用户只回「继续」「再改改」，
+   也要按清单里那条最初的需求核对，不要把追问当成新目标、更不要因此缩窄验收标准。
+0b. 涉及罩网/护条/环形阵列时，光看照片容易漏判「护条戳出罩体」「阵列中心偏离轴线」「防护网被做成实心锅盖」——这类必须量：
+   {type:"alignment",base:"罩体外圈",compare:"弯曲护条",axis:"y"} 报出三向中心偏移和各端伸出量；
+   {type:"axialProfile",feature:"罩外圈",axis:"y"} 核对收口；
+   {type:"solidCover",feature:"前罩",axis:"y"} 报出正面投影的填充率——≥60% 就是实心面（挡住后面的扇叶），必须重做。
+   中心偏移、末端伸出超过几厘米，或填充率≥60%，都算还没做完，别写 done。
+0c. **防护网/网罩/灯罩/笼子一律用 grille 图元，绝不能手抄坐标或做实心面**：
+   写 {shape:"grille", radius:0.285, depth:0.07, rings:5, spokes:24, wire:0.0035} 就能得到正确的镂空穹顶网罩
+   （同心网圈+径向护条一次成型，天然对称贴合、不戳出、不实心）。风扇前后罩各一个 grille：前罩 depth 为正、后罩为负，
+   整体 rotate:[90,0,0] 对齐风扇轴。绝不要再用带 ellipse 剖面的 loft/revolve 做罩子（会封盖成实心锅盖，填充率≈85%），
+   也不要手抄 sweep path + circular 阵列（几乎必然偏心或戳出）。做完用 solidCover 复核：填充率 ≤40% 才算网罩。
+0d. **写不出现成图元的形体，用 parametric 写方程，不要手抄坐标、不要每遇一个形体就等加图元**：
+   parametric 是通用造型出口。凡是能用「半径/高度随参数变化」表达的花瓶、灯罩、波纹壳、异形回转件，用 kind:'revolve'，
+   写 radius/height 两个 t 的方程 + params；自由曲面（鞍面、起伏板）用 kind:'surface' 写 x/y/z 三个 u,v 的方程。
+   变量只能用 params 里的键（面板会变成可调滑块），revolve 另有 t、surface 另有 u,v，常量 PI/E，函数 sin/cos/sqrt/pow 等。
+   例：球 {shape:"parametric",kind:"revolve",radius:"R*sin(PI*t)",height:"R*(2*t-1)",params:{R:0.1}}；
+   波纹片 {shape:"parametric",kind:"surface",x:"(u-0.5)*W",y:"(v-0.5)*D",z:"A*sin(6*PI*u)*sin(PI*v)",params:{W:0.4,D:0.4,A:0.02}}。
+   方程写错（语法、除零、未声明变量）服务端会当场打回并告诉你原因，按报错改方程即可。present 图元优先，parametric 兜底。
 1. 你在一个多步循环里工作。每一轮可以给出三样东西中的任意几样：
    - ops：要执行的修改。**前端会立刻应用到模型**，不需要用户点确认；
    - inspect：要转过去截图的视角（最多 4 个）。顺序固定：先应用这一轮的 ops，再切视角截图，再把图发回给你；
@@ -365,7 +403,8 @@ pattern = { type:'linear', count, step:[dx,dy,dz] } / { type:'circular', count, 
 2. 判断标准是**用户的需求原话**，不是「看着还行」。看到图先核对四件事：主轮廓比例、关键件朝向、
    零件是否连成一体（有没有悬空、断开、穿模）、该有的件有没有缺。发现问题必须自己改：
   用 setDimensions / editFeature / addFeature 精确修正；基本形状错误时可用 replaceFeature 替换单个特征，改完再给 inspect 复核。
-3. **只有真的核对过才写 done: true**。第一次生成后不要马上 done——至少截一组视角看过再判断。
+3. **只有真的核对过、且验收清单逐项通过才写 done: true**。第一次生成后不要马上 done——至少截一组视角看过再判断。
+   写 done 后还会经过一次独立验收（它没参与建模，只看清单、截图和测量文字）；任何一项不通过都会把失败项回灌给你继续改，不要重复声称已完成。
    例外：只是改尺寸、换材质、加孔、改名字这类从特征树就能确认的改动，可以改完直接 done。
 4. 不要问用户「要不要继续 / 这样行不行」。能自己判断的自己判断；确实缺关键信息（尺寸、用途、参照物）才停下来提问：
    此时 ops 与 inspect 都留空、done 为 false，reply 里问那一个问题。
@@ -438,6 +477,7 @@ export function parseToolArguments(message) {
         inspect: normalizeInspect(parsed.inspect),
         measure: normalizeMeasure(parsed.measure),
         done: parsed.done === true,
+        criteria: Array.isArray(parsed.criteria) ? parsed.criteria.filter((item) => typeof item === 'string') : [],
       };
       pushCall('apply_bim_ops', flat);
     } else {
@@ -452,12 +492,14 @@ export function parseToolArguments(message) {
   const ops = [];
   const inspect = [];
   const measure = [];
+  const criteria = [];
   let done = false;
   for (const call of calls) {
     if (call.name === 'apply_bim_ops') {
       if (call.args?.reply) replyParts.push(String(call.args.reply));
       if (Array.isArray(call.args?.ops)) ops.push(...call.args.ops);
       if (call.args?.done === true) done = true;
+      if (Array.isArray(call.args?.criteria)) criteria.push(...call.args.criteria.filter((item) => typeof item === 'string'));
       // 老格式：apply_bim_ops 里塞了 inspect / measure / done，折算回扁平视图以兼容调用方
       if (Array.isArray(call.args?.inspect)) inspect.push(...normalizeInspect(call.args.inspect));
       if (Array.isArray(call.args?.measure)) measure.push(...normalizeMeasure(call.args.measure));
@@ -471,7 +513,7 @@ export function parseToolArguments(message) {
     }
   }
   const reply = replyParts.join('\n') || contentReply;
-  return { reply, ops, inspect, measure, done, calls };
+  return { reply, ops, inspect, measure, done, criteria, calls };
 }
 
 /**
@@ -1563,6 +1605,40 @@ export async function callRoleJson(config, { role, system, user, images = [], mo
   const parsed = parseRoleJson(text);
   if (!parsed) throw new Error(`「${role}」角色没有返回可解析的 JSON：${String(text).slice(0, 200)}`);
   return parsed;
+}
+
+/**
+ * 独立验收：与生成模型分开的一次调用。
+ * 它只拿「用户原话 + 验收清单 + 当前截图 + 测量文字」，看不到生成过程，
+ * 因此不会被「我刚才就是这么设计的」带偏。输出必须是严格 JSON。
+ */
+export async function verifyAcceptance(config, { goal, criteria, images = [], measureText = '', mock = null } = {}) {
+  const system = `你是独立建模验收员，不参与建模。只根据给出的证据判断每一项验收标准是否达成。
+不要为生成方找理由，不要把「有类似零件」当成「形状/关系正确」；看不到或量不到的项一律判未通过并说明缺什么证据。
+只输出 JSON：{"pass": true/false, "failures": ["未通过的第1项及原因"], "evidence": "你依据哪些画面/数字得出判断"}
+pass 只有在所有验收项都通过时才为 true；failures 为空时写 []。`;
+  const lines = [
+    '用户原话：', String(goal ?? '').slice(0, 4000),
+    '', '验收清单（逐项核对，不能合并、不能跳过）：',
+    ...(Array.isArray(criteria) && criteria.length ? criteria.map((item, index) => `${index + 1}. ${item}`) : ['1. 用户原话描述的物体整体可辨识']),
+    '', '几何测量文字（没有就写「无」）：', measureText || '无',
+    '', '下面是当前模型的视角截图（若有的话）。截图不是目标图，目标以用户原话和验收清单为准。',
+  ];
+  const result = await callRoleJson(config, {
+    role: 'verify',
+    system,
+    user: lines.join('\n'),
+    images,
+    mock: mock ?? (() => ({ pass: true, failures: [], evidence: 'Mock 验收：默认通过（测试用）' })),
+  });
+  const failures = Array.isArray(result?.failures)
+    ? result.failures.filter((item) => typeof item === 'string' && item.trim()).slice(0, 8)
+    : [];
+  return {
+    pass: result?.pass === true && failures.length === 0,
+    failures,
+    evidence: typeof result?.evidence === 'string' ? result.evidence.slice(0, 800) : '',
+  };
 }
 
 export { prepareImages as prepareRoleImages };
